@@ -1,0 +1,10 @@
+{
+  "nodeMapping": {
+    "checkpoint": "175",
+    "positive": "109",
+    "negative": "6",
+    "ksampler": "7",
+    "latent": "18",
+    "save": "128"
+  }
+}

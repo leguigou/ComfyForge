@@ -1,0 +1,295 @@
+{
+  "54": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "577:53",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Enregistrer Image"
+    }
+  },
+  "55": {
+    "inputs": {
+      "text": "A high-detail cinematic photograph of a red lighthouse on a rugged Atlantic cliff at sunrise, tall grass moving in the sea breeze, warm natural light breaking through dramatic clouds, subtle mist above the water, realistic textures, balanced composition",
+      "clip": [
+        "69",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "✏️ CLIP Encode (Manual Prompt)"
+    }
+  },
+  "69": {
+    "inputs": {
+      "PowerLoraLoaderHeaderWidget": {
+        "type": "PowerLoraLoaderHeaderWidget"
+      },
+      "lora_1": {
+        "on": false,
+        "lora": "famegrid_spice_v2_z_image_fp32.safetensors",
+        "strength": 0.3
+      },
+      "lora_2": {
+        "on": false,
+        "lora": "AmateurZIT.safetensors",
+        "strength": 0.3
+      },
+      "lora_3": {
+        "on": false,
+        "lora": "RealisticSnapshot-Zimage-Turbov5.safetensors",
+        "strength": 0.4
+      },
+      "lora_4": {
+        "on": false,
+        "lora": "asian1girl_3300.safetensors",
+        "strength": 0.75
+      },
+      "lora_5": {
+        "on": false,
+        "lora": "deedee_amateur_photography_zimage_base_and_turbo_v1.safetensors",
+        "strength": 0.6
+      },
+      "lora_6": {
+        "on": false,
+        "lora": "ZIT_Makaria_Silverstova.safetensors",
+        "strength": 0.7
+      },
+      "lora_7": {
+        "on": false,
+        "lora": "ZIT_Amateur_Nudes_V2.safetensors",
+        "strength": 0.4
+      },
+      "lora_8": {
+        "on": false,
+        "lora": "amateur_photography_zimage_v1.safetensors",
+        "strength": 0.4
+      },
+      "lora_9": {
+        "on": false,
+        "lora": "Amateur_Nudes_2.5_Z-Image-Turbo.safetensors",
+        "strength": 0.4
+      },
+      "lora_10": {
+        "on": false,
+        "lora": "realsm_zit_lora_v8+9(merged2).safetensors",
+        "strength": 0.4
+      },
+      "➕ Add Lora": "",
+      "model": [
+        "761",
+        0
+      ],
+      "clip": [
+        "556",
+        0
+      ]
+    },
+    "class_type": "Power Lora Loader (rgthree)",
+    "_meta": {
+      "title": "Power Lora Loader (rgthree)"
+    }
+  },
+  "76": {
+    "inputs": {
+      "width": 896,
+      "height": 1152,
+      "batch_size": 1
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {
+      "title": "EmptySD3LatentImage"
+    }
+  },
+  "556": {
+    "inputs": {
+      "clip_name": "huihui-qwen3-4b-abliterated-v2-q8_0.gguf",
+      "type": "lumina2"
+    },
+    "class_type": "CLIPLoaderGGUF",
+    "_meta": {
+      "title": "CLIPLoader (GGUF)"
+    }
+  },
+  "557": {
+    "inputs": {
+      "vae_name": "zImage_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Charger VAE"
+    }
+  },
+  "761": {
+    "inputs": {
+      "unet_name": "intorealism_zitV70.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Charger Modèle Diffusion"
+    }
+  },
+  "796": {
+    "inputs": {
+      "image": [
+        "577:53",
+        0
+      ]
+    },
+    "class_type": "GetImageSize",
+    "_meta": {
+      "title": "Obtenir la taille de l'image"
+    }
+  },
+  "797": {
+    "inputs": {
+      "value": "(a*b + (96 * 2))/2",
+      "a": [
+        "796",
+        0
+      ]
+    },
+    "class_type": "SimpleMath+",
+    "_meta": {
+      "title": "Calculate optimized width"
+    }
+  },
+  "798": {
+    "inputs": {
+      "value": "(a*b + (96 * 2))/2",
+      "a": [
+        "796",
+        1
+      ]
+    },
+    "class_type": "SimpleMath+",
+    "_meta": {
+      "title": "Calculate optimized height"
+    }
+  },
+  "823": {
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": 887225309141640,
+      "steps": 9,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "start_at_step": 0,
+      "end_at_step": 4,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "69",
+        0
+      ],
+      "positive": [
+        "832",
+        0
+      ],
+      "negative": [
+        "836",
+        0
+      ],
+      "latent_image": [
+        "76",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KSampler #1 (avec ControlNet) - steps 0->4"
+    }
+  },
+  "824": {
+    "inputs": {
+      "add_noise": "disable",
+      "noise_seed": 0,
+      "steps": 9,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "start_at_step": 4,
+      "end_at_step": 10000,
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "69",
+        0
+      ],
+      "positive": [
+        "832",
+        0
+      ],
+      "negative": [
+        "836",
+        0
+      ],
+      "latent_image": [
+        "823",
+        0
+      ]
+    },
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KSampler #2 (sans ControlNet) - steps 4->fin"
+    }
+  },
+  "832": {
+    "inputs": {
+      "any_02": [
+        "55",
+        0
+      ]
+    },
+    "class_type": "Any Switch (rgthree)",
+    "_meta": {
+      "title": "Any Switch (rgthree)"
+    }
+  },
+  "836": {
+    "inputs": {
+      "conditioning": [
+        "55",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "ConditioningZeroOut (Z-Image neg)"
+    }
+  },
+  "577:53": {
+    "inputs": {
+      "samples": [
+        "824",
+        0
+      ],
+      "vae": [
+        "557",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "577:47": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "761",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  }
+}

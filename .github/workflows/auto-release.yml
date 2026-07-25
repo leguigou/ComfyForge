@@ -1,0 +1,24 @@
+name: Auto Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Se déclenche pour les tags comme v.1.2.64 ou v1.5.7
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false

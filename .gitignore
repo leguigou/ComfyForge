@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+*.db
+*.db-shm
+*.db-wal
+*.backup
+backup/
+/images/
+backend/images/
+frontend/node_modules/
+frontend/lint-errors.json
+backend/node_modules/
+.test-runtime/
+backend/.test-runtime/
+.DS_Store
+.gemini/agents/

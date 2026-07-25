@@ -1,0 +1,55 @@
+name: Signaler un bug
+description: Aidez-nous à reproduire et corriger un problème.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Merci de ne jamais joindre de clé API, de fichier `.env` ou de donnée privée.
+  - type: input
+    id: version
+    attributes:
+      label: Version de ComfyForge
+      placeholder: 1.5.15
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Mode d’installation
+      options:
+        - Docker avec les images GHCR
+        - Docker construit localement
+        - Node.js en développement
+        - Autre
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Que s’est-il passé et quel résultat attendiez-vous ?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Étapes de reproduction
+      placeholder: |
+        1. Ouvrir…
+        2. Cliquer sur…
+        3. Observer…
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Journaux utiles
+      description: Supprimez les clés, mots de passe, prompts et chemins privés.
+      render: shell
+  - type: input
+    id: environment
+    attributes:
+      label: Environnement
+      placeholder: Windows 11, Docker Desktop 4.x, Chrome 140

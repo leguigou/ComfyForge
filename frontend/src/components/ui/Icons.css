@@ -1,0 +1,63 @@
+/* Animations */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spinner-small {
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+
+.stop-icon {
+  width: 14px;
+  height: 14px;
+  background-color: white;
+  border-radius: 2px;
+}
+
+.stop-icon-small {
+  width: 10px;
+  height: 10px;
+  background-color: currentColor;
+  border-radius: 1px;
+}
+
+.bounced-loader {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+  align-items: center;
+}
+
+.bounce1, .bounce2, .bounce3 {
+  width: 6px;
+  height: 6px;
+  background-color: var(--accent);
+  border-radius: 50%;
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.bounce1 { animation-delay: -0.32s; }
+.bounce2 { animation-delay: -0.16s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+
+.bounced-ball {
+  width: 8px;
+  height: 8px;
+  background-color: var(--accent);
+  border-radius: 50%;
+  animation: bounced-ball 0.6s infinite alternate;
+}
+
+.bounced-ball:nth-child(2) { animation-delay: 0.2s; }
+.bounced-ball:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes bounced-ball {
+  from { transform: translateY(0); }
+  to { transform: translateY(-10px); }
+}

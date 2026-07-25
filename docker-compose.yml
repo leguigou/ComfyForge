@@ -1,0 +1,39 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: comfyforge-backend
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend/data:/app/backend/data
+      - ./backend/workflows:/app/backend/workflows
+      - ./images:/app/images
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-3001}
+      - COMFY_URL=${COMFY_URL:-http://host.docker.internal:8188}
+      - APP_PASSWORD=${APP_PASSWORD:?Set APP_PASSWORD in .env}
+      - AUTH_SECRET=${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - SERVICE_URL_ALLOWLIST=${SERVICE_URL_ALLOWLIST:-}
+      - ALLOW_PRIVATE_SERVICE_URLS=${ALLOW_PRIVATE_SERVICE_URLS:-false}
+      - ALLOW_USER_LLM_URLS=${ALLOW_USER_LLM_URLS:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: comfyforge-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  images:
