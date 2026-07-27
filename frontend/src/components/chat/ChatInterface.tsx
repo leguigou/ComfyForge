@@ -3,9 +3,11 @@ import './ChatInterface.css';
 import type { Message, Language, GalleryItem, GenParameters, PromptTag } from '../../types';
 import { WelcomeScreen } from './WelcomeScreen';
 import { MessageText } from './MessageText';
-import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon, ThumbUpIcon, ComposeIcon } from '../ui/Icons';
-import { API_BASE, getFullImageUrl, formatDuration } from '../../services/api';
+import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon, ThumbUpIcon, ComposeIcon, MagicWandIcon } from '../ui/Icons';
+import { getFullImageUrl, formatDuration } from '../../services/api';
 import toast from 'react-hot-toast';
+
+const LUCKY_PHRASE_COUNT = 5;
 
 interface ChatInterfaceProps {
   view: 'chat' | 'gallery' | 'archives';
@@ -18,6 +20,8 @@ interface ChatInterfaceProps {
   input: string;
   setInput: (val: string) => void;
   handleSend: (overrideInput?: string, isRegeneration?: boolean, skipEnhancement?: boolean) => void;
+  createLuckyGeneration: () => Promise<void>;
+  isCreatingLuckyPrompt: boolean;
   regenerationCounts: Record<string, number>;
   recordRegeneration: (messageId: string) => void;
   retryMessage: (messageId: string) => Promise<unknown>;
@@ -68,6 +72,8 @@ export const ChatInterface = ({
   input,
   setInput,
   handleSend,
+  createLuckyGeneration,
+  isCreatingLuckyPrompt,
   regenerationCounts,
   recordRegeneration,
   retryMessage,
@@ -99,6 +105,7 @@ export const ChatInterface = ({
   messagesEndRef,
   params,
   setParams,
+  smoothScrollTo,
   handleScroll,
   downloadImage,
   showScrollBottom,
@@ -108,8 +115,7 @@ export const ChatInterface = ({
   const [timerNow, setTimerNow] = useState(() => Date.now());
   const [isRetryingAll, setIsRetryingAll] = useState(false);
   const [showRetryAllConfirm, setShowRetryAllConfirm] = useState(false);
-  const [isCreatingLuckyPrompt, setIsCreatingLuckyPrompt] = useState(false);
-  const [isLuckyPromptReady, setIsLuckyPromptReady] = useState(false);
+  const [luckyPhraseIndex, setLuckyPhraseIndex] = useState(0);
   const promptHighlightRef = useRef<HTMLDivElement>(null);
   const optionsDrawerRef = useRef<HTMLDivElement>(null);
   const optionsToggleRef = useRef<HTMLButtonElement>(null);
@@ -157,39 +163,32 @@ export const ChatInterface = ({
     }
   };
 
-  const createLuckyPrompt = async () => {
-    setIsCreatingLuckyPrompt(true);
-    try {
-      const response = await fetch(`${API_BASE}/api/llm/lucky-prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerId: params.llmProviderId }),
-        credentials: 'include',
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        if (data.code === 'NO_LIKED_PROMPTS') throw new Error(t.luckyNeedsFavorites);
-        if (data.code === 'NO_LLM_PROVIDER') throw new Error(t.luckyNeedsProvider);
-        throw new Error(data.error || t.luckyPromptFailed);
-      }
-      if (!data.prompt?.trim()) throw new Error(t.luckyPromptFailed);
+  const luckyPhrases = [
+    t.luckyMagic1,
+    t.luckyMagic2,
+    t.luckyMagic3,
+    t.luckyMagic4,
+    t.luckyMagic5,
+  ];
 
-      setInput(data.prompt.trim());
-      setIsLuckyPromptReady(true);
-      setShowOptions(false);
-      toast.success(`${t.luckyPromptReady} (${data.sourceCount})`);
-      window.requestAnimationFrame(() => textareaRef.current?.focus());
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
-    } finally {
-      setIsCreatingLuckyPrompt(false);
+  useEffect(() => {
+    if (!isCreatingLuckyPrompt) {
+      setLuckyPhraseIndex(0);
+      return;
     }
-  };
+    const interval = window.setInterval(() => {
+      setLuckyPhraseIndex(index => (index + 1) % LUCKY_PHRASE_COUNT);
+    }, 1800);
+    return () => window.clearInterval(interval);
+  }, [isCreatingLuckyPrompt, lang]);
 
-  const submitCurrentPrompt = () => {
-    handleSend(undefined, false, isLuckyPromptReady);
-    setIsLuckyPromptReady(false);
-  };
+  useEffect(() => {
+    if (!isCreatingLuckyPrompt) return;
+    const timeout = window.setTimeout(() => {
+      smoothScrollTo('lucky-generation-post');
+    }, 60);
+    return () => window.clearTimeout(timeout);
+  }, [isCreatingLuckyPrompt, smoothScrollTo]);
 
   const syncPromptHighlightScroll = (textarea: HTMLTextAreaElement) => {
     if (!promptHighlightRef.current) return;
@@ -209,7 +208,6 @@ export const ChatInterface = ({
     const nextInput = `${before}${prefix}${token}${suffix}${after}`;
     const nextCursor = before.length + prefix.length + token.length;
     setInput(nextInput);
-    setIsLuckyPromptReady(false);
     window.requestAnimationFrame(() => {
       textarea?.focus();
       textarea?.setSelectionRange(nextCursor, nextCursor);
@@ -456,6 +454,26 @@ export const ChatInterface = ({
               </div>
               );
             })}
+            {isCreatingLuckyPrompt && (
+              <div id="lucky-generation-post" className="message-row bot lucky-generation-row" aria-live="polite">
+                <div className="avatar" aria-label={t.luckyPromptAction}>
+                  <MagicWandIcon size={19} />
+                </div>
+                <div className="message-content loading">
+                  <div className="generation-placeholder lucky-generation-placeholder">
+                    <div className="bounced-loader" aria-hidden="true">
+                      <div className="bounce1"></div>
+                      <div className="bounce2"></div>
+                      <div className="bounce3"></div>
+                    </div>
+                    <p key={luckyPhraseIndex} className="ai-text-shimmer lucky-magic-phrase">
+                      {luckyPhrases[luckyPhraseIndex]}
+                    </p>
+                    <span className="lucky-magic-caption">{t.luckyPromptCreating}</span>
+                  </div>
+                </div>
+              </div>
+            )}
             {isGenerating && messages.length > 0 && !messages[messages.length - 1].role.includes('bot') && (
               <div className="message-row bot">
                 <div className="avatar">C</div>
@@ -581,14 +599,16 @@ export const ChatInterface = ({
           {showOptions && (
             <div ref={optionsDrawerRef} className="generation-options-drawer fadeIn">
               <div className="options-group lucky-prompt-group">
-                <div className="option-label">🍀 {t.luckyPrompt}</div>
                 <button
                   type="button"
                   className="lucky-prompt-btn"
-                  onClick={createLuckyPrompt}
+                  onClick={() => {
+                    setShowOptions(false);
+                    void createLuckyGeneration();
+                  }}
                   disabled={isCreatingLuckyPrompt}
                 >
-                  <span aria-hidden="true">{isCreatingLuckyPrompt ? '✨' : '🍀'}</span>
+                  <MagicWandIcon size={17} className="lucky-prompt-icon" />
                   <span>{isCreatingLuckyPrompt ? t.luckyPromptCreating : t.luckyPromptAction}</span>
                 </button>
                 <p className="lucky-prompt-help">{t.luckyPromptHelp}</p>
@@ -671,23 +691,20 @@ export const ChatInterface = ({
                 <textarea
                   ref={textareaRef}
                   value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    setIsLuckyPromptReady(false);
-                  }}
+                  onChange={(e) => setInput(e.target.value)}
                   onScroll={(e) => syncPromptHighlightScroll(e.currentTarget)}
-                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), submitCurrentPrompt())}
+                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
                   placeholder={params.llmEnabled ? t.aiPlaceholder : t.placeholder}
                   rows={1}
                 />
               </div>
               <div className="input-box-actions">
                 {input && (
-                  <button className="clear-input-btn" onClick={() => { setInput(''); setIsLuckyPromptReady(false); }} title="Effacer le texte">
+                  <button className="clear-input-btn" onClick={() => setInput('')} title="Effacer le texte">
                     <XIcon size={18} />
                   </button>
                 )}
-                <button className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`} onClick={() => isGenerating && !input.trim() ? interruptGeneration() : submitCurrentPrompt()} disabled={!input.trim() && !isGenerating}>
+                <button className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`} onClick={() => isGenerating && !input.trim() ? interruptGeneration() : handleSend()} disabled={!input.trim() && !isGenerating}>
                   {isGenerating && !input.trim() ? (
                     <div className="stop-icon"></div>
                   ) : (

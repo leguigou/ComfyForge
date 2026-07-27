@@ -26,6 +26,17 @@ export const ThumbUpIcon = ({ size = 20, className }: IconProps) => (
   </svg>
 );
 
+export const MagicWandIcon = ({ size = 20, className }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+    <path d="m15 4 5 5L7 22H2v-5L15 4Z" />
+    <path d="m13.5 5.5 5 5" />
+    <path d="M6 4V2" />
+    <path d="M5 3h2" />
+    <path d="M19 17v-2" />
+    <path d="M18 16h2" />
+  </svg>
+);
+
 export const SendIcon = ({ size = 24, className }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className={className}>
     <path d="M7 11L12 6L17 11M12 18V7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>

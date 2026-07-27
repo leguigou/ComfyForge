@@ -133,6 +133,7 @@ function App() {
   const [showQueueIndicator, setShowQueueIndicator] = useState(
     () => sessionStorage.getItem('comfyforge.queueIndicatorLatched') === 'true'
   );
+  const [isCreatingLuckyPrompt, setIsCreatingLuckyPrompt] = useState(false);
   const [activeTab, setActiveTab] = useState<'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin'>('images');
   
   const [input, setInput] = useState('');
@@ -1008,6 +1009,37 @@ function App() {
     if (override === undefined) setInput('');
   }, [handleSend, input, currentSessionId, createNewSession]);
 
+  const createLuckyGeneration = useCallback(async () => {
+    if (isCreatingLuckyPrompt) return;
+    setIsCreatingLuckyPrompt(true);
+    setView('chat');
+
+    try {
+      let targetSessionId: string | undefined = currentSessionId ?? undefined;
+      if (!targetSessionId) targetSessionId = await createNewSession();
+
+      const response = await fetch(`${API_BASE}/api/llm/lucky-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerId: params.llmProviderId }),
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        if (data.code === 'NO_LIKED_PROMPTS') throw new Error(t.luckyNeedsFavorites);
+        if (data.code === 'NO_LLM_PROVIDER') throw new Error(t.luckyNeedsProvider);
+        throw new Error(data.error || t.luckyPromptFailed);
+      }
+      if (!data.prompt?.trim()) throw new Error(t.luckyPromptFailed);
+
+      await handleSend(data.prompt.trim(), false, targetSessionId, true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
+    } finally {
+      setIsCreatingLuckyPrompt(false);
+    }
+  }, [createNewSession, currentSessionId, handleSend, isCreatingLuckyPrompt, params.llmProviderId, t.luckyNeedsFavorites, t.luckyNeedsProvider, t.luckyPromptFailed]);
+
   const onInputChange = useCallback((val: string) => setInput(val), []);
 
   useEffect(() => {
@@ -1384,6 +1416,7 @@ function App() {
         <ChatInterface
           view={view} messages={messages} lang={lang} t={t} isGenerating={isGenerating} isEnhancing={isEnhancing}
           currentSessionId={currentSessionId} input={input} setInput={onInputChange} handleSend={onHandleSend}
+          createLuckyGeneration={createLuckyGeneration} isCreatingLuckyPrompt={isCreatingLuckyPrompt}
           regenerationCounts={regenerationCounts} recordRegeneration={recordRegeneration}
           retryMessage={retryMessage} retryAllIncomplete={retryAllIncomplete}
           interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
