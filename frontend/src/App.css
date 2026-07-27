@@ -152,6 +152,63 @@ div:focus:not(:focus-visible) {
   pointer-events: auto;
 }
 
+.queue-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 36px;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid rgba(16, 163, 127, 0.5);
+  border-radius: 999px;
+  background: rgba(8, 35, 29, 0.9);
+  color: #d7fff2;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.24);
+  font-size: 0.78rem;
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  transition: border-color 0.2s, filter 0.2s, transform 0.2s;
+}
+
+.queue-status-indicator:hover {
+  border-color: #63e0ad;
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+.queue-status-indicator strong {
+  min-width: 1ch;
+  color: #63e0ad;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #36c56f;
+  box-shadow: 0 0 0 0 rgba(54, 197, 111, 0.55);
+  animation: queue-status-pulse 1.5s infinite;
+}
+
+@keyframes queue-status-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(54, 197, 111, 0.55); }
+  70% { box-shadow: 0 0 0 7px rgba(54, 197, 111, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(54, 197, 111, 0); }
+}
+
+@media (max-width: 600px) {
+  .queue-status-indicator {
+    min-width: 38px;
+    justify-content: center;
+    padding: 0.35rem 0.6rem;
+  }
+
+  .queue-status-label {
+    display: none;
+  }
+}
+
 /* Rounded Header Buttons */
 .header-btn {
   background-color: rgba(0, 0, 0, 0.5); /* Plus sombre comme sur l'image */
@@ -447,7 +504,22 @@ div:focus:not(:focus-visible) {
   .lightbox-btn:hover { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); transform: translateY(-2px); }
 }
 .lightbox-btn.favorite.active { border-color: #ff4b4b; background: rgba(255, 75, 75, 0.15); }
-.lightbox-btn.close { font-size: 1.8rem; }
+.lightbox-btn.prompt-like.active {
+  border-color: #36c56f;
+  background: rgba(54, 197, 111, 0.16);
+  color: #36c56f;
+}
+.lightbox-btn.close {
+  border-radius: 50%;
+  font-size: 1.8rem;
+}
+.lightbox-btn.queue-remaining {
+  border-radius: 50%;
+  cursor: default;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
 .lightbox-btn.go-to-chat { background: var(--accent); border-color: transparent; color: white; }
 
 .image-overlay-heart {

@@ -91,11 +91,11 @@ export const listProviderModels = async (provider: StoredProvider) => {
   return (response.data.data || []).map((model: any) => model.id);
 };
 
-export const completeWithProvider = async (provider: StoredProvider, prompt: string, systemMessage: string) => {
+export const completeWithProvider = async (provider: StoredProvider, prompt: string, systemMessage: string, temperature = 0.7) => {
   const baseUrl = provider.baseUrl.replace(/\/$/, '');
   if (provider.type === 'anthropic') {
     const response = await axios.post(`${baseUrl}/v1/messages`, {
-      model: provider.model, max_tokens: 2048, temperature: 0.7,
+      model: provider.model, max_tokens: 2048, temperature,
       system: systemMessage, messages: [{ role: 'user', content: prompt }]
     }, { headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 30000 });
     return response.data.content?.map((part: any) => part.text || '').join('') || '';
@@ -105,14 +105,14 @@ export const completeWithProvider = async (provider: StoredProvider, prompt: str
     const response = await axios.post(`${baseUrl}/v1beta/models/${encodeURIComponent(provider.model)}:generateContent`, {
       systemInstruction: { parts: [{ text: systemMessage }] },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.7, responseMimeType: 'application/json' }
+      generationConfig: { temperature, responseMimeType: 'application/json' }
     }, { params: { key }, timeout: 30000 });
     return response.data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('') || '';
   }
   const response = await axios.post(`${baseUrl}/v1/chat/completions`, {
     model: provider.model,
     messages: [{ role: 'system', content: systemMessage }, { role: 'user', content: prompt }],
-    temperature: 0.7
+    temperature
   }, { headers: authHeaders(provider), timeout: 30000 });
   return response.data.choices?.[0]?.message?.content || '';
 };

@@ -7,6 +7,7 @@ import { getTargetComfyUrl } from '../services/comfy';
 import { broadcastToSession, processQueue } from '../services/queue';
 import { ServiceUrlError } from '../security/service-url';
 import { GenerationParams } from '../types';
+import { replaceAutoPromptTags } from '../services/prompt-tags';
 
 const router = express.Router();
 
@@ -57,6 +58,18 @@ const parseStoredParams = (value: string | null) => {
     return {};
   }
 };
+
+router.get('/active', authenticate, (req, res) => {
+  const user = (req as any).user;
+  const generations = db.prepare(`
+    SELECT q.messageId, q.sessionId, q.status, q.createdAt
+    FROM queue q
+    JOIN sessions s ON s.id = q.sessionId
+    WHERE s.userId = ? AND q.status IN ('processing', 'pending')
+    ORDER BY CASE q.status WHEN 'processing' THEN 0 ELSE 1 END, q.createdAt ASC
+  `).all(user.id);
+  res.json(generations);
+});
 
 const enqueueRetry = (message: RetryableMessage, fallbackParams: any, createdAt: number) => {
   const params = normalizeGenerationParams(
@@ -130,6 +143,8 @@ router.post('/generate', authenticate, async (req, res) => {
     
     const storedParams = { ...safeParams, seed };
     insertMsg.run(messageId, sessionId, 'bot', enhancedText, displayPrompt, null, timestamp, model, params?.width || 896, params?.height || 1152, params?.steps || 8, params?.cfg || 1.1, workflowFile, 'pending', seed, JSON.stringify(randomSelections), prompt, JSON.stringify(storedParams));
+    const tags = replaceAutoPromptTags(db, messageId, prompt)
+      .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
     
     db.prepare('INSERT INTO queue (messageId, prompt, originalPrompt, sessionId, params, status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(messageId, prompt, originalPrompt, sessionId, JSON.stringify(storedParams), 'pending', timestamp);
@@ -137,7 +152,7 @@ router.post('/generate', authenticate, async (req, res) => {
     db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ? AND title = \'New Chat\'').run(displayPrompt.substring(0, 30), timestamp, sessionId);
     db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
     
-    res.json({ success: true, messageId, status: 'pending' });
+    res.json({ success: true, messageId, status: 'pending', tags });
     
     // Start processing immediately
     processQueue();

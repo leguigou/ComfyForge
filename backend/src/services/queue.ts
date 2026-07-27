@@ -21,12 +21,27 @@ export const registerWebSocketUser = (client: WebSocket, userId: string) => {
   websocketUsers.set(client, userId);
 };
 
+export const getUserQueueRemaining = (userId: string) => {
+  const result = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM queue q
+    JOIN sessions s ON s.id = q.sessionId
+    WHERE s.userId = ? AND q.status IN ('pending', 'processing')
+  `).get(userId) as { count: number };
+  return result.count;
+};
+
 export const broadcastToSession = (sessionId: string, data: Record<string, unknown>) => {
   if (!wss) return;
   const session = db.prepare('SELECT userId FROM sessions WHERE id = ?').get(sessionId) as { userId: string } | undefined;
   if (!session) return;
 
-  const payload = JSON.stringify({ type: 'queue_update', sessionId, ...data });
+  const payload = JSON.stringify({
+    type: 'queue_update',
+    sessionId,
+    queueRemaining: getUserQueueRemaining(session.userId),
+    ...data
+  });
   wss.clients.forEach((client: WebSocket) => { 
     if (client.readyState === WebSocket.OPEN && websocketUsers.get(client) === session.userId) {
       client.send(payload);

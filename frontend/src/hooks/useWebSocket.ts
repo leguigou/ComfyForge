@@ -11,7 +11,8 @@ export const useWebSocket = (
   onGenerationStatus?: (
     sessionId: string,
     status: 'pending' | 'processing' | 'completed' | 'failed'
-  ) => void | Promise<void>
+  ) => void | Promise<void>,
+  onQueueRemainingChange?: (remaining: number) => void
 ) => {
   const wsRef = useRef<WebSocket | null>(null);
   const clientIdRef = useRef<string>('');
@@ -20,12 +21,16 @@ export const useWebSocket = (
   // Refs to maintain fresh values inside WebSocket handlers
   const currentSessionIdRef = useRef(currentSessionId);
   const onGenerationStatusRef = useRef(onGenerationStatus);
+  const onQueueRemainingChangeRef = useRef(onQueueRemainingChange);
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
   useEffect(() => {
     onGenerationStatusRef.current = onGenerationStatus;
   }, [onGenerationStatus]);
+  useEffect(() => {
+    onQueueRemainingChangeRef.current = onQueueRemainingChange;
+  }, [onQueueRemainingChange]);
 
   const connectRef = useRef<() => void>(() => {});
 
@@ -57,8 +62,14 @@ export const useWebSocket = (
         if (data.type === 'connected') {
           console.log('[WS] Client ID acknowledged:', data.clientId);
           clientIdRef.current = data.clientId;
+          if (typeof data.queueRemaining === 'number') {
+            onQueueRemainingChangeRef.current?.(data.queueRemaining);
+          }
         } else if (data.type === 'queue_update') {
           console.log('[WS] Queue update:', data);
+          if (typeof data.queueRemaining === 'number') {
+            onQueueRemainingChangeRef.current?.(data.queueRemaining);
+          }
           const status = data.status as 'pending' | 'processing' | 'completed' | 'failed';
           if (data.sessionId === currentSessionIdRef.current) {
             setMessages(prev => prev.map(m => {

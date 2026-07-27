@@ -3,6 +3,7 @@ export interface Message {
   role: 'user' | 'bot';
   text: string;
   prompt?: string;
+  generationPrompt?: string;
   imageUrl?: string;
   thumbnailUrl?: string;
   model?: string;
@@ -20,6 +21,8 @@ export interface Message {
   duration?: number;
   generationStartedAt?: number;
   isFavorite?: number;
+  isPromptFavorite?: number;
+  tags?: PromptTag[];
   randomSelections?: RandomPromptSelection[];
 }
 
@@ -30,6 +33,7 @@ export interface GalleryItem {
   thumbnailUrl?: string;
   prompt: string;
   text?: string;
+  generationPrompt?: string;
   timestamp: number;
   model?: string;
   workflow?: string;
@@ -42,7 +46,17 @@ export interface GalleryItem {
   scheduler?: string;
   duration?: number;
   isFavorite?: number;
+  isPromptFavorite?: number;
+  tags?: PromptTag[];
   randomSelections?: RandomPromptSelection[];
+}
+
+export interface PromptTag {
+  slug: string;
+  category: string;
+  labelFr: string;
+  labelEn: string;
+  count?: number;
 }
 
 export interface NodeMapping {

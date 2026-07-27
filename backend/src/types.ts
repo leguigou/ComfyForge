@@ -32,6 +32,8 @@ export interface Message {
   status: 'pending' | 'processing' | 'completed' | 'failed';
   seed: number | null;
   duration: number | null;
+  isFavorite: number | null;
+  isPromptFavorite: number | null;
   sampler: string | null;
   scheduler: string | null;
   randomSelections: string | null;

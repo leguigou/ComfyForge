@@ -7,7 +7,8 @@ import type {
   Theme, 
   Language,
   User,
-  Message
+  Message,
+  PromptTag
 } from './types';
 import { API_BASE, getFullImageUrl } from './services/api';
 import { Sidebar } from './components/sidebar/Sidebar';
@@ -20,7 +21,7 @@ import { useSessions } from './hooks/useSessions';
 import { useGeneration } from './hooks/useGeneration';
 import { useWebSocket } from './hooks/useWebSocket';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
-import { ComposeIcon, MoreVerticalIcon, RefreshIcon } from './components/ui/Icons';
+import { ComposeIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon } from './components/ui/Icons';
 import toast, { Toaster } from 'react-hot-toast';
 
 function App() {
@@ -128,6 +129,10 @@ function App() {
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [queueRemaining, setQueueRemaining] = useState<number | null>(null);
+  const [showQueueIndicator, setShowQueueIndicator] = useState(
+    () => sessionStorage.getItem('comfyforge.queueIndicatorLatched') === 'true'
+  );
   const [activeTab, setActiveTab] = useState<'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin'>('images');
   
   const [input, setInput] = useState('');
@@ -292,11 +297,23 @@ function App() {
     setMessages,
     fetchSessions,
     fetchSessionDetails,
-    handleGenerationStatus
+    handleGenerationStatus,
+    setQueueRemaining
   );
   const { handleSend, retryMessage, retryAllIncomplete, interruptGeneration, isEnhancing } = useGeneration(currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions);
 
   const isGenerating = isEnhancing || messages.some(m => m.role === 'bot' && (m.status === 'pending' || m.status === 'processing'));
+
+  useEffect(() => {
+    if (queueRemaining === null) return;
+    if (queueRemaining >= 2) {
+      setShowQueueIndicator(true);
+      sessionStorage.setItem('comfyforge.queueIndicatorLatched', 'true');
+    } else if (queueRemaining === 0) {
+      setShowQueueIndicator(false);
+      sessionStorage.removeItem('comfyforge.queueIndicatorLatched');
+    }
+  }, [queueRemaining]);
 
   const [activeLightbox, setActiveLightbox] = useState<{
     url: string;
@@ -473,6 +490,9 @@ function App() {
   const isFetchingGalleryRef = useRef(false);
   const [showArchivedInGallery, setShowArchivedInGallery] = useState(false);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [promptFavoritesOnly, setPromptFavoritesOnly] = useState(false);
+  const [availablePromptTags, setAvailablePromptTags] = useState<PromptTag[]>([]);
+  const [selectedPromptTag, setSelectedPromptTag] = useState('');
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const [favoritedId, setFavoritedId] = useState<string | null>(null);
   const clickTimeoutRef = useRef<number | null>(null);
@@ -498,6 +518,29 @@ function App() {
       }
     } catch (err) { console.error('Error toggling favorite:', err); }
   }, [setMessages, favoritesOnly]);
+
+  const togglePromptFavorite = useCallback(async (sessionId: string, messageId: string, currentStatus: number | undefined) => {
+    const newStatus = currentStatus === 1 ? 0 : 1;
+    try {
+      const res = await fetch(`${API_BASE}/api/history/${sessionId}/message/${messageId}/prompt-favorite`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isPromptFavorite: newStatus }),
+        credentials: 'include'
+      });
+      if (!res.ok) throw new Error(`Failed to update prompt favorite: ${res.status}`);
+      setMessages(prev => prev.map(message => message.id === messageId
+        ? { ...message, isPromptFavorite: newStatus }
+        : message));
+      setGalleryItems(prev => promptFavoritesOnly && newStatus === 0
+        ? prev.filter(item => item.messageId !== messageId)
+        : prev.map(item => item.messageId === messageId ? { ...item, isPromptFavorite: newStatus } : item));
+      toast.success(newStatus ? t.promptLiked : t.promptUnliked);
+    } catch (error) {
+      console.error('Error toggling prompt favorite:', error);
+      toast.error(t.promptLikeFailed);
+    }
+  }, [promptFavoritesOnly, setMessages, t.promptLiked, t.promptUnliked, t.promptLikeFailed]);
 
   const handleImageClick = useCallback((item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, source: 'chat' | 'gallery' }) => {
     if (clickTimeoutRef.current) {
@@ -767,6 +810,17 @@ function App() {
 
   const galleryOffsetRef = useRef(0);
   const galleryRequestRef = useRef(0);
+  const fetchPromptTags = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/gallery/tags`, { credentials: 'include' });
+      if (!res.ok) throw new Error(`Failed to fetch tags: ${res.status}`);
+      const data = await res.json();
+      setAvailablePromptTags(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Error fetching prompt tags:', error);
+    }
+  }, []);
+
   const fetchGallery = useCallback(async (isInitial = false) => {
     if (!isInitial && (isFetchingGalleryRef.current || !hasMoreGallery)) return;
 
@@ -777,7 +831,15 @@ function App() {
     
     const currentOffset = isInitial ? 0 : galleryOffsetRef.current;
     try {
-      const res = await fetch(`${API_BASE}/api/gallery?limit=25&offset=${currentOffset}&includeArchived=${showArchivedInGallery}&favoritesOnly=${favoritesOnly}`, { credentials: 'include' });
+      const query = new URLSearchParams({
+        limit: '25',
+        offset: String(currentOffset),
+        includeArchived: String(showArchivedInGallery),
+        favoritesOnly: String(favoritesOnly),
+        promptFavoritesOnly: String(promptFavoritesOnly),
+      });
+      if (selectedPromptTag) query.set('tag', selectedPromptTag);
+      const res = await fetch(`${API_BASE}/api/gallery?${query.toString()}`, { credentials: 'include' });
       if (!res.ok) {
         throw new Error(`Failed to fetch gallery: ${res.status} ${res.statusText}`);
       }
@@ -813,7 +875,7 @@ function App() {
         isFetchingGalleryRef.current = false;
       }
     }
-  }, [hasMoreGallery, showArchivedInGallery, favoritesOnly]);
+  }, [hasMoreGallery, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, selectedPromptTag]);
 
   const observer = useRef<IntersectionObserver | null>(null);
   const lastImageElementRef = useCallback((node: HTMLDivElement) => {
@@ -837,8 +899,11 @@ function App() {
   }, [fetchGallery]);
 
   useEffect(() => {
-    if (view === 'gallery') resetGallery();
-  }, [view, showArchivedInGallery, favoritesOnly, resetGallery]);
+    if (view === 'gallery') {
+      resetGallery();
+      void fetchPromptTags();
+    }
+  }, [view, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, selectedPromptTag, resetGallery, fetchPromptTags]);
 
   const goToImage = useCallback((sessionId: string, messageId: string) => {
     pendingAnchorRef.current = messageId;
@@ -930,7 +995,7 @@ function App() {
     link.click();
   }, []);
 
-  const onHandleSend = useCallback(async (override?: string, regen?: boolean) => {
+  const onHandleSend = useCallback(async (override?: string, regen?: boolean, skipEnhancement?: boolean) => {
     const text = override !== undefined ? override : input;
     if (!text.trim()) return;
 
@@ -939,7 +1004,7 @@ function App() {
       targetSessionId = await createNewSession();
     }
 
-    handleSend(text, regen, targetSessionId);
+    handleSend(text, regen, targetSessionId, skipEnhancement);
     if (override === undefined) setInput('');
   }, [handleSend, input, currentSessionId, createNewSession]);
 
@@ -1056,6 +1121,40 @@ function App() {
     setTimeout(() => { isProgrammaticScrollRef.current = false; }, 1000);
   }, []);
 
+  const focusActiveGeneration = useCallback(async () => {
+    setActiveLightbox(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/generate/active`, { credentials: 'include' });
+      if (!response.ok) throw new Error(`Failed to locate active generation: ${response.status}`);
+      const generations = await response.json() as Array<{
+        messageId: string;
+        sessionId: string;
+        status: 'processing' | 'pending';
+      }>;
+      const target = generations[0];
+      if (!target) return;
+
+      const targetIsLoaded = currentSessionId === target.sessionId
+        && messages.some(message => message.id === target.messageId);
+      if (targetIsLoaded) {
+        setView('chat');
+        window.setTimeout(() => smoothScrollTo(`msg-${target.messageId}`), 60);
+      } else {
+        goToImage(target.sessionId, target.messageId);
+      }
+    } catch (error) {
+      console.error('Error locating active generation:', error);
+      const fallback = messages.find(message => (
+        message.role === 'bot'
+        && (message.status === 'processing' || message.status === 'pending')
+      ));
+      if (fallback) {
+        setView('chat');
+        window.setTimeout(() => smoothScrollTo(`msg-${fallback.id}`), 60);
+      }
+    }
+  }, [currentSessionId, goToImage, messages, smoothScrollTo]);
+
   if (isAuthenticated === null) return (
     <div className="app-loader">
       <div className="bounced-loader"><div className="bounce1"></div><div className="bounce2"></div><div className="bounce3"></div></div>
@@ -1088,7 +1187,7 @@ function App() {
 
   const regenerateLightboxImage = () => {
     if (!activeLightbox || !currentLightboxItem) return;
-    const prompt = currentLightboxItem.prompt || currentLightboxItem.text || '';
+    const prompt = currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || '';
     if (!prompt.trim()) return;
     recordRegeneration(activeLightbox.messageId);
     void handleSend(prompt, true, activeLightbox.sessionId);
@@ -1111,6 +1210,15 @@ function App() {
             <div className="lightbox-actions-secondary">
               <button className="lightbox-btn" onClick={() => { goToImage(activeLightbox.sessionId, activeLightbox.messageId); setActiveLightbox(null); }} title={t.viewInChat} aria-label={t.viewInChat}>💬</button>
               <button className={`lightbox-btn favorite ${currentLightboxItem?.isFavorite ? 'active' : ''}`} onClick={() => toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, currentLightboxItem?.isFavorite)} title={t.favorites} aria-label={t.favorites}>{currentLightboxItem?.isFavorite ? '❤️' : '🤍'}</button>
+              <button
+                className={`lightbox-btn prompt-like ${currentLightboxItem?.isPromptFavorite ? 'active' : ''}`}
+                onClick={() => togglePromptFavorite(activeLightbox.sessionId, activeLightbox.messageId, currentLightboxItem?.isPromptFavorite)}
+                title={t.likePrompt}
+                aria-label={t.likePrompt}
+                aria-pressed={currentLightboxItem?.isPromptFavorite === 1}
+              >
+                <ThumbUpIcon />
+              </button>
               <button className="lightbox-btn" onClick={() => {
                 const seed = currentLightboxItem?.seed;
                 if (seed) { 
@@ -1122,7 +1230,7 @@ function App() {
               }} title={t.reuseSeed} aria-label={t.reuseSeed}>🎲</button>
             </div>
             <div className="lightbox-actions-primary">
-              <button className="lightbox-btn" onClick={() => { if (currentLightboxItem) { handleEdit(currentLightboxItem.prompt || currentLightboxItem.text || ''); setActiveLightbox(null); } }} title={t.edit} aria-label={t.edit}>✎</button>
+              <button className="lightbox-btn" onClick={() => { if (currentLightboxItem) { handleEdit(currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || ''); setActiveLightbox(null); } }} title={t.reusePrompt} aria-label={t.reusePrompt}>✎</button>
               <button
                 className="lightbox-btn regenerate"
                 onClick={regenerateLightboxImage}
@@ -1137,6 +1245,16 @@ function App() {
                 )}
               </button>
               <button className="lightbox-btn" onClick={() => downloadImage(getFullImageUrl(activeLightbox.url), `img-${activeLightbox.messageId}.png`)} title={t.download} aria-label={t.download}>💾</button>
+              {(queueRemaining ?? 0) > 0 && (
+                <div
+                  className="lightbox-btn queue-remaining"
+                  title={`${queueRemaining} ${t.imagesRemaining}`}
+                  aria-label={`${queueRemaining} ${t.imagesRemaining}`}
+                  role="status"
+                >
+                  {queueRemaining}
+                </div>
+              )}
               <button className="lightbox-btn close" onClick={() => setActiveLightbox(null)} title={t.close} aria-label={t.close}>×</button>
             </div>
           </div>
@@ -1219,6 +1337,21 @@ function App() {
           </div>
 
           <div className="header-right">
+            {showQueueIndicator && (queueRemaining ?? 0) > 0 && (
+              <button
+                type="button"
+                className="queue-status-indicator"
+                role="status"
+                aria-live="polite"
+                aria-label={`${queueRemaining} ${t.generationsInProgress}. ${t.viewActiveGenerations}`}
+                title={t.viewActiveGenerations}
+                onClick={focusActiveGeneration}
+              >
+                <span className="queue-status-dot" aria-hidden="true" />
+                <strong>{queueRemaining}</strong>
+                <span className="queue-status-label">{t.generationsInProgress}</span>
+              </button>
+            )}
             <div className="header-actions-pill">
               <button className="action-pill-btn" onClick={() => createNewSession()} title="Nouveau message">
                 <ComposeIcon size={18} />
@@ -1254,8 +1387,10 @@ function App() {
           regenerationCounts={regenerationCounts} recordRegeneration={recordRegeneration}
           retryMessage={retryMessage} retryAllIncomplete={retryAllIncomplete}
           interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
-          setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} handleImageClick={handleImageClick} favoritedId={favoritedId}
+          setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} favoritedId={favoritedId}
           galleryItems={galleryItems} isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
+          promptFavoritesOnly={promptFavoritesOnly} setPromptFavoritesOnly={setPromptFavoritesOnly}
+          availablePromptTags={availablePromptTags} selectedPromptTag={selectedPromptTag} setSelectedPromptTag={setSelectedPromptTag}
           showArchivedInGallery={showArchivedInGallery} setShowArchivedInGallery={setShowArchivedInGallery}
           setHasMoreGallery={setHasMoreGallery} lastImageElementRef={lastImageElementRef} containerRef={containerRef} textareaRef={textareaRef}
           messagesEndRef={messagesEndRef} params={params} setParams={setParams} smoothScrollTo={smoothScrollTo} handleScroll={handleScroll} downloadImage={downloadImage}

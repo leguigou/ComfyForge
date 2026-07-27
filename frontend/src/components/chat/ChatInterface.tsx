@@ -1,10 +1,10 @@
 import React, { useState, useLayoutEffect, useEffect, useRef } from 'react';
 import './ChatInterface.css';
-import type { Message, Language, GalleryItem, GenParameters } from '../../types';
+import type { Message, Language, GalleryItem, GenParameters, PromptTag } from '../../types';
 import { WelcomeScreen } from './WelcomeScreen';
 import { MessageText } from './MessageText';
-import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon } from '../ui/Icons';
-import { getFullImageUrl, formatDuration } from '../../services/api';
+import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon, ThumbUpIcon, ComposeIcon } from '../ui/Icons';
+import { API_BASE, getFullImageUrl, formatDuration } from '../../services/api';
 import toast from 'react-hot-toast';
 
 interface ChatInterfaceProps {
@@ -17,7 +17,7 @@ interface ChatInterfaceProps {
   currentSessionId: string | null;
   input: string;
   setInput: (val: string) => void;
-  handleSend: (overrideInput?: string, isRegeneration?: boolean) => void;
+  handleSend: (overrideInput?: string, isRegeneration?: boolean, skipEnhancement?: boolean) => void;
   regenerationCounts: Record<string, number>;
   recordRegeneration: (messageId: string) => void;
   retryMessage: (messageId: string) => Promise<unknown>;
@@ -29,12 +29,18 @@ interface ChatInterfaceProps {
   activeInfoId: string | null;
   setMessageToDelete: (id: string | null) => void;
   toggleFavorite: (sessionId: string, messageId: string, currentStatus: number | undefined) => void;
+  togglePromptFavorite: (sessionId: string, messageId: string, currentStatus: number | undefined) => void;
   handleImageClick: (item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, source: 'chat' | 'gallery' }) => void;
   favoritedId: string | null;
   galleryItems: GalleryItem[];
   isFetchingGallery: boolean;
   favoritesOnly: boolean;
   setFavoritesOnly: (val: boolean) => void;
+  promptFavoritesOnly: boolean;
+  setPromptFavoritesOnly: (val: boolean) => void;
+  availablePromptTags: PromptTag[];
+  selectedPromptTag: string;
+  setSelectedPromptTag: (val: string) => void;
   showArchivedInGallery: boolean;
   setShowArchivedInGallery: (val: boolean) => void;
   setHasMoreGallery: (val: boolean) => void;
@@ -73,12 +79,18 @@ export const ChatInterface = ({
   activeInfoId,
   setMessageToDelete,
   toggleFavorite,
+  togglePromptFavorite,
   handleImageClick,
   favoritedId,
   galleryItems,
   isFetchingGallery,
   favoritesOnly,
   setFavoritesOnly,
+  promptFavoritesOnly,
+  setPromptFavoritesOnly,
+  availablePromptTags,
+  selectedPromptTag,
+  setSelectedPromptTag,
   showArchivedInGallery,
   setShowArchivedInGallery,
   lastImageElementRef,
@@ -96,6 +108,8 @@ export const ChatInterface = ({
   const [timerNow, setTimerNow] = useState(() => Date.now());
   const [isRetryingAll, setIsRetryingAll] = useState(false);
   const [showRetryAllConfirm, setShowRetryAllConfirm] = useState(false);
+  const [isCreatingLuckyPrompt, setIsCreatingLuckyPrompt] = useState(false);
+  const [isLuckyPromptReady, setIsLuckyPromptReady] = useState(false);
   const promptHighlightRef = useRef<HTMLDivElement>(null);
   const optionsDrawerRef = useRef<HTMLDivElement>(null);
   const optionsToggleRef = useRef<HTMLButtonElement>(null);
@@ -143,6 +157,40 @@ export const ChatInterface = ({
     }
   };
 
+  const createLuckyPrompt = async () => {
+    setIsCreatingLuckyPrompt(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/llm/lucky-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerId: params.llmProviderId }),
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        if (data.code === 'NO_LIKED_PROMPTS') throw new Error(t.luckyNeedsFavorites);
+        if (data.code === 'NO_LLM_PROVIDER') throw new Error(t.luckyNeedsProvider);
+        throw new Error(data.error || t.luckyPromptFailed);
+      }
+      if (!data.prompt?.trim()) throw new Error(t.luckyPromptFailed);
+
+      setInput(data.prompt.trim());
+      setIsLuckyPromptReady(true);
+      setShowOptions(false);
+      toast.success(`${t.luckyPromptReady} (${data.sourceCount})`);
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
+    } finally {
+      setIsCreatingLuckyPrompt(false);
+    }
+  };
+
+  const submitCurrentPrompt = () => {
+    handleSend(undefined, false, isLuckyPromptReady);
+    setIsLuckyPromptReady(false);
+  };
+
   const syncPromptHighlightScroll = (textarea: HTMLTextAreaElement) => {
     if (!promptHighlightRef.current) return;
     promptHighlightRef.current.scrollTop = textarea.scrollTop;
@@ -161,6 +209,7 @@ export const ChatInterface = ({
     const nextInput = `${before}${prefix}${token}${suffix}${after}`;
     const nextCursor = before.length + prefix.length + token.length;
     setInput(nextInput);
+    setIsLuckyPromptReady(false);
     window.requestAnimationFrame(() => {
       textarea?.focus();
       textarea?.setSelectionRange(nextCursor, nextCursor);
@@ -330,11 +379,23 @@ export const ChatInterface = ({
                   )}
                   <div className={`message-actions ${msg.imageUrl ? 'has-image' : ''} ${(regenerationCounts[msg.id] || 0) >= 2 ? 'has-regeneration-count' : ''}`}>
                     <button className="action-btn-icon edit" onClick={() => { 
-                      const textToEdit = msg.role === 'user' ? (msg.text || '') : (msg.prompt || msg.text || '');
+                      const textToEdit = msg.role === 'user' ? (msg.text || '') : (msg.generationPrompt || msg.prompt || msg.text || '');
                       handleEdit(textToEdit); 
-                    }} title={t.edit}>✎</button>
+                    }} title={msg.role === 'bot' ? t.reusePrompt : t.edit}>✎</button>
                     {msg.imageUrl && (
                       <>
+                        <button
+                          className={`action-btn-icon prompt-like ${msg.isPromptFavorite ? 'active' : ''}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            togglePromptFavorite(currentSessionId!, msg.id, msg.isPromptFavorite);
+                          }}
+                          title={t.likePrompt}
+                          aria-label={t.likePrompt}
+                          aria-pressed={msg.isPromptFavorite === 1}
+                        >
+                          <ThumbUpIcon />
+                        </button>
                         <button className="action-btn-icon info" onClick={(e) => { e.stopPropagation(); setActiveInfoId(activeInfoId === msg.id ? null : msg.id); }} title="Info">
                           <InfoIcon />
                         </button>
@@ -343,7 +404,7 @@ export const ChatInterface = ({
                           className="action-btn-icon regenerate"
                           onClick={(e) => {
                             e.stopPropagation();
-                            const prompt = msg.prompt || msg.text || '';
+                            const prompt = msg.generationPrompt || msg.prompt || msg.text || '';
                             if (!prompt.trim()) return;
                             recordRegeneration(msg.id);
                             handleSend(prompt, true);
@@ -380,6 +441,15 @@ export const ChatInterface = ({
                       {msg.duration !== undefined && (
                         <p><strong>{lang === 'fr' ? 'Durée' : 'Duration'}:</strong> {formatDuration(msg.duration)}</p>
                       )}
+                      {!!msg.tags?.length && (
+                        <div className="prompt-tags" aria-label={t.promptTags}>
+                          {msg.tags.map(tag => (
+                            <span key={tag.slug} className={`prompt-tag tag-${tag.category}`}>
+                              {lang === 'fr' ? tag.labelFr : tag.labelEn}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -415,6 +485,22 @@ export const ChatInterface = ({
                 <button className={`gallery-filter-fav ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly(!favoritesOnly)} aria-pressed={favoritesOnly}>
                   {favoritesOnly ? '❤️' : '🤍'} {t.favorites}
                 </button>
+                <button className={`gallery-filter-prompt ${promptFavoritesOnly ? 'active' : ''}`} onClick={() => setPromptFavoritesOnly(!promptFavoritesOnly)} aria-pressed={promptFavoritesOnly}>
+                  <ThumbUpIcon size={17} /> {t.likedPrompts}
+                </button>
+                <select
+                  className="gallery-tag-filter"
+                  value={selectedPromptTag}
+                  onChange={(event) => setSelectedPromptTag(event.target.value)}
+                  aria-label={t.filterByTag}
+                >
+                  <option value="">{t.allTags}</option>
+                  {availablePromptTags.map(tag => (
+                    <option key={tag.slug} value={tag.slug}>
+                      {lang === 'fr' ? tag.labelFr : tag.labelEn} ({tag.count || 0})
+                    </option>
+                  ))}
+                </select>
                 <div className="control-group">
                   <button className={`control-pill ${!showArchivedInGallery ? 'active' : ''}`} onClick={() => setShowArchivedInGallery(false)}>
                     {t.active}
@@ -451,6 +537,17 @@ export const ChatInterface = ({
                     style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                   />
                   <div className="gallery-item-actions">
+                    <button
+                      className="gallery-action-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleEdit(item.generationPrompt || item.prompt || item.text || '');
+                      }}
+                      title={t.reusePrompt}
+                      aria-label={t.reusePrompt}
+                    >
+                      <ComposeIcon size={18} />
+                    </button>
                     <button 
                       className="gallery-action-btn"
                       onClick={(e) => { e.stopPropagation(); goToImage(item.sessionId, item.messageId); }}
@@ -460,6 +557,11 @@ export const ChatInterface = ({
                     </button>
                   </div>
                   {item.isFavorite === 1 && <div className="gallery-item-favorite">❤️</div>}
+                  {item.isPromptFavorite === 1 && (
+                    <div className="gallery-item-prompt-favorite" title={t.likePrompt}>
+                      <ThumbUpIcon size={18} />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -478,6 +580,19 @@ export const ChatInterface = ({
           )}
           {showOptions && (
             <div ref={optionsDrawerRef} className="generation-options-drawer fadeIn">
+              <div className="options-group lucky-prompt-group">
+                <div className="option-label">🍀 {t.luckyPrompt}</div>
+                <button
+                  type="button"
+                  className="lucky-prompt-btn"
+                  onClick={createLuckyPrompt}
+                  disabled={isCreatingLuckyPrompt}
+                >
+                  <span aria-hidden="true">{isCreatingLuckyPrompt ? '✨' : '🍀'}</span>
+                  <span>{isCreatingLuckyPrompt ? t.luckyPromptCreating : t.luckyPromptAction}</span>
+                </button>
+                <p className="lucky-prompt-help">{t.luckyPromptHelp}</p>
+              </div>
               <div className="options-group">
                 <div className="option-label">{t.seed}</div>
                 <div className="option-controls">
@@ -556,20 +671,23 @@ export const ChatInterface = ({
                 <textarea
                   ref={textareaRef}
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setIsLuckyPromptReady(false);
+                  }}
                   onScroll={(e) => syncPromptHighlightScroll(e.currentTarget)}
-                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
+                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), submitCurrentPrompt())}
                   placeholder={params.llmEnabled ? t.aiPlaceholder : t.placeholder}
                   rows={1}
                 />
               </div>
               <div className="input-box-actions">
                 {input && (
-                  <button className="clear-input-btn" onClick={() => setInput('')} title="Effacer le texte">
+                  <button className="clear-input-btn" onClick={() => { setInput(''); setIsLuckyPromptReady(false); }} title="Effacer le texte">
                     <XIcon size={18} />
                   </button>
                 )}
-                <button className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`} onClick={() => isGenerating && !input.trim() ? interruptGeneration() : handleSend()} disabled={!input.trim() && !isGenerating}>
+                <button className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`} onClick={() => isGenerating && !input.trim() ? interruptGeneration() : submitCurrentPrompt()} disabled={!input.trim() && !isGenerating}>
                   {isGenerating && !input.trim() ? (
                     <div className="stop-icon"></div>
                   ) : (

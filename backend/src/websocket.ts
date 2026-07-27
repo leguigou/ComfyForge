@@ -2,7 +2,7 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
 import db from './services/database';
-import { registerWebSocketUser } from './services/queue';
+import { getUserQueueRemaining, registerWebSocketUser } from './services/queue';
 import { isAllowedOrigin } from './security/origin';
 import { getSignedUserId } from './security/websocket';
 
@@ -47,7 +47,12 @@ export const attachAuthenticatedWebSocket = (
     });
   });
 
-  wss.on('connection', ws => {
-    ws.send(JSON.stringify({ type: 'connected', clientId: uuidv4() }));
+  wss.on('connection', (ws, request) => {
+    const userId = getSignedUserId(request.headers.cookie, authSecret);
+    ws.send(JSON.stringify({
+      type: 'connected',
+      clientId: uuidv4(),
+      queueRemaining: userId ? getUserQueueRemaining(userId) : 0
+    }));
   });
 };

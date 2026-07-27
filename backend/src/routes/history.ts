@@ -4,6 +4,7 @@ import db from '../services/database';
 import { authenticate } from '../middleware/auth';
 import { deleteFiles } from '../services/image';
 import { withParsedRandomSelections } from '../services/message-metadata';
+import { attachPromptTags } from '../services/prompt-tags';
 
 const router = express.Router();
 
@@ -48,8 +49,9 @@ router.get('/:id', authenticate, (req, res) => {
   const user = (req as any).user;
   const session = db.prepare('SELECT * FROM sessions WHERE id = ? AND userId = ?').get(req.params.id, user.id) as any;
   if (!session) return res.json({ error: 'Not found' });
-  const messages = db.prepare('SELECT id, role, text, prompt, imageUrl, thumbnailUrl, model, width, height, steps, cfg, workflow, status, timestamp, seed, isFavorite, duration, sampler, scheduler, randomSelections FROM messages WHERE sessionId = ? ORDER BY timestamp ASC').all(req.params.id) as Record<string, unknown>[];
-  res.json({ ...session, messages: messages.map(withParsedRandomSelections) });
+  const messages = db.prepare('SELECT id, role, text, prompt, generationPrompt, imageUrl, thumbnailUrl, model, width, height, steps, cfg, workflow, status, timestamp, seed, isFavorite, isPromptFavorite, duration, sampler, scheduler, randomSelections FROM messages WHERE sessionId = ? ORDER BY timestamp ASC').all(req.params.id) as Record<string, unknown>[];
+  const enrichedMessages = attachPromptTags(db, messages.map(withParsedRandomSelections), 'id');
+  res.json({ ...session, messages: enrichedMessages });
 });
 
 router.patch('/:id', authenticate, (req, res) => {
@@ -114,6 +116,22 @@ router.patch('/:sessionId/message/:messageId/favorite', authenticate, (req, res)
 
   db.prepare('UPDATE messages SET isFavorite = ? WHERE id = ? AND sessionId = ?').run(isFavorite ? 1 : 0, messageId, sessionId);
   res.json({ success: true, isFavorite });
+});
+
+router.patch('/:sessionId/message/:messageId/prompt-favorite', authenticate, (req, res) => {
+  const user = (req as any).user;
+  const { sessionId, messageId } = req.params;
+  const isPromptFavorite = req.body.isPromptFavorite ? 1 : 0;
+
+  const result = db.prepare(`
+    UPDATE messages
+    SET isPromptFavorite = ?
+    WHERE id = ? AND sessionId = ? AND role = 'bot'
+      AND sessionId IN (SELECT id FROM sessions WHERE userId = ?)
+  `).run(isPromptFavorite, messageId, sessionId, user.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'Prompt introuvable' });
+
+  res.json({ success: true, isPromptFavorite });
 });
 
 router.delete('/:sessionId/message/:messageId', authenticate, (req, res) => {

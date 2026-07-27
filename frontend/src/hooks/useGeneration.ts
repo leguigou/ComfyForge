@@ -68,7 +68,7 @@ export const useGeneration = (
     return data as { queued: number; messageIds: string[] };
   }, [params, setMessages, fetchSessions]);
 
-  const handleSend = useCallback(async (textToSend: string, isRegeneration = false, targetSessionId?: string) => {
+  const handleSend = useCallback(async (textToSend: string, isRegeneration = false, targetSessionId?: string, skipEnhancement = false) => {
     const activeSessionId = targetSessionId || currentSessionId;
     if (!textToSend.trim() || !activeSessionId) return;
 
@@ -91,10 +91,11 @@ export const useGeneration = (
         id: botMsgId, 
         role: 'bot', 
         prompt: templatePrompt,
+        generationPrompt: resolvedPrompt,
         text: resolvedPrompt !== templatePrompt ? resolvedPrompt : '',
         randomSelections: randomResult.selections,
         status: 'pending',
-        isEnhancing: params.llmEnabled && !!params.llmProviderId && !isRegeneration,
+        isEnhancing: params.llmEnabled && !!params.llmProviderId && !isRegeneration && !skipEnhancement,
         timestamp: Date.now(),
         model: params.comfyModel,
         workflow: params.workflowFile,
@@ -107,7 +108,7 @@ export const useGeneration = (
       setTimeout(() => smoothScrollTo(`msg-${botMsgId}`), 50);
       
       // 2. Interprétation IA
-      if (params.llmEnabled && params.llmProviderId && !isRegeneration) {
+      if (params.llmEnabled && params.llmProviderId && !isRegeneration && !skipEnhancement) {
         enhancingCount.current++;
         setIsEnhancing(true);
         try {
@@ -129,7 +130,8 @@ export const useGeneration = (
             setMessages(prev => prev.map(m => m.id === botMsgId ? { 
               ...m, 
               text: finalPrompt, 
-              // Keep the template so "Regenerate" performs a fresh random draw.
+              generationPrompt: finalPrompt,
+              // Keep the original template for display/editing; regeneration uses generationPrompt.
               prompt: templatePrompt,
               isEnhancing: false 
             } : m));
@@ -170,7 +172,9 @@ export const useGeneration = (
       const data = await res.json();
 
       if (data.success) {
-        setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, id: data.messageId } : m));
+        setMessages(prev => prev.map(m => m.id === botMsgId
+          ? { ...m, id: data.messageId, generationPrompt: finalPrompt, tags: data.tags || [] }
+          : m));
         fetchSessions(); 
       } else {
         throw new Error(data.error || 'Unknown error');

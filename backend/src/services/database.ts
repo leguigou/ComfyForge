@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
+import { syncPromptTags } from './prompt-tags';
 
 // Standardized path for Docker, local development, and isolated tests.
 let dbPath: string;
@@ -72,6 +73,7 @@ export const initDatabase = () => {
       seed INTEGER,
       duration INTEGER,
       isFavorite INTEGER DEFAULT 0,
+      isPromptFavorite INTEGER DEFAULT 0,
       sampler TEXT,
       scheduler TEXT,
       randomSelections TEXT,
@@ -118,23 +120,41 @@ export const initDatabase = () => {
       FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS tags (
+      id TEXT PRIMARY KEY,
+      category TEXT NOT NULL,
+      labelFr TEXT NOT NULL,
+      labelEn TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS message_tags (
+      messageId TEXT NOT NULL,
+      tagId TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'auto',
+      confidence REAL NOT NULL DEFAULT 1,
+      PRIMARY KEY (messageId, tagId),
+      FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_userId ON sessions(userId);
     CREATE INDEX IF NOT EXISTS idx_messages_sessionId ON messages(sessionId);
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
     CREATE INDEX IF NOT EXISTS idx_queue_sessionId ON queue(sessionId);
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
     CREATE INDEX IF NOT EXISTS idx_llm_providers_userId ON llm_providers(userId);
+    CREATE INDEX IF NOT EXISTS idx_message_tags_tagId ON message_tags(tagId);
   `);
 
   // Migrations
-  const columnsToCheck = ['model', 'width', 'height', 'steps', 'cfg', 'workflow', 'status', 'thumbnailUrl', 'seed', 'duration', 'isFavorite', 'sampler', 'scheduler', 'randomSelections', 'generationPrompt', 'generationParams'];
+  const columnsToCheck = ['model', 'width', 'height', 'steps', 'cfg', 'workflow', 'status', 'thumbnailUrl', 'seed', 'duration', 'isFavorite', 'isPromptFavorite', 'sampler', 'scheduler', 'randomSelections', 'generationPrompt', 'generationParams'];
   columnsToCheck.forEach(col => {
     try {
       db.prepare(`SELECT ${col} FROM messages LIMIT 1`).get();
     } catch (e) {
       let type = 'TEXT';
       if (col === 'cfg') type = 'REAL';
-      else if (['width', 'height', 'steps', 'seed', 'duration', 'isFavorite'].includes(col)) type = 'INTEGER';
+      else if (['width', 'height', 'steps', 'seed', 'duration', 'isFavorite', 'isPromptFavorite'].includes(col)) type = 'INTEGER';
       db.exec(`ALTER TABLE messages ADD COLUMN ${col} ${type}`);
       console.log(`[Migration] Added column ${col} to messages table`);
     }
@@ -180,6 +200,8 @@ export const initDatabase = () => {
     db.prepare('UPDATE sessions SET userId = ? WHERE userId IS NULL').run(adminId);
     console.log('[Migration] Default admin user created and sessions migrated.');
   }
+
+  syncPromptTags(db);
 };
 
 export default db;
