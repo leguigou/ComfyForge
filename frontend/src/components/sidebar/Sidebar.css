@@ -376,7 +376,7 @@
 }
 
 .sidebar-version {
-  margin: 0.18rem 0 -0.35rem;
+  margin: 0.35rem 0 0.1rem;
   color: var(--sidebar-text);
   font-size: 0.62rem;
   line-height: 1;

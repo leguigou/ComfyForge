@@ -183,6 +183,9 @@ export const Sidebar = ({
               <button className="popover-item logout" onClick={() => { handleLogout(); setProfileMenuOpen(false); }}>
                 <span>🚪</span> {t.logout}
               </button>
+              <div className="sidebar-version" aria-label={`Version ${APP_CONFIG.VERSION}`}>
+                v{APP_CONFIG.VERSION}
+              </div>
             </div>
           )}
           
@@ -202,9 +205,6 @@ export const Sidebar = ({
               {currentUser?.isAdmin && <span className="profile-role">Admin</span>}
             </div>
             <div className="profile-more">•••</div>
-          </div>
-          <div className="sidebar-version" aria-label={`Version ${APP_CONFIG.VERSION}`}>
-            v{APP_CONFIG.VERSION}
           </div>
         </div>
       </aside>

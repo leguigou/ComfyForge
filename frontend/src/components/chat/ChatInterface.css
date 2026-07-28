@@ -138,11 +138,27 @@
 }
 
 .generation-placeholder p {
-  margin: 0.5rem 0 0;
+  margin: 0;
   font-size: 0.95rem;
   color: var(--text);
   font-weight: 500;
   opacity: 0.9;
+}
+
+.generation-status-line {
+  position: relative;
+  display: grid;
+  width: max-content;
+  max-width: 100%;
+  place-items: center;
+  min-height: 65px;
+}
+
+.generation-status-line > .seedy-companion {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 0.4rem);
+  transform: translateY(-50%);
 }
 
 .lucky-generation-placeholder {
@@ -159,16 +175,7 @@
     rgba(255, 255, 255, 0.025);
 }
 
-.lucky-generation-placeholder::before {
-  content: '';
-  position: absolute;
-  inset: -60%;
-  background: conic-gradient(from 0deg, transparent, rgba(99, 224, 149, 0.1), transparent 30%);
-  animation: lucky-magic-spin 6s linear infinite;
-  pointer-events: none;
-}
-
-.lucky-generation-placeholder .bounced-loader,
+.lucky-generation-placeholder .seedy-companion,
 .lucky-generation-placeholder .lucky-magic-phrase,
 .lucky-generation-placeholder .lucky-magic-caption {
   position: relative;
@@ -187,10 +194,6 @@
   color: var(--text);
   font-size: 0.7rem;
   opacity: 0.58;
-}
-
-@keyframes lucky-magic-spin {
-  to { transform: rotate(360deg); }
 }
 
 @keyframes lucky-phrase-in {
@@ -516,14 +519,27 @@
 }
 
 .prompt-tag {
+  appearance: none;
   padding: 0.22rem 0.55rem;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--text);
+  font-family: inherit;
   font-size: 0.68rem;
   font-weight: 700;
   line-height: 1.2;
+  cursor: pointer;
+  transition: border-color 0.18s, background 0.18s, color 0.18s, transform 0.18s;
+}
+
+.prompt-tag:hover,
+.prompt-tag:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text-h);
+  transform: translateY(-1px);
+  outline: none;
 }
 
 .action-btn-icon.prompt-like.active {
@@ -550,7 +566,7 @@
   width: 100%; 
   box-sizing: border-box; 
   flex-shrink: 0;
-  position: fixed; /* Changed to fixed */
+  position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
@@ -643,12 +659,19 @@
   border-bottom: 1px solid var(--border);
 }
 
+.lucky-prompt-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 0.45rem;
+}
+
 .lucky-prompt-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.55rem;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 42px;
   padding: 0.55rem 1rem;
   border: 1px solid rgba(54, 197, 111, 0.55);
@@ -676,12 +699,46 @@
   flex: 0 0 auto;
 }
 
+.lucky-info-btn {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  min-height: 42px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.lucky-info-btn:hover,
+.lucky-info-btn.active {
+  border-color: #63e095;
+  background: rgba(99, 224, 149, 0.1);
+  color: #63e095;
+}
+
 .lucky-prompt-help {
   margin: 0;
   color: var(--text);
   font-size: 0.72rem;
   line-height: 1.35;
   opacity: 0.78;
+}
+
+.lucky-prompt-explanation {
+  margin: 0;
+  padding: 0.7rem 0.75rem;
+  border-left: 2px solid rgba(99, 224, 149, 0.65);
+  border-radius: 0 0.55rem 0.55rem 0;
+  background: rgba(99, 224, 149, 0.06);
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  animation: fadeIn 0.2s ease-out;
 }
 
 .option-label {
@@ -746,12 +803,11 @@
 
 /* Input Box Toggle */
 .options-toggle-btn {
-  background-color: rgba(28, 28, 28, 0.99);
-  backdrop-filter: blur(10px);
+  background-color: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--border);
   color: var(--text);
-  width: 44px; /* Matches min-height of input-box */
-  height: 44px; 
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -759,8 +815,7 @@
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   flex-shrink: 0;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-  margin-bottom: 2px; /* Slight lift to visually align with the input-box border */
+  padding: 0;
 }
 
 .options-toggle-btn:hover {
@@ -784,9 +839,9 @@
 }
 
 .input-wrapper {
+  position: relative;
   display: flex;
   align-items: flex-end;
-  gap: 0.8rem;
   width: 100%;
   padding: 0 0.5rem; /* Symmetrical side padding for the whole wrapper on mobile */
   box-sizing: border-box;
@@ -836,7 +891,7 @@
   backdrop-filter: blur(10px);
   border: 1px solid var(--border); 
   border-radius: 1.5rem; 
-  padding: 0.4rem 0.6rem 0.4rem 1.2rem;
+  padding: 0.4rem 0.6rem;
   display: flex; 
   flex-direction: row; /* Default horizontal */
   align-items: center;
@@ -859,13 +914,22 @@
 
 .input-box-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   align-items: center;
   gap: 0.6rem;
+  width: 100%;
+}
+
+.input-box-actions-end {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: auto;
 }
 
 /* Align actions to right in horizontal mode (when empty) */
 .input-box:not(.has-text) .input-box-actions {
+  width: auto;
   flex-shrink: 0;
 }
 
@@ -1136,33 +1200,132 @@
   flex-wrap: wrap;
 }
 
-.gallery-filter-prompt,
-.gallery-tag-filter {
-  min-height: 38px;
+.gallery-search {
+  position: relative;
+  z-index: 5;
+  flex: 1 1 380px;
+  min-width: min(100%, 280px);
+  max-width: 680px;
+}
+
+.gallery-search-box {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-height: 42px;
+  padding: 0.35rem 0.55rem;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 0.9rem;
   background: var(--social-bg);
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+
+.gallery-search-box.focused {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.gallery-search-box input {
+  flex: 1 1 160px;
+  min-width: 100px;
+  height: 28px;
+  padding: 0 0.25rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-h);
+  font: inherit;
+  font-size: 0.84rem;
+}
+
+.gallery-search-box input::placeholder {
   color: var(--text);
-  padding: 0.5rem 1rem;
+  opacity: 0.62;
+}
+
+.gallery-search-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 190px;
+  padding: 0.25rem 0.3rem 0.25rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text-h);
+  font-size: 0.72rem;
   font-weight: 700;
 }
 
-.gallery-filter-prompt {
-  display: inline-flex;
+.gallery-search-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-search-chip button {
+  display: grid;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.gallery-search-chip button:hover,
+.gallery-search-chip button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  outline: none;
+}
+
+.gallery-tag-suggestions {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  left: 0;
+  z-index: 20;
+  overflow: hidden;
+  padding: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--bg);
+  box-shadow: 0 14px 35px rgba(0, 0, 0, 0.28);
+}
+
+.gallery-tag-suggestions button {
+  display: flex;
   align-items: center;
-  gap: 0.45rem;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  border-radius: 0.55rem;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
   cursor: pointer;
 }
 
-.gallery-filter-prompt.active {
-  border-color: #36c56f;
-  color: #36c56f;
-  background: rgba(54, 197, 111, 0.12);
+.gallery-tag-suggestions button:hover,
+.gallery-tag-suggestions button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: var(--text-h);
+  outline: none;
 }
 
-.gallery-tag-filter {
-  max-width: 250px;
-  cursor: pointer;
+.gallery-tag-suggestions small {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 700;
 }
 
 .gallery-filters .control-group {
@@ -1171,9 +1334,30 @@
 
 .gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 1.2rem;
   align-items: start;
+  position: relative;
+  touch-action: pan-y;
+}
+
+.gallery-density-indicator {
+  position: fixed;
+  left: 50%;
+  bottom: max(2rem, env(safe-area-inset-bottom));
+  z-index: 30;
+  transform: translateX(-50%);
+  grid-column: 1 / -1;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(20, 20, 24, 0.86);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
 }
 
 .gallery-item {
@@ -1215,17 +1399,22 @@
 }
 
 .gallery-action-btn {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
   background: transparent;
   border: none;
+  border-radius: 50%;
   color: white;
   cursor: pointer;
-  padding: 4px;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   filter: drop-shadow(0 0 4px rgba(0,0,0,0.8));
   transition: transform 0.2s;
   outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .gallery-action-btn:focus:not(:focus-visible) {
@@ -1315,10 +1504,12 @@
   .lucky-generation-placeholder .lucky-magic-phrase { font-size: 0.86rem; }
   .lucky-magic-caption { font-size: 0.64rem; }
   .lucky-prompt-btn { min-height: 38px; padding: 0.45rem 0.75rem; font-size: 0.82rem; }
+  .lucky-info-btn { flex-basis: 38px; width: 38px; min-height: 38px; }
   .lucky-prompt-help { font-size: 0.66rem; line-height: 1.25; }
-  .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 0.6rem; }
+  .lucky-prompt-explanation { padding: 0.6rem; font-size: 0.67rem; line-height: 1.4; }
+  .gallery-grid { gap: 0.6rem; }
   .input-container { padding: 1rem 0.4rem 2rem; max-width: 100%; }
   .input-wrapper { padding: 0; gap: 0.4rem; }
   .gallery-filters .control-group { margin-left: 0; }
-  .gallery-tag-filter { max-width: 100%; }
+  .gallery-search { flex-basis: 100%; min-width: 100%; max-width: 100%; }
 }

@@ -1,0 +1,61 @@
+.seedy-companion {
+  --seedy-frame-width: 60px;
+  --seedy-frame-height: 65px;
+  display: inline-block;
+  flex: none;
+  width: var(--seedy-frame-width);
+  height: var(--seedy-frame-height);
+  background-repeat: no-repeat;
+  background-size: 480px 585px;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.24));
+  pointer-events: none;
+}
+
+.seedy-companion-waiting {
+  background-position: 0 0;
+  animation: seedy-wait 4.8s steps(1, end) infinite;
+}
+
+.seedy-companion-working {
+  background-position: 0 -455px;
+  animation: seedy-work 1.15s steps(1, end) infinite;
+}
+
+.seedy-companion-magic {
+  background-position: 0 -390px;
+  animation: seedy-magic 2.4s steps(1, end) infinite;
+}
+
+@keyframes seedy-wait {
+  0%, 16% { background-position: 0 0; }
+  17%, 32% { background-position: -60px 0; }
+  33%, 48% { background-position: -120px 0; }
+  49%, 64% { background-position: -180px 0; }
+  65%, 80% { background-position: -240px 0; }
+  81%, 100% { background-position: -300px 0; }
+}
+
+@keyframes seedy-work {
+  0%, 16% { background-position: 0 -455px; }
+  17%, 32% { background-position: -60px -455px; }
+  33%, 48% { background-position: -120px -455px; }
+  49%, 64% { background-position: -180px -455px; }
+  65%, 80% { background-position: -240px -455px; }
+  81%, 100% { background-position: -300px -455px; }
+}
+
+@keyframes seedy-magic {
+  0%, 16% { background-position: 0 -390px; }
+  17%, 32% { background-position: -60px -390px; }
+  33%, 48% { background-position: -120px -390px; }
+  49%, 64% { background-position: -180px -390px; }
+  65%, 80% { background-position: -240px -390px; }
+  81%, 100% { background-position: -300px -390px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seedy-companion-waiting { animation-duration: 12s; }
+  .seedy-companion-working { animation-duration: 3s; }
+  .seedy-companion-magic { animation-duration: 6s; }
+}

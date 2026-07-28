@@ -90,8 +90,8 @@ export const useWebSocket = (
                   workflow: data.workflow || m.workflow,
                   duration: (data.duration !== undefined && data.duration !== null) ? data.duration : m.duration,
                   generationStartedAt: data.status === 'processing'
-                    ? (m.generationStartedAt || Date.now())
-                    : m.generationStartedAt
+                    ? (m.status === 'processing' ? (m.generationStartedAt || Date.now()) : Date.now())
+                    : (data.status === 'pending' ? undefined : m.generationStartedAt)
                 };
               }
               return m;
@@ -143,6 +143,43 @@ export const useWebSocket = (
       };
     }
   }, [isAuthenticated, connect, fetchSessions]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !onQueueRemainingChange) return;
+
+    let cancelled = false;
+    const syncQueueFromApi = async () => {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const response = await fetch(`${API_BASE}/api/generate/active`, {
+          credentials: 'include'
+        });
+        if (!response.ok) return;
+        const activeGenerations = await response.json();
+        if (!cancelled && Array.isArray(activeGenerations)) {
+          onQueueRemainingChangeRef.current?.(activeGenerations.length);
+        }
+      } catch {
+        // The WebSocket remains the primary source; the next sync will retry.
+      }
+    };
+
+    const handlePageVisible = () => {
+      if (document.visibilityState === 'visible') void syncQueueFromApi();
+    };
+
+    void syncQueueFromApi();
+    const interval = window.setInterval(syncQueueFromApi, 4000);
+    document.addEventListener('visibilitychange', handlePageVisible);
+    window.addEventListener('pageshow', handlePageVisible);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handlePageVisible);
+      window.removeEventListener('pageshow', handlePageVisible);
+    };
+  }, [isAuthenticated, onQueueRemainingChange]);
 
   return { clientIdRef };
 };

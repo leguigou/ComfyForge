@@ -14,6 +14,7 @@ import { API_BASE, getFullImageUrl } from './services/api';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsModal } from './components/settings/SettingsModal';
 import { DEFAULT_RANDOM_PROMPT_LISTS, migrateRandomPromptLists, RANDOM_PROMPT_LISTS_VERSION } from './utils/randomPrompts';
+import { DEFAULT_COMPANION_SETTINGS, normalizeCompanionSettings } from './utils/companions';
 import { ChatInterface } from './components/chat/ChatInterface';
 import { APP_CONFIG } from './config';
 import { useAuth } from './hooks/useAuth';
@@ -23,6 +24,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { ComposeIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon } from './components/ui/Icons';
 import toast, { Toaster } from 'react-hot-toast';
+import NoSleep from 'nosleep.js';
 
 function App() {
   const [lang, setLang] = useState<Language>(() => {
@@ -47,53 +49,64 @@ function App() {
     return (localStorage.getItem('currentView') as 'chat' | 'gallery' | 'archives') || 'chat';
   });
 
-  const [keepAwake, setKeepAwake] = useState<boolean>(() => {
+  const [keepAwake, setKeepAwakeState] = useState<boolean>(() => {
     return localStorage.getItem('keepAwake') === 'true';
   });
+  const keepAwakeRef = useRef(keepAwake);
+  const noSleepRef = useRef<NoSleep | null>(null);
 
   useEffect(() => {
     localStorage.setItem('currentView', view);
   }, [view]);
 
+  const enableKeepAwake = useCallback(async () => {
+    if (!keepAwakeRef.current || document.visibilityState !== 'visible') return;
+
+    const noSleep = noSleepRef.current ?? new NoSleep();
+    noSleepRef.current = noSleep;
+    if (noSleep.isEnabled) return;
+
+    try {
+      await noSleep.enable();
+    } catch (err) {
+      // Video-based mobile fallbacks may require a fresh tap after a reload.
+      console.error('Keep-awake error:', err);
+    }
+  }, []);
+
+  const setKeepAwake = useCallback((enabled: boolean) => {
+    keepAwakeRef.current = enabled;
+    setKeepAwakeState(enabled);
+    localStorage.setItem('keepAwake', enabled.toString());
+
+    if (enabled) {
+      // Run from the menu tap so mobile browsers allow the native wake lock
+      // or the inline-video fallback to start.
+      void enableKeepAwake();
+    } else {
+      noSleepRef.current?.disable();
+    }
+  }, [enableKeepAwake]);
+
   useEffect(() => {
-    localStorage.setItem('keepAwake', keepAwake.toString());
-    
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let wakeLock: any = null;
-    const requestWakeLock = async () => {
-      if (keepAwake && 'wakeLock' in navigator) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          wakeLock = await (navigator as any).wakeLock.request('screen');
-          wakeLock.addEventListener('release', () => {
-            // Wake Lock was released, we can try to request it again if we still want it
-            if (keepAwake && document.visibilityState === 'visible') {
-               requestWakeLock();
-            }
-          });
-        } catch (err) {
-          console.error(`Wake Lock error: ${err}`);
-        }
+    const resumeKeepAwake = () => {
+      if (document.visibilityState === 'visible' && keepAwakeRef.current) {
+        void enableKeepAwake();
       }
     };
 
-    const handleVisibilityChange = () => {
-      if (keepAwake && document.visibilityState === 'visible') {
-        requestWakeLock();
-      }
-    };
-
-    requestWakeLock();
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    // A saved preference can use the native API immediately. The pointer
+    // listener supplies the gesture required by the mobile fallback on reload.
+    resumeKeepAwake();
+    document.addEventListener('visibilitychange', resumeKeepAwake);
+    document.addEventListener('pointerdown', resumeKeepAwake);
 
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (wakeLock !== null) {
-        wakeLock.release().catch(console.error);
-        wakeLock = null;
-      }
+      document.removeEventListener('visibilitychange', resumeKeepAwake);
+      document.removeEventListener('pointerdown', resumeKeepAwake);
+      noSleepRef.current?.disable();
     };
-  }, [keepAwake]);
+  }, [enableKeepAwake]);
 
   const {
     sessions,
@@ -134,9 +147,10 @@ function App() {
     () => sessionStorage.getItem('comfyforge.queueIndicatorLatched') === 'true'
   );
   const [isCreatingLuckyPrompt, setIsCreatingLuckyPrompt] = useState(false);
-  const [activeTab, setActiveTab] = useState<'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin'>('images');
+  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin'>('images');
   
   const [input, setInput] = useState('');
+  const [openOptionsRequest, setOpenOptionsRequest] = useState(0);
   
   const [params, setParams] = useState<GenParameters>(() => {
     return { 
@@ -158,7 +172,8 @@ function App() {
       forcedSeed: '',
       favoriteModels: [],
       randomPromptLists: DEFAULT_RANDOM_PROMPT_LISTS,
-      randomPromptListsVersion: RANDOM_PROMPT_LISTS_VERSION
+      randomPromptListsVersion: RANDOM_PROMPT_LISTS_VERSION,
+      companionSettings: DEFAULT_COMPANION_SETTINGS
     };
   });
   const lastSavedParamsRef = useRef<string>('');
@@ -167,6 +182,8 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingAnchorRef = useRef<string | null>(null);
+  const [imageAnchorRequest, setImageAnchorRequest] = useState<{ messageId: string; requestId: number } | null>(null);
+  const imageAnchorRequestIdRef = useRef(0);
   const isAnchoringRef = useRef<boolean>(false);
   const isProgrammaticScrollRef = useRef<boolean>(false);
   const scrollAnimationFrameRef = useRef<number | null>(null);
@@ -307,7 +324,7 @@ function App() {
 
   useEffect(() => {
     if (queueRemaining === null) return;
-    if (queueRemaining >= 2) {
+    if (queueRemaining > 0) {
       setShowQueueIndicator(true);
       sessionStorage.setItem('comfyforge.queueIndicatorLatched', 'true');
     } else if (queueRemaining === 0) {
@@ -323,6 +340,7 @@ function App() {
     messageId: string;
     source: 'chat' | 'gallery';
   } | null>(null);
+  const [showLightboxMenu, setShowLightboxMenu] = useState(false);
 
   const [hdLoaded, setHdLoaded] = useState<string | null>(null);
   const [loadedHdImages, setLoadedHdImages] = useState<Set<string>>(new Set());
@@ -365,6 +383,7 @@ function App() {
       setZoomScale(1);
       setZoomOffset({ x: 0, y: 0 });
     }
+    setShowLightboxMenu(false);
   }, [activeLightbox, hdLoaded]);
 
   const handleLightboxTouchStart = (e: React.TouchEvent) => {
@@ -487,13 +506,15 @@ function App() {
 
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
   const [hasMoreGallery, setHasMoreGallery] = useState(true);
+  const hasMoreGalleryRef = useRef(true);
   const [isFetchingGallery, setIsFetchingGallery] = useState(false);
   const isFetchingGalleryRef = useRef(false);
   const [showArchivedInGallery, setShowArchivedInGallery] = useState(false);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [promptFavoritesOnly, setPromptFavoritesOnly] = useState(false);
   const [availablePromptTags, setAvailablePromptTags] = useState<PromptTag[]>([]);
-  const [selectedPromptTag, setSelectedPromptTag] = useState('');
+  const [selectedPromptTags, setSelectedPromptTags] = useState<string[]>([]);
+  const [gallerySearch, setGallerySearch] = useState('');
+  const [debouncedGallerySearch, setDebouncedGallerySearch] = useState('');
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const [favoritedId, setFavoritedId] = useState<string | null>(null);
   const clickTimeoutRef = useRef<number | null>(null);
@@ -533,15 +554,15 @@ function App() {
       setMessages(prev => prev.map(message => message.id === messageId
         ? { ...message, isPromptFavorite: newStatus }
         : message));
-      setGalleryItems(prev => promptFavoritesOnly && newStatus === 0
-        ? prev.filter(item => item.messageId !== messageId)
-        : prev.map(item => item.messageId === messageId ? { ...item, isPromptFavorite: newStatus } : item));
+      setGalleryItems(prev => prev.map(item => (
+        item.messageId === messageId ? { ...item, isPromptFavorite: newStatus } : item
+      )));
       toast.success(newStatus ? t.promptLiked : t.promptUnliked);
     } catch (error) {
       console.error('Error toggling prompt favorite:', error);
       toast.error(t.promptLikeFailed);
     }
-  }, [promptFavoritesOnly, setMessages, t.promptLiked, t.promptUnliked, t.promptLikeFailed]);
+  }, [setMessages, t.promptLiked, t.promptUnliked, t.promptLikeFailed]);
 
   const handleImageClick = useCallback((item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, source: 'chat' | 'gallery' }) => {
     if (clickTimeoutRef.current) {
@@ -706,7 +727,8 @@ function App() {
             ...prev,
             ...data,
             favoriteModels: data.favoriteModels || prev.favoriteModels,
-            randomPromptLists: data.randomPromptLists || prev.randomPromptLists
+            randomPromptLists: data.randomPromptLists || prev.randomPromptLists,
+            companionSettings: normalizeCompanionSettings(data.companionSettings || prev.companionSettings)
           };
           lastSavedParamsRef.current = JSON.stringify(storedParams);
           return {
@@ -811,6 +833,14 @@ function App() {
 
   const galleryOffsetRef = useRef(0);
   const galleryRequestRef = useRef(0);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedGallerySearch(gallerySearch.trim());
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [gallerySearch]);
+
   const fetchPromptTags = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/gallery/tags`, { credentials: 'include' });
@@ -823,7 +853,7 @@ function App() {
   }, []);
 
   const fetchGallery = useCallback(async (isInitial = false) => {
-    if (!isInitial && (isFetchingGalleryRef.current || !hasMoreGallery)) return;
+    if (!isInitial && (isFetchingGalleryRef.current || !hasMoreGalleryRef.current)) return;
 
     const requestId = isInitial ? ++galleryRequestRef.current : galleryRequestRef.current;
     
@@ -837,9 +867,9 @@ function App() {
         offset: String(currentOffset),
         includeArchived: String(showArchivedInGallery),
         favoritesOnly: String(favoritesOnly),
-        promptFavoritesOnly: String(promptFavoritesOnly),
       });
-      if (selectedPromptTag) query.set('tag', selectedPromptTag);
+      selectedPromptTags.forEach(tag => query.append('tag', tag));
+      if (debouncedGallerySearch) query.set('search', debouncedGallerySearch);
       const res = await fetch(`${API_BASE}/api/gallery?${query.toString()}`, { credentials: 'include' });
       if (!res.ok) {
         throw new Error(`Failed to fetch gallery: ${res.status} ${res.statusText}`);
@@ -856,7 +886,8 @@ function App() {
       if (isInitial) {
         setGalleryItems(data);
         galleryOffsetRef.current = data.length;
-        setHasMoreGallery(data.length === 25);
+        hasMoreGalleryRef.current = data.length === 25;
+        setHasMoreGallery(hasMoreGalleryRef.current);
       } else if (data.length > 0) {
         setGalleryItems(prev => {
           const existingIds = new Set(prev.map(item => item.messageId));
@@ -864,8 +895,10 @@ function App() {
           return [...prev, ...uniqueNewData];
         });
         galleryOffsetRef.current += data.length;
-        setHasMoreGallery(data.length === 25);
+        hasMoreGalleryRef.current = data.length === 25;
+        setHasMoreGallery(hasMoreGalleryRef.current);
       } else {
+        hasMoreGalleryRef.current = false;
         setHasMoreGallery(false);
       }
     } catch (err) { 
@@ -876,7 +909,7 @@ function App() {
         isFetchingGalleryRef.current = false;
       }
     }
-  }, [hasMoreGallery, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, selectedPromptTag]);
+  }, [showArchivedInGallery, favoritesOnly, selectedPromptTags, debouncedGallerySearch]);
 
   const observer = useRef<IntersectionObserver | null>(null);
   const lastImageElementRef = useCallback((node: HTMLDivElement) => {
@@ -894,39 +927,93 @@ function App() {
 
   const resetGallery = useCallback(() => {
     galleryOffsetRef.current = 0;
+    hasMoreGalleryRef.current = true;
     setGalleryItems([]);
     setHasMoreGallery(true);
     fetchGallery(true);
   }, [fetchGallery]);
+
+  const openPromptTag = useCallback((slug: string) => {
+    setSelectedPromptTags([slug]);
+    setGallerySearch('');
+    setFavoritesOnly(false);
+    setShowArchivedInGallery(false);
+    setActiveInfoId(null);
+    setView('gallery');
+  }, [setActiveInfoId]);
 
   useEffect(() => {
     if (view === 'gallery') {
       resetGallery();
       void fetchPromptTags();
     }
-  }, [view, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, selectedPromptTag, resetGallery, fetchPromptTags]);
+  }, [view, showArchivedInGallery, favoritesOnly, selectedPromptTags, debouncedGallerySearch, resetGallery, fetchPromptTags]);
 
   const goToImage = useCallback((sessionId: string, messageId: string) => {
     pendingAnchorRef.current = messageId;
     isAnchoringRef.current = true;
+    imageAnchorRequestIdRef.current += 1;
+    setImageAnchorRequest({ messageId, requestId: imageAnchorRequestIdRef.current });
+
+    if (scrollRequestTimeoutRef.current !== null) {
+      window.clearTimeout(scrollRequestTimeoutRef.current);
+      scrollRequestTimeoutRef.current = null;
+    }
+    if (scrollAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationFrameRef.current);
+      scrollAnimationFrameRef.current = null;
+    }
+    isProgrammaticScrollRef.current = false;
+
     setMessages([]);
     setCurrentSessionId(sessionId);
     setView('chat');
     void fetchSessionDetails(sessionId);
-    setTimeout(() => { if (isAnchoringRef.current) isAnchoringRef.current = false; }, 5000);
   }, [fetchSessionDetails, setCurrentSessionId, setMessages]);
 
   useEffect(() => {
-    if (view === 'chat' && pendingAnchorRef.current && messages.length > 0) {
-      const messageId = pendingAnchorRef.current;
-      const frame = window.requestAnimationFrame(() => {
-        const element = document.getElementById(`msg-${messageId}`);
-        const container = containerRef.current;
-        if (!element || !container) return;
+    if (view !== 'chat' || !imageAnchorRequest) return;
 
+    const { messageId, requestId } = imageAnchorRequest;
+    const startedAt = performance.now();
+    let frame: number | null = null;
+    let finishTimeout: number | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let image: HTMLImageElement | null = null;
+    let messageElement: HTMLElement | null = null;
+    let realignAfterLoad: (() => void) | null = null;
+    let cancelled = false;
+
+    const finish = () => {
+      if (cancelled) return;
+      if (realignAfterLoad) image?.removeEventListener('load', realignAfterLoad);
+      resizeObserver?.disconnect();
+      messageElement?.classList.remove('highlight-message');
+      if (imageAnchorRequestIdRef.current === requestId) {
         pendingAnchorRef.current = null;
-        isAnchoringRef.current = true;
+        isAnchoringRef.current = false;
+        setImageAnchorRequest(null);
+      }
+    };
 
+    const locateAndAlign = () => {
+      if (cancelled) return;
+
+      const element = document.getElementById(`img-${messageId}`)
+        ?? document.getElementById(`msg-${messageId}`);
+      const container = containerRef.current;
+
+      if (!element || !container) {
+        if (performance.now() - startedAt < 5000) {
+          frame = window.requestAnimationFrame(locateAndAlign);
+        } else {
+          finish();
+        }
+        return;
+      }
+
+      const alignImage = () => {
+        if (cancelled || !element.isConnected || !container.isConnected) return;
         const containerRect = container.getBoundingClientRect();
         const elementRect = element.getBoundingClientRect();
         const offset = elementRect.height >= containerRect.height - 32
@@ -937,17 +1024,37 @@ function App() {
           container.scrollHeight - container.clientHeight
         ));
 
-        container.scrollTo({ top: targetScroll, behavior: 'smooth' });
-        element.classList.add('highlight-message');
-        setTimeout(() => {
-          element.classList.remove('highlight-message');
-          isAnchoringRef.current = false;
-        }, 2500);
-      });
+        container.scrollTop = targetScroll;
+      };
 
-      return () => window.cancelAnimationFrame(frame);
-    }
-  }, [view, messages]);
+      pendingAnchorRef.current = null;
+      alignImage();
+      image = element.matches('img') ? element as HTMLImageElement : element.querySelector('img');
+      messageElement = document.getElementById(`msg-${messageId}`);
+      messageElement?.classList.add('highlight-message');
+
+      realignAfterLoad = () => window.requestAnimationFrame(alignImage);
+      if (image && !image.complete) image.addEventListener('load', realignAfterLoad, { once: true });
+      if ('ResizeObserver' in window) {
+        resizeObserver = new ResizeObserver(() => window.requestAnimationFrame(alignImage));
+        resizeObserver.observe(element);
+      }
+
+      window.requestAnimationFrame(alignImage);
+      finishTimeout = window.setTimeout(finish, 2500);
+    };
+
+    frame = window.requestAnimationFrame(locateAndAlign);
+
+    return () => {
+      cancelled = true;
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      if (finishTimeout !== null) window.clearTimeout(finishTimeout);
+      if (realignAfterLoad) image?.removeEventListener('load', realignAfterLoad);
+      resizeObserver?.disconnect();
+      messageElement?.classList.remove('highlight-message');
+    };
+  }, [view, imageAnchorRequest]);
 
   const handleEdit = useCallback((text: string) => {
     setInput(text);
@@ -1147,10 +1254,36 @@ function App() {
     setShowScrollBottom(false);
     isAnchoringRef.current = false;
     pendingAnchorRef.current = null;
-    
-    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-    setTimeout(() => { if (container) container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' }); }, 100);
-    setTimeout(() => { isProgrammaticScrollRef.current = false; }, 1000);
+
+    const startScroll = container.scrollTop;
+    const initialTarget = Math.max(0, container.scrollHeight - container.clientHeight);
+    const distance = Math.max(0, initialTarget - startScroll);
+    const duration = Math.min(750, Math.max(350, 300 + distance * 0.18));
+    const startTime = performance.now();
+
+    const animateToBottom = (currentTime: number) => {
+      if (!container.isConnected) {
+        isProgrammaticScrollRef.current = false;
+        scrollAnimationFrameRef.current = null;
+        return;
+      }
+
+      const progress = Math.min((currentTime - startTime) / duration, 1);
+      const easedProgress = 1 - Math.pow(1 - progress, 3);
+      const currentTarget = Math.max(0, container.scrollHeight - container.clientHeight);
+      container.scrollTop = startScroll + (currentTarget - startScroll) * easedProgress;
+
+      if (progress < 1) {
+        scrollAnimationFrameRef.current = window.requestAnimationFrame(animateToBottom);
+        return;
+      }
+
+      container.scrollTop = currentTarget;
+      isProgrammaticScrollRef.current = false;
+      scrollAnimationFrameRef.current = null;
+    };
+
+    scrollAnimationFrameRef.current = window.requestAnimationFrame(animateToBottom);
   }, []);
 
   const focusActiveGeneration = useCallback(async () => {
@@ -1217,12 +1350,25 @@ function App() {
 
   const isAlreadyLoaded = activeLightbox ? loadedHdImages.has(activeLightbox.messageId) : false;
 
-  const regenerateLightboxImage = () => {
+  const regenerateLightboxImage = async () => {
     if (!activeLightbox || !currentLightboxItem) return;
     const prompt = currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || '';
     if (!prompt.trim()) return;
-    recordRegeneration(activeLightbox.messageId);
-    void handleSend(prompt, true, activeLightbox.sessionId);
+    const { messageId, sessionId } = activeLightbox;
+
+    setShowLightboxMenu(false);
+    setActiveLightbox(null);
+    setView('chat');
+
+    if (currentSessionId !== sessionId) {
+      setMessages([]);
+      setCurrentSessionId(sessionId);
+      await fetchSessionDetails(sessionId);
+    }
+
+    recordRegeneration(messageId);
+    await handleSend(prompt, true, sessionId);
+    window.setTimeout(onScrollToBottom, 80);
   };
 
   return (
@@ -1239,7 +1385,7 @@ function App() {
             {favoritedId === activeLightbox.messageId && <div className="image-overlay-heart" style={{ fontSize: '8rem' }}>❤️</div>}
           </div>
           <div className="lightbox-actions" onClick={(e) => e.stopPropagation()}>
-            <div className="lightbox-actions-secondary">
+            <div className="lightbox-toolbar">
               <button className="lightbox-btn" onClick={() => { goToImage(activeLightbox.sessionId, activeLightbox.messageId); setActiveLightbox(null); }} title={t.viewInChat} aria-label={t.viewInChat}>💬</button>
               <button className={`lightbox-btn favorite ${currentLightboxItem?.isFavorite ? 'active' : ''}`} onClick={() => toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, currentLightboxItem?.isFavorite)} title={t.favorites} aria-label={t.favorites}>{currentLightboxItem?.isFavorite ? '❤️' : '🤍'}</button>
               <button
@@ -1251,42 +1397,87 @@ function App() {
               >
                 <ThumbUpIcon />
               </button>
-              <button className="lightbox-btn" onClick={() => {
-                const seed = currentLightboxItem?.seed;
-                if (seed) { 
-                    setParams(prev => ({ ...prev, seedMode: 'fixed', forcedSeed: seed.toString() })); 
-                    setView('chat'); 
-                    setActiveLightbox(null); 
-                    toast.success(t.reuseSeed); 
-                } 
-              }} title={t.reuseSeed} aria-label={t.reuseSeed}>🎲</button>
-            </div>
-            <div className="lightbox-actions-primary">
-              <button className="lightbox-btn" onClick={() => { if (currentLightboxItem) { handleEdit(currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || ''); setActiveLightbox(null); } }} title={t.reusePrompt} aria-label={t.reusePrompt}>✎</button>
-              <button
-                className="lightbox-btn regenerate"
-                onClick={regenerateLightboxImage}
-                title={t.regenerate}
-                aria-label={`${t.regenerate}${(regenerationCounts[activeLightbox.messageId] || 0) >= 2 ? ` ×${regenerationCounts[activeLightbox.messageId]}` : ''}`}
-              >
-                <RefreshIcon />
-                {(regenerationCounts[activeLightbox.messageId] || 0) >= 2 && (
-                  <span className="regeneration-count-badge" aria-hidden="true">
-                    ×{regenerationCounts[activeLightbox.messageId]}
-                  </span>
+              <div className="lightbox-menu-wrap">
+                {showLightboxMenu && (
+                  <div className="lightbox-menu" role="menu" aria-label={t.actions}>
+                    <button
+                      type="button"
+                      className="lightbox-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowLightboxMenu(false);
+                        void downloadImage(getFullImageUrl(activeLightbox.url), `img-${activeLightbox.messageId}.png`);
+                      }}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true">↓</span>
+                      <span>{t.download}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="lightbox-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        if (!currentLightboxItem) return;
+                        handleEdit(currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || '');
+                        setShowLightboxMenu(false);
+                        setActiveLightbox(null);
+                      }}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true"><ComposeIcon size={18} /></span>
+                      <span>{t.reusePrompt}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="lightbox-menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowLightboxMenu(false);
+                        void regenerateLightboxImage();
+                      }}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true"><RefreshIcon size={18} /></span>
+                      <span>{t.regenerate}</span>
+                      {(regenerationCounts[activeLightbox.messageId] || 0) >= 2 && (
+                        <span className="lightbox-menu-count" aria-hidden="true">
+                          ×{regenerationCounts[activeLightbox.messageId]}
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="lightbox-menu-item"
+                      role="menuitem"
+                      disabled={!currentLightboxItem?.seed}
+                      onClick={() => {
+                        const seed = currentLightboxItem?.seed;
+                        if (!seed) return;
+                        setParams(prev => ({ ...prev, seedMode: 'fixed', forcedSeed: seed.toString() }));
+                        setShowLightboxMenu(false);
+                        setView('chat');
+                        setActiveLightbox(null);
+                        setOpenOptionsRequest(request => request + 1);
+                        toast.success(t.reuseSeed);
+                      }}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true">🎲</span>
+                      <span>{t.reuseSeed}</span>
+                    </button>
+                  </div>
                 )}
-              </button>
-              <button className="lightbox-btn" onClick={() => downloadImage(getFullImageUrl(activeLightbox.url), `img-${activeLightbox.messageId}.png`)} title={t.download} aria-label={t.download}>💾</button>
-              {(queueRemaining ?? 0) > 0 && (
-                <div
-                  className="lightbox-btn queue-remaining"
-                  title={`${queueRemaining} ${t.imagesRemaining}`}
-                  aria-label={`${queueRemaining} ${t.imagesRemaining}`}
-                  role="status"
+                <button
+                  type="button"
+                  className={`lightbox-btn lightbox-more-btn ${showLightboxMenu ? 'active' : ''}`}
+                  onClick={() => setShowLightboxMenu(open => !open)}
+                  title={t.actions}
+                  aria-label={t.actions}
+                  aria-haspopup="menu"
+                  aria-expanded={showLightboxMenu}
                 >
-                  {queueRemaining}
-                </div>
-              )}
+                  <MoreVerticalIcon size={22} />
+                </button>
+              </div>
+            </div>
+            <div className="lightbox-top-actions">
               <button className="lightbox-btn close" onClick={() => setActiveLightbox(null)} title={t.close} aria-label={t.close}>×</button>
             </div>
           </div>
@@ -1422,12 +1613,13 @@ function App() {
           interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
           setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} favoritedId={favoritedId}
           galleryItems={galleryItems} isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
-          promptFavoritesOnly={promptFavoritesOnly} setPromptFavoritesOnly={setPromptFavoritesOnly}
-          availablePromptTags={availablePromptTags} selectedPromptTag={selectedPromptTag} setSelectedPromptTag={setSelectedPromptTag}
+          availablePromptTags={availablePromptTags} selectedPromptTags={selectedPromptTags} setSelectedPromptTags={setSelectedPromptTags}
+          gallerySearch={gallerySearch} setGallerySearch={setGallerySearch} openPromptTag={openPromptTag}
           showArchivedInGallery={showArchivedInGallery} setShowArchivedInGallery={setShowArchivedInGallery}
           setHasMoreGallery={setHasMoreGallery} lastImageElementRef={lastImageElementRef} containerRef={containerRef} textareaRef={textareaRef}
           messagesEndRef={messagesEndRef} params={params} setParams={setParams} smoothScrollTo={smoothScrollTo} handleScroll={handleScroll} downloadImage={downloadImage}
           showScrollBottom={showScrollBottom} onScrollToBottom={onScrollToBottom}
+          openOptionsRequest={openOptionsRequest}
         />
       </main>
       </div>

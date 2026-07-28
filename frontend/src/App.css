@@ -200,12 +200,33 @@ div:focus:not(:focus-visible) {
 @media (max-width: 600px) {
   .queue-status-indicator {
     min-width: 38px;
+    flex-shrink: 0;
     justify-content: center;
     padding: 0.35rem 0.6rem;
   }
 
   .queue-status-label {
     display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .chat-header {
+    padding-inline: 0.5rem;
+  }
+
+  .header-left,
+  .header-right {
+    gap: 0.4rem;
+  }
+
+  .header-ai-toggle {
+    gap: 0.35rem;
+    padding-inline: 0.65rem;
+  }
+
+  .header-actions-pill {
+    padding-inline: 0.25rem;
   }
 }
 
@@ -455,22 +476,65 @@ div:focus:not(:focus-visible) {
 }
 
 .lightbox-actions {
-  position: absolute; top: 20px; right: 20px; display: flex; gap: 1rem; align-items: center;
+  position: absolute;
+  inset: 0;
   z-index: 20;
+  pointer-events: none;
 }
 
-.lightbox-actions-primary,
-.lightbox-actions-secondary {
+.lightbox-toolbar {
+  position: absolute;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  left: 50%;
   display: flex;
-  gap: 1rem;
   align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(18, 18, 22, 0);
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.lightbox-top-actions {
+  position: absolute;
+  top: max(20px, env(safe-area-inset-top));
+  right: max(20px, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  pointer-events: auto;
+}
+
+.light .lightbox-toolbar,
+.light .lightbox-menu {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.14);
+}
+
+.light .lightbox-toolbar {
+  background: rgba(255, 255, 255, 0);
+}
+
+.light .lightbox-menu-item {
+  color: #18181b;
+}
+
+.light .lightbox-menu-item:hover,
+.light .lightbox-menu-item:focus-visible,
+.light .lightbox-menu-icon {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .lightbox-btn {
   position: relative;
-  background: var(--lightbox-btn-bg); border: 1px solid var(--border);
-  color: var(--lightbox-btn-text); width: 46px; height: 46px; padding: 0;
-  border-radius: 0.8rem; cursor: pointer; font-weight: 600; font-size: 1.2rem;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid transparent;
+  color: var(--lightbox-btn-text); width: 42px; height: 42px; padding: 0;
+  border-radius: 50%; cursor: pointer; font-weight: 600; font-size: 1.1rem;
   transition: all 0.2s; display: flex; align-items: center; justify-content: center;
   backdrop-filter: blur(10px); flex-shrink: 0;
   outline: none;
@@ -509,9 +573,80 @@ div:focus:not(:focus-visible) {
   background: rgba(54, 197, 111, 0.16);
   color: #36c56f;
 }
+.lightbox-more-btn.active,
+.lightbox-more-btn.active:focus:not(:focus-visible) {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.lightbox-menu-wrap {
+  position: relative;
+}
+.lightbox-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.75rem);
+  width: min(270px, calc(100vw - 24px));
+  overflow: hidden;
+  padding: 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 1rem;
+  background: rgba(24, 24, 28, 0.82);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  animation: lightbox-menu-in 0.16s ease-out;
+}
+.lightbox-menu-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  min-height: 46px;
+  padding: 0.35rem 0.55rem;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: #f4f4f5;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.lightbox-menu-item:hover,
+.lightbox-menu-item:focus-visible {
+  background: rgba(255, 255, 255, 0.09);
+  outline: none;
+}
+.lightbox-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+.lightbox-menu-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 1rem;
+}
+.lightbox-menu-count {
+  color: var(--accent);
+  font-size: 0.75rem;
+}
+@keyframes lightbox-menu-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 .lightbox-btn.close {
   border-radius: 50%;
-  font-size: 1.8rem;
+  font-size: 2.2rem;
+  font-weight: 300;
+  line-height: 1;
 }
 .lightbox-btn.queue-remaining {
   border-radius: 50%;
@@ -535,27 +670,11 @@ div:focus:not(:focus-visible) {
 }
 
 @media (max-width: 768px) {
-  .lightbox-actions {
-    inset: 0;
-    pointer-events: none;
-  }
-
-  .lightbox-actions-primary,
-  .lightbox-actions-secondary {
-    position: absolute;
-    right: max(12px, env(safe-area-inset-right));
-    gap: 0.5rem;
-    pointer-events: auto;
-  }
-
-  .lightbox-actions-primary {
-    top: max(12px, env(safe-area-inset-top));
-  }
-
-  .lightbox-actions-secondary {
+  .lightbox-toolbar {
     bottom: max(12px, env(safe-area-inset-bottom));
   }
 
+  .lightbox-top-actions { top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); }
   .lightbox-btn { width: 44px; height: 44px; font-size: 1.1rem; }
 }
 
@@ -672,12 +791,21 @@ div:focus:not(:focus-visible) {
 }
 .welcome-icon { margin-bottom: 2rem; animation: float 3s ease-in-out infinite; }
 @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
-.welcome-screen h1 { font-size: 2.5rem; font-weight: 800; color: var(--text-h); letter-spacing: -1px; }
+.welcome-screen h1 {
+  max-width: 32rem;
+  margin: 0;
+  color: var(--text-h);
+  font-size: clamp(2rem, 5vw, 2.5rem);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -1px;
+  text-wrap: balance;
+}
 
 @media (max-width: 768px) {
   .welcome-screen h1 {
-    line-height: 1.4;
-    font-size: 2.2rem;
+    max-width: 28rem;
+    line-height: 1.15;
   }
 }
 
@@ -757,8 +885,9 @@ div:focus:not(:focus-visible) {
 /* Scroll to bottom button */
 .scroll-bottom-btn {
   position: absolute;
-  bottom: 104px; /* Augmenté de 10px supplémentaires (94px -> 104px) */
-  left: 2rem; 
+  bottom: calc(100% + 0.75rem);
+  left: 50%;
+  transform: translateX(-50%);
   width: 50px;
   height: 50px;
   border-radius: 50%;
@@ -789,27 +918,27 @@ div:focus:not(:focus-visible) {
 }
 
 @keyframes slideUp {
-  from { transform: translateY(20px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+  from { transform: translate(-50%, 20px); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
 }
 
 @media (hover: hover) {
   .scroll-bottom-btn:hover {
     background-color: var(--sidebar-hover);
-    transform: translateY(-3px);
+    transform: translate(-50%, -3px);
     color: white;
     border-color: var(--accent);
   }
 }
 
 .scroll-bottom-btn:active {
-  transform: translateY(0);
+  transform: translate(-50%, 0);
 }
 
 @media (max-width: 768px) {
   .scroll-bottom-btn {
-    bottom: 92px; /* Augmenté de 10px (82px + 10px) */
-    left: 0.4rem; /* Aligné avec le padding mobile du container */
+    bottom: calc(100% + 0.6rem);
+    left: 50%;
     width: 50px;
     height: 50px;
   }
@@ -829,6 +958,16 @@ div:focus:not(:focus-visible) {
   0% { transform: scale(1); }
   20% { transform: scale(0.9); }
   100% { transform: scale(1); }
+}
+
+.scroll-bottom-btn.click-feedback {
+  animation-name: scroll-bottom-click-pop !important;
+}
+
+@keyframes scroll-bottom-click-pop {
+  0% { transform: translateX(-50%) scale(1); }
+  20% { transform: translateX(-50%) scale(0.9); }
+  100% { transform: translateX(-50%) scale(1); }
 }
 
 .click-feedback * {

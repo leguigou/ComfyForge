@@ -154,6 +154,10 @@ router.post('/generate', authenticate, async (req, res) => {
     
     res.json({ success: true, messageId, status: 'pending', tags });
     
+    // Publish the new queue size immediately. Without this, clients only hear
+    // about additional pending items when the active job emits its next update.
+    broadcastToSession(sessionId, { messageId, status: 'pending', duration: 0 });
+
     // Start processing immediately
     processQueue();
   } catch (error: any) {

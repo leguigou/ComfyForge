@@ -2,7 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import './SettingsModal.css';
 import type { GenParameters, User, Language, GalleryItem, RandomPromptList } from '../../types';
 import { normalizeRandomSlug } from '../../utils/randomPrompts';
+import { DEFAULT_COMPANION_ID, normalizeCompanionSettings } from '../../utils/companions';
 import { RefreshIcon, XIcon } from '../ui/Icons';
+import { SeedyCompanion } from '../chat/SeedyCompanion';
 import { MarkdownLoader } from '../ui/MarkdownLoader';
 import { formatBytes, getFullImageUrl, API_BASE } from '../../services/api';
 import toast from 'react-hot-toast';
@@ -17,11 +19,37 @@ interface WorkflowMappingData {
 }
 
 const workflowMappingKeys = ['checkpoint', 'diffusionModel', 'positive', 'negative', 'ksampler', 'latent', 'save'] as const;
+const MAX_CUSTOM_COMPANIONS = 20;
+const MAX_COMPANION_FILE_SIZE = 5_000_000;
+const MAX_COMPANION_DATA_SIZE = 140_000_000;
+
+const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result || ''));
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(file);
+});
+
+const readImageDimensions = (file: File) => new Promise<{ width: number; height: number }>((resolve, reject) => {
+  const objectUrl = URL.createObjectURL(file);
+  const image = new Image();
+  image.onload = () => {
+    URL.revokeObjectURL(objectUrl);
+    resolve({ width: image.naturalWidth, height: image.naturalHeight });
+  };
+  image.onerror = () => {
+    URL.revokeObjectURL(objectUrl);
+    reject(new Error('Invalid image'));
+  };
+  image.src = objectUrl;
+});
 
 type SettingsTab = SettingsModalProps['activeTab'];
 
 const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
   const paths: Record<SettingsTab, React.ReactNode> = {
+    general: <><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /><circle cx="12" cy="12" r="4" /></>,
+    companions: <><path d="M8 4h8l3 4v8l-3 4H8l-3-4V8z" /><path d="M9 11h.01M15 11h.01M9 15c1.8 1.3 4.2 1.3 6 0" /></>,
     profile: <><circle cx="12" cy="8" r="3" /><path d="M5.5 20a6.5 6.5 0 0 1 13 0" /></>,
     images: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m4 17 5-5 4 4 2-2 5 4" /></>,
     random: <><path d="M4 7h3c4 0 4 10 8 10h5" /><path d="m17 14 3 3-3 3" /><path d="M4 17h3c1.5 0 2.5-1.5 3.5-3" /><path d="M14 7h6m-3-3 3 3-3 3" /></>,
@@ -42,8 +70,8 @@ const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
 interface SettingsModalProps {
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
-  activeTab: 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin';
-  setActiveTab: (tab: 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin') => void;
+  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin';
+  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin') => void;
   params: GenParameters;
   setParams: (params: GenParameters) => void;
   lang: Language;
@@ -129,6 +157,7 @@ export const SettingsModal = ({
   const [mappingDraft, setMappingDraft] = useState<Record<string, string>>({});
   const [isSavingMapping, setIsSavingMapping] = useState(false);
   const workflowFileInputRef = useRef<HTMLInputElement>(null);
+  const companionFileInputRef = useRef<HTMLInputElement>(null);
   const activeTabButtonRef = useRef<HTMLButtonElement>(null);
   const hydratedProfilesRef = useRef('');
 
@@ -439,11 +468,94 @@ export const SettingsModal = ({
   };
 
   const userInitial = currentUser?.username?.charAt(0).toUpperCase() || '?';
+  const companionSettings = normalizeCompanionSettings(params.companionSettings);
+
+  const updateCompanionName = (id: string, name: string) => {
+    setParams({
+      ...params,
+      companionSettings: {
+        ...companionSettings,
+        companions: companionSettings.companions.map(companion => companion.id === id ? { ...companion, name } : companion),
+      },
+    });
+  };
+
+  const selectCompanion = (id: string) => {
+    setParams({
+      ...params,
+      companionSettings: { ...companionSettings, enabled: true, activeId: id },
+    });
+  };
+
+  const removeCompanion = (id: string) => {
+    if (id === DEFAULT_COMPANION_ID || !window.confirm(t.confirmDeleteCompanion)) return;
+    const companions = companionSettings.companions.filter(companion => companion.id !== id);
+    setParams({
+      ...params,
+      companionSettings: {
+        ...companionSettings,
+        companions,
+        activeId: companionSettings.activeId === id ? DEFAULT_COMPANION_ID : companionSettings.activeId,
+      },
+    });
+  };
+
+  const importCompanion = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    const customCompanions = companionSettings.companions.filter(companion => companion.source === 'custom');
+    if (customCompanions.length >= MAX_CUSTOM_COMPANIONS) {
+      toast.error(t.companionLimitReached);
+      return;
+    }
+    if (!['image/webp', 'image/png'].includes(file.type) || file.size > MAX_COMPANION_FILE_SIZE) {
+      toast.error(t.companionFileInvalid);
+      return;
+    }
+
+    try {
+      const dimensions = await readImageDimensions(file);
+      if (dimensions.width % 8 !== 0 || dimensions.height % 9 !== 0) {
+        toast.error(t.companionGridInvalid);
+        return;
+      }
+      const spriteDataUrl = await readFileAsDataUrl(file);
+      const storedDataSize = customCompanions.reduce((total, companion) => total + (companion.spriteDataUrl?.length || 0), 0);
+      if (storedDataSize + spriteDataUrl.length > MAX_COMPANION_DATA_SIZE) {
+        toast.error(t.companionStorageFull);
+        return;
+      }
+
+      const id = `companion-${crypto.randomUUID()}`;
+      const name = file.name.replace(/\.[^.]+$/, '') || t.newCompanion;
+      setParams({
+        ...params,
+        companionSettings: {
+          enabled: true,
+          activeId: id,
+          companions: [...companionSettings.companions, {
+            id,
+            name,
+            source: 'custom',
+            spriteDataUrl,
+            fileName: file.name,
+          }],
+        },
+      });
+      toast.success(t.companionImported);
+    } catch {
+      toast.error(t.companionFileInvalid);
+    }
+  };
 
   // Sort gallery: favorites first
   const sortedGallery = [...galleryItems].sort((a, b) => (b.isFavorite || 0) - (a.isFavorite || 0));
 
   const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
+    { id: 'general', label: t.tabGeneral },
+    { id: 'companions', label: t.tabCompanions },
     { id: 'profile', label: t.tabProfile },
     { id: 'images', label: t.tabImages },
     { id: 'random', label: t.tabRandom },
@@ -485,6 +597,109 @@ export const SettingsModal = ({
           </nav>
 
           <main className="tab-content">
+          {activeTab === 'general' && (
+            <section className="companion-general-card">
+              <div className="companion-general-copy">
+                <SeedyCompanion state="waiting" settings={{ ...companionSettings, enabled: true }} />
+                <div>
+                  <h4>{t.companionTitle}</h4>
+                  <p>{t.companionHelp}</p>
+                </div>
+              </div>
+              <div className="companion-general-actions">
+                <label className="companion-enabled">
+                  <input
+                    type="checkbox"
+                    checked={companionSettings.enabled}
+                    onChange={event => setParams({
+                      ...params,
+                      companionSettings: { ...companionSettings, enabled: event.target.checked },
+                    })}
+                  />
+                  <span>{t.companionEnabled}</span>
+                </label>
+                <button type="button" className="companion-customize-btn" onClick={() => setActiveTab('companions')}>
+                  {t.customizeCompanion} →
+                </button>
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'companions' && (
+            <section className="companion-settings">
+              <div className="companion-settings-header">
+                <div>
+                  <h4>{t.companionLibraryTitle}</h4>
+                  <p>{t.companionLibraryHelp}</p>
+                </div>
+              </div>
+              <div className="companion-toolbar">
+                <div>
+                  <strong>{t.chooseCompanion}</strong>
+                  <small>{t.companionGridHelp}</small>
+                </div>
+                <button type="button" className="companion-import-btn" onClick={() => companionFileInputRef.current?.click()}>
+                  + {t.importCompanion}
+                </button>
+                <input
+                  ref={companionFileInputRef}
+                  type="file"
+                  accept="image/webp,image/png"
+                  hidden
+                  onChange={importCompanion}
+                />
+              </div>
+
+              <div className="companion-grid">
+                {companionSettings.companions.map(companion => {
+                  const previewSettings = {
+                    ...companionSettings,
+                    enabled: true,
+                    activeId: companion.id,
+                  };
+                  const isActive = companionSettings.activeId === companion.id;
+                  return (
+                    <article
+                      key={companion.id}
+                      className={`companion-card ${isActive ? 'active' : ''}`}
+                      onClick={() => selectCompanion(companion.id)}
+                    >
+                      <div className="companion-preview">
+                        <SeedyCompanion state="working" settings={previewSettings} />
+                      </div>
+                      <div className="companion-card-body">
+                        <input
+                          value={companion.name}
+                          onClick={event => event.stopPropagation()}
+                          onChange={event => updateCompanionName(companion.id, event.target.value)}
+                          onBlur={event => {
+                            if (!event.target.value.trim()) updateCompanionName(companion.id, t.newCompanion);
+                          }}
+                          aria-label={t.companionName}
+                        />
+                        <small>{companion.source === 'builtin' ? t.builtinCompanion : companion.fileName}</small>
+                      </div>
+                      <span className="companion-selected-mark" aria-hidden="true">{isActive ? '✓' : ''}</span>
+                      {companion.source === 'custom' && (
+                        <button
+                          type="button"
+                          className="companion-delete-btn"
+                          onClick={event => {
+                            event.stopPropagation();
+                            removeCompanion(companion.id);
+                          }}
+                          title={t.delete}
+                          aria-label={`${t.delete}: ${companion.name}`}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          )}
           {activeTab === 'random' && (
             <section className="random-lists-settings">
               <div className="random-lists-intro">

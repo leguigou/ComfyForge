@@ -1,22 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { classifyPrompt } from './prompt-tags';
 
-const slugs = (prompt: string) => classifyPrompt(prompt).map(tag => tag.slug);
+const slugsFor = (prompt: string) => classifyPrompt(prompt).map(tag => tag.slug);
 
-describe('prompt tag classifier', () => {
-  it('extracts a small set of meaningful concepts', () => {
-    expect(slugs('A blonde woman in a bikini on a sandy beach, candid smartphone photograph with natural daylight'))
-      .toEqual(expect.arrayContaining(['blonde', 'swimwear', 'beach', 'candid', 'natural-light']));
+describe('classifyPrompt', () => {
+  it('keeps the subject and exact group size among the important tags', () => {
+    const tags = slugsFor(
+      'A group photo of three 18-year-old young girls at a sunny beach, '
+      + 'topless, with soft shadows, bokeh and a photorealistic style.'
+    );
+
+    expect(tags).toContain('women');
+    expect(tags).toContain('three-people');
+    expect(tags).toContain('beach');
   });
 
-  it('does not tag negated concepts', () => {
-    const result = slugs('Portrait indoors without a bikini, no nudity, with soft shadows');
-    expect(result).not.toEqual(expect.arrayContaining(['swimwear', 'nudity']));
-    expect(result).toContain('soft-light');
-  });
+  it('distinguishes a pair from a larger generic group', () => {
+    const tags = slugsFor('Two young women standing together in a city street for a group photo.');
 
-  it('limits the number of automatic tags', () => {
-    expect(classifyPrompt('Blonde woman standing in a bedroom, bikini, selfie, shallow depth of field, bokeh, soft light, cinematic').length)
-      .toBeLessThanOrEqual(6);
+    expect(tags).toContain('women');
+    expect(tags).toContain('two-people');
+    expect(tags).not.toContain('group');
   });
 });

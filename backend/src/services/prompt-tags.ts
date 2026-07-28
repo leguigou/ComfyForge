@@ -6,6 +6,7 @@ export type PromptTagDefinition = {
   labelFr: string;
   labelEn: string;
   phrases: string[];
+  patterns?: RegExp[];
 };
 
 export type PromptTag = Omit<PromptTagDefinition, 'phrases'>;
@@ -17,6 +18,35 @@ export const PROMPT_TAG_DEFINITIONS: PromptTagDefinition[] = [
   { slug: 'lingerie', category: 'content', labelFr: 'Lingerie', labelEn: 'Lingerie', phrases: ['lingerie', 'bralette', 'underwear', 'lace bra', 'soutien gorge'] },
   { slug: 'dress', category: 'content', labelFr: 'Robe', labelEn: 'Dress', phrases: ['evening gown', 'evening dress', 'mini dress', 'summer dress', 'dress', 'gown', 'robe'] },
   { slug: 'sportswear', category: 'content', labelFr: 'Tenue sportive', labelEn: 'Sportswear', phrases: ['sportswear', 'athletic wear', 'sports bra', 'yoga pants', 'gym outfit', 'tennis outfit', 'running shorts'] },
+
+  { slug: 'women', category: 'subject', labelFr: 'Femme(s)', labelEn: 'Woman / women', phrases: ['young women', 'young woman', 'women', 'woman', 'young girls', 'young girl', 'girls', 'girl', 'femmes', 'femme', 'filles', 'fille'] },
+  { slug: 'men', category: 'subject', labelFr: 'Homme(s)', labelEn: 'Man / men', phrases: ['young men', 'young man', 'men', 'man', 'young boys', 'young boy', 'boys', 'boy', 'hommes', 'homme', 'garcons', 'garcon'] },
+
+  {
+    slug: 'three-people',
+    category: 'count',
+    labelFr: '3 personnes',
+    labelEn: '3 people',
+    phrases: [],
+    patterns: [/\b(?:three|3|trois)\b(?:\s+[a-z0-9]+){0,5}\s+(?:women|woman|girls|girl|men|man|boys|boy|people|persons|femmes|femme|filles|fille|hommes|homme|garcons|garcon|personnes|personne)\b/],
+  },
+  {
+    slug: 'two-people',
+    category: 'count',
+    labelFr: '2 personnes',
+    labelEn: '2 people',
+    phrases: ['couple portrait', 'couple photo'],
+    patterns: [/\b(?:two|2|deux)\b(?:\s+[a-z0-9]+){0,5}\s+(?:women|woman|girls|girl|men|man|boys|boy|people|persons|femmes|femme|filles|fille|hommes|homme|garcons|garcon|personnes|personne)\b/],
+  },
+  { slug: 'group', category: 'count', labelFr: 'Groupe', labelEn: 'Group', phrases: ['group portrait', 'group photo', 'group shot', 'group of', 'groupe de', 'photo de groupe'] },
+  {
+    slug: 'solo',
+    category: 'count',
+    labelFr: '1 personne',
+    labelEn: '1 person',
+    phrases: ['solo portrait', 'single woman', 'single man', 'portrait solo'],
+    patterns: [/\b(?:one|1|une|un)\b(?:\s+[a-z0-9]+){0,3}\s+(?:woman|girl|man|boy|person|femme|fille|homme|garcon|personne)\b/],
+  },
 
   { slug: 'bedroom', category: 'setting', labelFr: 'Chambre', labelEn: 'Bedroom', phrases: ['bedroom', 'on a bed', 'lying on bed', 'mattress', 'bedsheet', 'duvet', 'chambre', 'sur un lit'] },
   { slug: 'bathroom', category: 'setting', labelFr: 'Salle de bain', labelEn: 'Bathroom', phrases: ['bathroom', 'shower', 'bathtub', 'salle de bain', 'douche', 'baignoire'] },
@@ -59,12 +89,19 @@ export const PROMPT_TAG_DEFINITIONS: PromptTagDefinition[] = [
 
 const CATEGORY_LIMITS: Record<string, number> = {
   content: 2,
+  subject: 1,
+  count: 1,
   setting: 1,
   appearance: 1,
   shot: 2,
   style: 1,
   pose: 1,
   lighting: 1,
+};
+
+const CATEGORY_PRIORITY: Record<string, number> = {
+  count: 2,
+  subject: 1,
 };
 
 const normalizePrompt = (value: string) => ` ${value
@@ -90,6 +127,12 @@ const scoreDefinition = (text: string, definition: PromptTagDefinition) => {
       score += 10 + phrase.split(' ').length;
     }
   }
+  for (const pattern of definition.patterns || []) {
+    const match = pattern.exec(text);
+    if (match?.index !== undefined && !isNegated(text, match.index)) {
+      score += 20;
+    }
+  }
   return score;
 };
 
@@ -99,7 +142,10 @@ export const classifyPrompt = (prompt: string, maxTags = 6): PromptTagDefinition
   const candidates = PROMPT_TAG_DEFINITIONS
     .map(definition => ({ definition, score: scoreDefinition(text, definition) }))
     .filter(candidate => candidate.score > 0)
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => (
+      b.score - a.score
+      || (CATEGORY_PRIORITY[b.definition.category] || 0) - (CATEGORY_PRIORITY[a.definition.category] || 0)
+    ));
 
   const categoryCounts = new Map<string, number>();
   const selected: PromptTagDefinition[] = [];

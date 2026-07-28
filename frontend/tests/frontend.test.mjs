@@ -10,6 +10,8 @@ let api;
 let WelcomeScreen;
 let MessageText;
 let randomPrompts;
+let companions;
+let generationTimer;
 let config;
 
 before(async () => {
@@ -22,6 +24,8 @@ before(async () => {
   api = await vite.ssrLoadModule('/src/services/api.ts');
   config = await vite.ssrLoadModule('/src/config.ts');
   randomPrompts = await vite.ssrLoadModule('/src/utils/randomPrompts.ts');
+  companions = await vite.ssrLoadModule('/src/utils/companions.ts');
+  generationTimer = await vite.ssrLoadModule('/src/utils/generationTimer.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
   ({ MessageText } = await vite.ssrLoadModule('/src/components/chat/MessageText.tsx'));
 });
@@ -93,4 +97,35 @@ test('returns the random values selected while resolving a prompt template', () 
 
   assert.equal(result.prompt, 'long hair, portrait with long hair');
   assert.deepEqual(result.selections, [{ listId: 'hair', name: 'Coiffures', slug: 'R-Hair', value: 'long hair' }]);
+});
+
+test('migrates and preserves companion settings', () => {
+  const defaults = companions.normalizeCompanionSettings();
+  assert.equal(defaults.enabled, true);
+  assert.equal(defaults.activeId, companions.DEFAULT_COMPANION_ID);
+
+  const customized = companions.normalizeCompanionSettings({
+    enabled: false,
+    activeId: 'custom-one',
+    companions: [
+      { id: companions.DEFAULT_COMPANION_ID, name: 'Pousse', source: 'builtin' },
+      { id: 'custom-one', name: 'Pixel', source: 'custom', spriteDataUrl: 'data:image/webp;base64,AAAA' },
+    ],
+  });
+
+  assert.equal(customized.enabled, false);
+  assert.equal(customized.companions[0].name, 'Pousse');
+  assert.equal(customized.activeId, 'custom-one');
+  assert.equal(customized.companions[1].name, 'Pixel');
+});
+
+test('keeps generation timers independent from time spent waiting in the queue', () => {
+  const now = 100_000;
+
+  assert.equal(generationTimer.getGenerationElapsedSeconds(0, 97_000, now), 3);
+  assert.equal(generationTimer.getGenerationElapsedSeconds(0, 99_000, now), 1);
+  assert.equal(generationTimer.getGenerationElapsedSeconds(4, undefined, now), 4);
+  assert.equal(generationTimer.resolveGenerationStartedAt('processing', undefined, undefined, now), now);
+  assert.equal(generationTimer.resolveGenerationStartedAt('processing', undefined, 98_000, now), 98_000);
+  assert.equal(generationTimer.resolveGenerationStartedAt('pending', undefined, undefined, now), undefined);
 });

@@ -99,6 +99,20 @@ export interface RandomPromptSelection {
   value: string;
 }
 
+export interface CompanionProfile {
+  id: string;
+  name: string;
+  source: 'builtin' | 'custom';
+  spriteDataUrl?: string;
+  fileName?: string;
+}
+
+export interface CompanionSettings {
+  enabled: boolean;
+  activeId: string;
+  companions: CompanionProfile[];
+}
+
 export interface GenParameters {
   width: number;
   height: number;
@@ -122,6 +136,7 @@ export interface GenParameters {
   favoriteModels: FavoriteModel[];
   randomPromptLists: RandomPromptList[];
   randomPromptListsVersion?: number;
+  companionSettings: CompanionSettings;
 }
 
 export interface LLMProvider {

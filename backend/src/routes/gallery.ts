@@ -28,7 +28,12 @@ router.get('/', authenticate, (req, res) => {
   const onlyArchived = req.query.includeArchived === 'true';
   const favoritesOnly = req.query.favoritesOnly === 'true';
   const promptFavoritesOnly = req.query.promptFavoritesOnly === 'true';
-  const selectedTag = typeof req.query.tag === 'string' ? req.query.tag.trim() : '';
+  const rawTags = Array.isArray(req.query.tag) ? req.query.tag : [req.query.tag];
+  const selectedTags = [...new Set(rawTags
+    .filter((tag): tag is string => typeof tag === 'string')
+    .map(tag => tag.trim())
+    .filter(Boolean))];
+  const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 300) : '';
   
   let query = `
     SELECT m.sessionId, m.id as messageId, m.imageUrl, m.thumbnailUrl, m.prompt, m.text, m.generationPrompt, m.timestamp, m.model, m.width, m.height, m.steps, m.cfg, m.workflow, m.seed, m.isFavorite, m.isPromptFavorite, m.duration, m.sampler, m.scheduler, m.randomSelections
@@ -48,12 +53,24 @@ router.get('/', authenticate, (req, res) => {
     query += ` AND s.isArchived = ?`;
     params.push(onlyArchived ? 1 : 0);
   }
-  if (selectedTag) {
-    query += ` AND EXISTS (
-      SELECT 1 FROM message_tags mt
-      WHERE mt.messageId = m.id AND mt.tagId = ?
+  if (selectedTags.length > 0) {
+    query += ` AND m.id IN (
+      SELECT mt.messageId
+      FROM message_tags mt
+      WHERE mt.tagId IN (${selectedTags.map(() => '?').join(',')})
+      GROUP BY mt.messageId
+      HAVING COUNT(DISTINCT mt.tagId) = ?
     )`;
-    params.push(selectedTag);
+    params.push(...selectedTags, selectedTags.length);
+  }
+  if (search) {
+    const escapedSearch = search.toLowerCase().replace(/[\\%_]/g, '\\$&');
+    query += ` AND lower(
+      COALESCE(m.generationPrompt, '') || ' ' ||
+      COALESCE(m.prompt, '') || ' ' ||
+      COALESCE(m.text, '')
+    ) LIKE ? ESCAPE '\\'`;
+    params.push(`%${escapedSearch}%`);
   }
   
   query += ` ORDER BY m.timestamp DESC LIMIT ? OFFSET ?`;

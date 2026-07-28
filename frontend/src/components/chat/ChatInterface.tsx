@@ -3,11 +3,27 @@ import './ChatInterface.css';
 import type { Message, Language, GalleryItem, GenParameters, PromptTag } from '../../types';
 import { WelcomeScreen } from './WelcomeScreen';
 import { MessageText } from './MessageText';
+import { SeedyCompanion } from './SeedyCompanion';
 import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon, ThumbUpIcon, ComposeIcon, MagicWandIcon } from '../ui/Icons';
 import { getFullImageUrl, formatDuration } from '../../services/api';
+import { getGenerationElapsedSeconds } from '../../utils/generationTimer';
 import toast from 'react-hot-toast';
 
 const LUCKY_PHRASE_COUNT = 5;
+const MIN_GALLERY_COLUMNS = 1;
+const MAX_GALLERY_COLUMNS = 6;
+const GALLERY_PINCH_STEP = 1.16;
+
+const normalizeSearchValue = (value: string) => value
+  .toLocaleLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '');
+
+const getTouchDistance = (touches: React.TouchList) => {
+  const [first, second] = [touches.item(0), touches.item(1)];
+  if (!first || !second) return 0;
+  return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+};
 
 interface ChatInterfaceProps {
   view: 'chat' | 'gallery' | 'archives';
@@ -40,11 +56,12 @@ interface ChatInterfaceProps {
   isFetchingGallery: boolean;
   favoritesOnly: boolean;
   setFavoritesOnly: (val: boolean) => void;
-  promptFavoritesOnly: boolean;
-  setPromptFavoritesOnly: (val: boolean) => void;
   availablePromptTags: PromptTag[];
-  selectedPromptTag: string;
-  setSelectedPromptTag: (val: string) => void;
+  selectedPromptTags: string[];
+  setSelectedPromptTags: (tags: string[]) => void;
+  gallerySearch: string;
+  setGallerySearch: (value: string) => void;
+  openPromptTag: (slug: string) => void;
   showArchivedInGallery: boolean;
   setShowArchivedInGallery: (val: boolean) => void;
   setHasMoreGallery: (val: boolean) => void;
@@ -59,6 +76,7 @@ interface ChatInterfaceProps {
   downloadImage: (url: string, filename: string) => void;
   showScrollBottom?: boolean;
   onScrollToBottom?: () => void;
+  openOptionsRequest?: number;
 }
 
 export const ChatInterface = ({
@@ -92,11 +110,12 @@ export const ChatInterface = ({
   isFetchingGallery,
   favoritesOnly,
   setFavoritesOnly,
-  promptFavoritesOnly,
-  setPromptFavoritesOnly,
   availablePromptTags,
-  selectedPromptTag,
-  setSelectedPromptTag,
+  selectedPromptTags,
+  setSelectedPromptTags,
+  gallerySearch,
+  setGallerySearch,
+  openPromptTag,
   showArchivedInGallery,
   setShowArchivedInGallery,
   lastImageElementRef,
@@ -109,16 +128,92 @@ export const ChatInterface = ({
   handleScroll,
   downloadImage,
   showScrollBottom,
-  onScrollToBottom
+  onScrollToBottom,
+  openOptionsRequest = 0
 }: ChatInterfaceProps) => {
   const [showOptions, setShowOptions] = useState(false);
   const [timerNow, setTimerNow] = useState(() => Date.now());
   const [isRetryingAll, setIsRetryingAll] = useState(false);
   const [showRetryAllConfirm, setShowRetryAllConfirm] = useState(false);
   const [luckyPhraseIndex, setLuckyPhraseIndex] = useState(0);
+  const [showLuckyInfo, setShowLuckyInfo] = useState(false);
+  const [isGallerySearchFocused, setIsGallerySearchFocused] = useState(false);
+  const [galleryColumns, setGalleryColumns] = useState(() => {
+    const savedColumns = Number.parseInt(localStorage.getItem('galleryColumns') || '', 10);
+    if (savedColumns >= MIN_GALLERY_COLUMNS && savedColumns <= MAX_GALLERY_COLUMNS) return savedColumns;
+    return window.innerWidth <= 768 ? 3 : 6;
+  });
+  const [isPinchingGallery, setIsPinchingGallery] = useState(false);
   const promptHighlightRef = useRef<HTMLDivElement>(null);
   const optionsDrawerRef = useRef<HTMLDivElement>(null);
   const optionsToggleRef = useRef<HTMLButtonElement>(null);
+  const wasCreatingLuckyPromptRef = useRef(false);
+  const galleryPinchRef = useRef({ startDistance: 0, startColumns: galleryColumns, changed: false });
+  const suppressGalleryClickRef = useRef(false);
+  const suppressGalleryClickTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('galleryColumns', String(galleryColumns));
+  }, [galleryColumns]);
+
+  useEffect(() => {
+    if (openOptionsRequest > 0) setShowOptions(true);
+  }, [openOptionsRequest]);
+
+  useEffect(() => () => {
+    if (suppressGalleryClickTimerRef.current !== null) {
+      window.clearTimeout(suppressGalleryClickTimerRef.current);
+    }
+  }, []);
+
+  const handleGalleryTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length !== 2) return;
+    if (suppressGalleryClickTimerRef.current !== null) {
+      window.clearTimeout(suppressGalleryClickTimerRef.current);
+      suppressGalleryClickTimerRef.current = null;
+    }
+    suppressGalleryClickRef.current = false;
+    galleryPinchRef.current = {
+      startDistance: getTouchDistance(event.touches),
+      startColumns: galleryColumns,
+      changed: false,
+    };
+    setIsPinchingGallery(true);
+  };
+
+  const handleGalleryTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (event.touches.length !== 2 || galleryPinchRef.current.startDistance === 0) return;
+    event.preventDefault();
+
+    const distance = getTouchDistance(event.touches);
+    const scale = distance / galleryPinchRef.current.startDistance;
+    const columnDelta = Math.round(-Math.log(scale) / Math.log(GALLERY_PINCH_STEP));
+    const nextColumns = Math.min(
+      MAX_GALLERY_COLUMNS,
+      Math.max(MIN_GALLERY_COLUMNS, galleryPinchRef.current.startColumns + columnDelta)
+    );
+
+    if (nextColumns !== galleryPinchRef.current.startColumns) {
+      galleryPinchRef.current.changed = true;
+      suppressGalleryClickRef.current = true;
+    }
+    setGalleryColumns(current => current === nextColumns ? current : nextColumns);
+  };
+
+  const handleGalleryTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (!isPinchingGallery || event.touches.length >= 2) return;
+    setIsPinchingGallery(false);
+    galleryPinchRef.current.startDistance = 0;
+
+    if (galleryPinchRef.current.changed) {
+      if (suppressGalleryClickTimerRef.current !== null) {
+        window.clearTimeout(suppressGalleryClickTimerRef.current);
+      }
+      suppressGalleryClickTimerRef.current = window.setTimeout(() => {
+        suppressGalleryClickRef.current = false;
+      }, 350);
+    }
+  };
 
   useEffect(() => {
     if (!showOptions) return;
@@ -149,6 +244,26 @@ export const ChatInterface = ({
     && enabledRandomSlugs.has(part.slice(1, -1).toLowerCase())
   ));
   const firstFailedMessageId = messages.find(message => message.role === 'bot' && message.status === 'failed')?.id;
+  const normalizedGallerySearch = normalizeSearchValue(gallerySearch.trim());
+  const matchingPromptTags = normalizedGallerySearch
+    ? availablePromptTags
+      .filter(tag => !selectedPromptTags.includes(tag.slug))
+      .filter(tag => normalizeSearchValue(
+        `${tag.slug} ${lang === 'fr' ? tag.labelFr : tag.labelEn}`
+      ).includes(normalizedGallerySearch))
+      .slice(0, 8)
+    : [];
+
+  const addPromptTag = (slug: string) => {
+    if (!selectedPromptTags.includes(slug)) {
+      setSelectedPromptTags([...selectedPromptTags, slug]);
+    }
+    setGallerySearch('');
+  };
+
+  const removePromptTag = (slug: string) => {
+    setSelectedPromptTags(selectedPromptTags.filter(tag => tag !== slug));
+  };
 
   const handleRetryAll = async () => {
     setShowRetryAllConfirm(false);
@@ -189,6 +304,15 @@ export const ChatInterface = ({
     }, 60);
     return () => window.clearTimeout(timeout);
   }, [isCreatingLuckyPrompt, smoothScrollTo]);
+
+  useEffect(() => {
+    const wasCreating = wasCreatingLuckyPromptRef.current;
+    wasCreatingLuckyPromptRef.current = isCreatingLuckyPrompt;
+    if (!wasCreating || isCreatingLuckyPrompt || !onScrollToBottom) return;
+
+    const timeout = window.setTimeout(onScrollToBottom, 100);
+    return () => window.clearTimeout(timeout);
+  }, [isCreatingLuckyPrompt, onScrollToBottom]);
 
   const syncPromptHighlightScroll = (textarea: HTMLTextAreaElement) => {
     if (!promptHighlightRef.current) return;
@@ -289,26 +413,26 @@ export const ChatInterface = ({
                   )}
                   {msg.role === 'bot' && !msg.imageUrl && msg.status !== 'failed' && (
                     <div className="generation-placeholder">
-                      {(msg.isEnhancing || msg.status === 'processing') && (
-                        <div className="bounced-loader">
-                          <div className="bounce1"></div>
-                          <div className="bounce2"></div>
-                          <div className="bounce3"></div>
-                        </div>
-                      )}
-                      <p>
-                        <span className={msg.isEnhancing || msg.status === 'processing' ? 'ai-text-shimmer' : ''}>
-                          {msg.isEnhancing ? t.enhancing : (msg.status === 'processing' ? t.generating : t.waiting)}
-                        </span>
-                        {!msg.isEnhancing && msg.status === 'processing' && (
-                          <span className="generation-live-timer">
-                            {formatDuration(Math.max(
-                              msg.duration || 0,
-                              Math.max(0, Math.floor((timerNow - (msg.generationStartedAt || msg.timestamp)) / 1000))
-                            ))}
+                      <div className="generation-status-line">
+                        <SeedyCompanion
+                          state={msg.isEnhancing ? 'magic' : (msg.status === 'processing' ? 'working' : 'waiting')}
+                          settings={params.companionSettings}
+                        />
+                        <p>
+                          <span className={msg.isEnhancing || msg.status === 'processing' ? 'ai-text-shimmer' : ''}>
+                            {msg.isEnhancing ? t.enhancing : (msg.status === 'processing' ? t.generating : t.waiting)}
                           </span>
-                        )}
-                      </p>
+                          {!msg.isEnhancing && msg.status === 'processing' && (
+                            <span className="generation-live-timer">
+                              {formatDuration(getGenerationElapsedSeconds(
+                                msg.duration,
+                                msg.generationStartedAt,
+                                timerNow
+                              ))}
+                            </span>
+                          )}
+                        </p>
+                      </div>
 
                       <button className="cancel-gen-btn" onClick={interruptGeneration} title="Annuler la génération">
                         <div className="stop-icon-small"></div>
@@ -344,7 +468,7 @@ export const ChatInterface = ({
                     </div>
                   )}
                   {msg.imageUrl && (
-                    <div className="image-wrapper" 
+                    <div id={`img-${msg.id}`} className="image-wrapper"
                       style={{
                         aspectRatio: (msg.width && msg.height) ? `${msg.width}/${msg.height}` : 'auto',
                         minHeight: '100px'
@@ -442,9 +566,15 @@ export const ChatInterface = ({
                       {!!msg.tags?.length && (
                         <div className="prompt-tags" aria-label={t.promptTags}>
                           {msg.tags.map(tag => (
-                            <span key={tag.slug} className={`prompt-tag tag-${tag.category}`}>
+                            <button
+                              key={tag.slug}
+                              type="button"
+                              className={`prompt-tag tag-${tag.category}`}
+                              onClick={() => openPromptTag(tag.slug)}
+                              title={t.viewTagContents}
+                            >
                               {lang === 'fr' ? tag.labelFr : tag.labelEn}
-                            </span>
+                            </button>
                           ))}
                         </div>
                       )}
@@ -461,11 +591,7 @@ export const ChatInterface = ({
                 </div>
                 <div className="message-content loading">
                   <div className="generation-placeholder lucky-generation-placeholder">
-                    <div className="bounced-loader" aria-hidden="true">
-                      <div className="bounce1"></div>
-                      <div className="bounce2"></div>
-                      <div className="bounce3"></div>
-                    </div>
+                    <SeedyCompanion state="magic" settings={params.companionSettings} />
                     <p key={luckyPhraseIndex} className="ai-text-shimmer lucky-magic-phrase">
                       {luckyPhrases[luckyPhraseIndex]}
                     </p>
@@ -479,12 +605,10 @@ export const ChatInterface = ({
                 <div className="avatar">C</div>
                 <div className="message-content loading">
                   <div className="generation-placeholder">
-                    <div className="bounced-loader">
-                      <div className="bounce1"></div>
-                      <div className="bounce2"></div>
-                      <div className="bounce3"></div>
+                    <div className="generation-status-line">
+                      <SeedyCompanion state={isEnhancing ? 'magic' : 'working'} settings={params.companionSettings} />
+                      <p className="ai-text-shimmer">{isEnhancing ? t.enhancing : t.generating}</p>
                     </div>
-                    <p>{isEnhancing ? t.enhancing : t.generating}</p>
                     <button className="cancel-gen-btn" onClick={interruptGeneration} title="Annuler la génération">
                       <div className="stop-icon-small"></div>
                       <span>{t.cancel}</span>
@@ -500,25 +624,63 @@ export const ChatInterface = ({
             <div className="gallery-header">
               <h2>{t.myContent}</h2>
               <div className="gallery-filters">
+                <div className="gallery-search">
+                  <div className={`gallery-search-box ${isGallerySearchFocused ? 'focused' : ''}`}>
+                    {selectedPromptTags.map(slug => {
+                      const tag = availablePromptTags.find(candidate => candidate.slug === slug);
+                      const label = tag ? (lang === 'fr' ? tag.labelFr : tag.labelEn) : slug;
+                      return (
+                        <span key={slug} className="gallery-search-chip">
+                          <span>{label}</span>
+                          <button
+                            type="button"
+                            onClick={() => removePromptTag(slug)}
+                            aria-label={`${t.removeTag}: ${label}`}
+                            title={t.removeTag}
+                          >
+                            <XIcon size={12} />
+                          </button>
+                        </span>
+                      );
+                    })}
+                    <input
+                      type="search"
+                      value={gallerySearch}
+                      onChange={event => setGallerySearch(event.target.value)}
+                      onFocus={() => setIsGallerySearchFocused(true)}
+                      onBlur={() => setIsGallerySearchFocused(false)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter' && matchingPromptTags.length > 0) {
+                          event.preventDefault();
+                          addPromptTag(matchingPromptTags[0].slug);
+                        }
+                      }}
+                      placeholder={selectedPromptTags.length > 0 ? t.addTagOrSearch : t.searchContents}
+                      aria-label={t.searchContents}
+                      autoComplete="off"
+                    />
+                  </div>
+                  {isGallerySearchFocused && matchingPromptTags.length > 0 && (
+                    <div className="gallery-tag-suggestions" role="listbox" aria-label={t.tagSuggestions}>
+                      {matchingPromptTags.map(tag => (
+                        <button
+                          key={tag.slug}
+                          type="button"
+                          role="option"
+                          aria-selected="false"
+                          onMouseDown={event => event.preventDefault()}
+                          onClick={() => addPromptTag(tag.slug)}
+                        >
+                          <span>{lang === 'fr' ? tag.labelFr : tag.labelEn}</span>
+                          <small>{tag.count || 0}</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button className={`gallery-filter-fav ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly(!favoritesOnly)} aria-pressed={favoritesOnly}>
                   {favoritesOnly ? '❤️' : '🤍'} {t.favorites}
                 </button>
-                <button className={`gallery-filter-prompt ${promptFavoritesOnly ? 'active' : ''}`} onClick={() => setPromptFavoritesOnly(!promptFavoritesOnly)} aria-pressed={promptFavoritesOnly}>
-                  <ThumbUpIcon size={17} /> {t.likedPrompts}
-                </button>
-                <select
-                  className="gallery-tag-filter"
-                  value={selectedPromptTag}
-                  onChange={(event) => setSelectedPromptTag(event.target.value)}
-                  aria-label={t.filterByTag}
-                >
-                  <option value="">{t.allTags}</option>
-                  {availablePromptTags.map(tag => (
-                    <option key={tag.slug} value={tag.slug}>
-                      {lang === 'fr' ? tag.labelFr : tag.labelEn} ({tag.count || 0})
-                    </option>
-                  ))}
-                </select>
                 <div className="control-group">
                   <button className={`control-pill ${!showArchivedInGallery ? 'active' : ''}`} onClick={() => setShowArchivedInGallery(false)}>
                     {t.active}
@@ -529,7 +691,21 @@ export const ChatInterface = ({
                 </div>
               </div>
             </div>
-            <div className="gallery-grid">
+            <div
+              className={`gallery-grid ${isPinchingGallery ? 'is-pinching' : ''}`}
+              style={{ gridTemplateColumns: `repeat(${galleryColumns}, minmax(0, 1fr))` }}
+              onTouchStart={handleGalleryTouchStart}
+              onTouchMove={handleGalleryTouchMove}
+              onTouchEnd={handleGalleryTouchEnd}
+              onTouchCancel={handleGalleryTouchEnd}
+            >
+              {isPinchingGallery && (
+                <div className="gallery-density-indicator" role="status" aria-live="polite">
+                  {galleryColumns} {lang === 'fr'
+                    ? (galleryColumns === 1 ? 'colonne' : 'colonnes')
+                    : (galleryColumns === 1 ? 'column' : 'columns')}
+                </div>
+              )}
               {galleryItems.map((item, index) => (
                 <div 
                   ref={galleryItems.length === index + 1 ? lastImageElementRef : undefined}
@@ -539,14 +715,17 @@ export const ChatInterface = ({
                     aspectRatio: (item.width && item.height) ? `${item.width}/${item.height}` : 'auto',
                     backgroundColor: 'var(--social-bg)'
                   }}
-                  onClick={() => handleImageClick({ 
-                    url: item.imageUrl, 
-                    thumbnailUrl: item.thumbnailUrl,
-                    sessionId: item.sessionId, 
-                    messageId: item.messageId, 
-                    isFavorite: item.isFavorite, 
-                    source: 'gallery' 
-                  })}
+                  onClick={() => {
+                    if (suppressGalleryClickRef.current) return;
+                    handleImageClick({
+                      url: item.imageUrl,
+                      thumbnailUrl: item.thumbnailUrl,
+                      sessionId: item.sessionId,
+                      messageId: item.messageId,
+                      isFavorite: item.isFavorite,
+                      source: 'gallery'
+                    });
+                  }}
                 >
                   <img 
                     src={getFullImageUrl(item.thumbnailUrl || item.imageUrl)} 
@@ -591,27 +770,40 @@ export const ChatInterface = ({
 
       {view === 'chat' && (
         <div className="input-container">
-          {showScrollBottom && !showOptions && (
-            <button className="scroll-bottom-btn" onClick={onScrollToBottom} title={lang === 'fr' ? 'Aller en bas' : 'Scroll to bottom'}>
-              <ChevronDownIcon size={24} />
-            </button>
-          )}
           {showOptions && (
             <div ref={optionsDrawerRef} className="generation-options-drawer fadeIn">
               <div className="options-group lucky-prompt-group">
-                <button
-                  type="button"
-                  className="lucky-prompt-btn"
-                  onClick={() => {
-                    setShowOptions(false);
-                    void createLuckyGeneration();
-                  }}
-                  disabled={isCreatingLuckyPrompt}
-                >
-                  <MagicWandIcon size={17} className="lucky-prompt-icon" />
-                  <span>{isCreatingLuckyPrompt ? t.luckyPromptCreating : t.luckyPromptAction}</span>
-                </button>
+                <div className="lucky-prompt-actions">
+                  <button
+                    type="button"
+                    className="lucky-prompt-btn"
+                    onClick={() => {
+                      setShowOptions(false);
+                      void createLuckyGeneration();
+                    }}
+                    disabled={isCreatingLuckyPrompt}
+                  >
+                    <MagicWandIcon size={17} className="lucky-prompt-icon" />
+                    <span>{isCreatingLuckyPrompt ? t.luckyPromptCreating : t.luckyPromptAction}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`lucky-info-btn ${showLuckyInfo ? 'active' : ''}`}
+                    onClick={() => setShowLuckyInfo(current => !current)}
+                    aria-label={t.luckyInfoLabel}
+                    aria-expanded={showLuckyInfo}
+                    aria-controls="lucky-prompt-explanation"
+                    title={t.luckyInfoLabel}
+                  >
+                    <InfoIcon size={16} />
+                  </button>
+                </div>
                 <p className="lucky-prompt-help">{t.luckyPromptHelp}</p>
+                {showLuckyInfo && (
+                  <p id="lucky-prompt-explanation" className="lucky-prompt-explanation">
+                    {t.luckyInfoText}
+                  </p>
+                )}
               </div>
               <div className="options-group">
                 <div className="option-label">{t.seed}</div>
@@ -665,16 +857,26 @@ export const ChatInterface = ({
           )}
 
           <div className="input-wrapper">
-            <button
-              ref={optionsToggleRef}
-              className={`options-toggle-btn ${showOptions ? 'active' : ''}`}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => setShowOptions(!showOptions)}
-              title={t.options}
-            >
-              <PlusIcon size={20} />
-            </button>
+            {showScrollBottom && !showOptions && (
+              <button className="scroll-bottom-btn" onClick={onScrollToBottom} title={lang === 'fr' ? 'Aller en bas' : 'Scroll to bottom'}>
+                <ChevronDownIcon size={24} />
+              </button>
+            )}
             <div className={`input-box ${params.llmEnabled ? 'ai-active' : ''} ${input ? 'has-text' : ''} ${hasRandomCodes ? 'has-random-code' : ''}`}>
+              {!input && (
+                <button
+                  ref={optionsToggleRef}
+                  type="button"
+                  className={`options-toggle-btn ${showOptions ? 'active' : ''}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setShowOptions(!showOptions)}
+                  title={t.options}
+                  aria-label={t.options}
+                  aria-expanded={showOptions}
+                >
+                  <PlusIcon size={20} />
+                </button>
+              )}
               <div className="prompt-editor">
                 {hasRandomCodes && (
                   <div ref={promptHighlightRef} className="prompt-highlight-layer" aria-hidden="true">
@@ -700,17 +902,33 @@ export const ChatInterface = ({
               </div>
               <div className="input-box-actions">
                 {input && (
-                  <button className="clear-input-btn" onClick={() => setInput('')} title="Effacer le texte">
-                    <XIcon size={18} />
+                  <button
+                    ref={optionsToggleRef}
+                    type="button"
+                    className={`options-toggle-btn ${showOptions ? 'active' : ''}`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => setShowOptions(!showOptions)}
+                    title={t.options}
+                    aria-label={t.options}
+                    aria-expanded={showOptions}
+                  >
+                    <PlusIcon size={20} />
                   </button>
                 )}
-                <button className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`} onClick={() => isGenerating && !input.trim() ? interruptGeneration() : handleSend()} disabled={!input.trim() && !isGenerating}>
-                  {isGenerating && !input.trim() ? (
-                    <div className="stop-icon"></div>
-                  ) : (
-                    <SendIcon />
+                <div className="input-box-actions-end">
+                  {input && (
+                    <button className="clear-input-btn" onClick={() => setInput('')} title="Effacer le texte">
+                      <XIcon size={18} />
+                    </button>
                   )}
-                </button>
+                  <button className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`} onClick={() => isGenerating && !input.trim() ? interruptGeneration() : handleSend()} disabled={!input.trim() && !isGenerating}>
+                    {isGenerating && !input.trim() ? (
+                      <div className="stop-icon"></div>
+                    ) : (
+                      <SendIcon />
+                    )}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

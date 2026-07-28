@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { API_BASE } from '../services/api';
 import type { Session, Message } from '../types';
+import { resolveGenerationStartedAt } from '../utils/generationTimer';
 
 export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticated: boolean | null) => {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -50,14 +51,27 @@ export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticat
           // Deep merge logic to prevent flickering
           const updatedMessages = data.messages.map((newMsg: Message) => {
             const existingMsg = prev.find(m => m.id === newMsg.id);
-            if (!existingMsg) return newMsg;
+            const generationStartedAt = resolveGenerationStartedAt(
+              newMsg.status,
+              newMsg.generationStartedAt,
+              existingMsg?.generationStartedAt,
+              Date.now()
+            );
+
+            if (!existingMsg) {
+              return generationStartedAt === undefined
+                ? newMsg
+                : { ...newMsg, generationStartedAt };
+            }
             
             // If data hasn't changed significantly, keep existing reference
             const hasImageUrlChanged = existingMsg.imageUrl !== newMsg.imageUrl;
             const hasStatusChanged = existingMsg.status !== newMsg.status;
             const hasTextChanged = existingMsg.text !== newMsg.text;
+            const needsGenerationStart = newMsg.status === 'processing'
+              && existingMsg.generationStartedAt === undefined;
 
-            if (!hasImageUrlChanged && !hasStatusChanged && !hasTextChanged) {
+            if (!hasImageUrlChanged && !hasStatusChanged && !hasTextChanged && !needsGenerationStart) {
               return existingMsg;
             }
 
@@ -66,7 +80,7 @@ export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticat
               ? existingMsg.duration 
               : newMsg.duration;
 
-            return { ...newMsg, duration: mergedDuration };
+            return { ...newMsg, duration: mergedDuration, generationStartedAt };
           });
 
           // Check if the overall messages list actually changed to avoid reference change
