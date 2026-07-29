@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import axios from 'axios';
 import { validateServiceUrl } from '../security/service-url';
+import { writeAuditLog } from './audit-log';
 
 export type ProviderType = 'openai' | 'anthropic' | 'google';
 
@@ -93,26 +94,69 @@ export const listProviderModels = async (provider: StoredProvider) => {
 
 export const completeWithProvider = async (provider: StoredProvider, prompt: string, systemMessage: string, temperature = 0.7) => {
   const baseUrl = provider.baseUrl.replace(/\/$/, '');
-  if (provider.type === 'anthropic') {
-    const response = await axios.post(`${baseUrl}/v1/messages`, {
-      model: provider.model, max_tokens: 2048, temperature,
-      system: systemMessage, messages: [{ role: 'user', content: prompt }]
-    }, { headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 30000 });
-    return response.data.content?.map((part: any) => part.text || '').join('') || '';
+  const startedAt = Date.now();
+  writeAuditLog({
+    source: 'llm',
+    direction: 'outbound',
+    event: 'llm.request',
+    message: `Requête envoyée à ${provider.name}`,
+    status: 'sending',
+    userId: provider.userId,
+    details: { providerId: provider.id, type: provider.type, baseUrl, model: provider.model, prompt, systemMessage, temperature }
+  });
+
+  try {
+    let content = '';
+    let responseData: unknown;
+    if (provider.type === 'anthropic') {
+      const response = await axios.post(`${baseUrl}/v1/messages`, {
+        model: provider.model, max_tokens: 2048, temperature,
+        system: systemMessage, messages: [{ role: 'user', content: prompt }]
+      }, { headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 30000 });
+      responseData = response.data;
+      content = response.data.content?.map((part: any) => part.text || '').join('') || '';
+    } else if (provider.type === 'google') {
+      const key = decryptApiKey(provider.apiKey);
+      const response = await axios.post(`${baseUrl}/v1beta/models/${encodeURIComponent(provider.model)}:generateContent`, {
+        systemInstruction: { parts: [{ text: systemMessage }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature, responseMimeType: 'application/json' }
+      }, { params: { key }, timeout: 30000 });
+      responseData = response.data;
+      content = response.data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('') || '';
+    } else {
+      const response = await axios.post(`${baseUrl}/v1/chat/completions`, {
+        model: provider.model,
+        messages: [{ role: 'system', content: systemMessage }, { role: 'user', content: prompt }],
+        temperature
+      }, { headers: authHeaders(provider), timeout: 30000 });
+      responseData = response.data;
+      content = response.data.choices?.[0]?.message?.content || '';
+    }
+
+    writeAuditLog({
+      source: 'llm',
+      direction: 'inbound',
+      event: 'llm.response',
+      message: `Réponse reçue de ${provider.name}`,
+      status: 'completed',
+      durationMs: Date.now() - startedAt,
+      userId: provider.userId,
+      details: { providerId: provider.id, model: provider.model, content, response: responseData }
+    });
+    return content;
+  } catch (error: any) {
+    writeAuditLog({
+      level: 'error',
+      source: 'llm',
+      direction: 'inbound',
+      event: 'llm.failed',
+      message: error.response?.data?.error?.message || error.message || 'Erreur LLM',
+      status: String(error.response?.status || 'failed'),
+      durationMs: Date.now() - startedAt,
+      userId: provider.userId,
+      details: { providerId: provider.id, model: provider.model, response: error.response?.data }
+    });
+    throw error;
   }
-  if (provider.type === 'google') {
-    const key = decryptApiKey(provider.apiKey);
-    const response = await axios.post(`${baseUrl}/v1beta/models/${encodeURIComponent(provider.model)}:generateContent`, {
-      systemInstruction: { parts: [{ text: systemMessage }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature, responseMimeType: 'application/json' }
-    }, { params: { key }, timeout: 30000 });
-    return response.data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('') || '';
-  }
-  const response = await axios.post(`${baseUrl}/v1/chat/completions`, {
-    model: provider.model,
-    messages: [{ role: 'system', content: systemMessage }, { role: 'user', content: prompt }],
-    temperature
-  }, { headers: authHeaders(provider), timeout: 30000 });
-  return response.data.choices?.[0]?.message?.content || '';
 };

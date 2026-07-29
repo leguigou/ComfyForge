@@ -14,7 +14,9 @@ import llmRoutes from './routes/llm';
 import galleryRoutes from './routes/gallery';
 import miscRoutes from './routes/misc';
 import updateRoutes from './routes/updates';
+import adminLogRoutes from './routes/admin-logs';
 import { configureProviderEncryption } from './services/llm-providers';
+import { startAuditLogRetention } from './services/audit-log';
 
 const corsOptions = (req: Request): CorsOptions => ({
   origin: isAllowedRequestOrigin(req),
@@ -37,6 +39,7 @@ export const createApp = (authSecret: string) => {
   app.set('trust proxy', 1);
   configureProviderEncryption(authSecret);
   initDatabase();
+  startAuditLogRetention();
 
   app.use((req, res, next) => {
     if (!isAllowedRequestOrigin(req)) {
@@ -59,6 +62,7 @@ export const createApp = (authSecret: string) => {
   apiRouter.use('/llm', llmRoutes);
   apiRouter.use('/gallery', galleryRoutes);
   apiRouter.use('/updates', updateRoutes);
+  apiRouter.use('/admin/logs', adminLogRoutes);
   apiRouter.use('/image-files', miscRoutes);
   apiRouter.use('/', miscRoutes);
 

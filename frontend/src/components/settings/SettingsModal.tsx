@@ -9,6 +9,7 @@ import { MarkdownLoader } from '../ui/MarkdownLoader';
 import { formatBytes, getFullImageUrl, API_BASE } from '../../services/api';
 import toast from 'react-hot-toast';
 import { LLMProvidersPanel } from './LLMProvidersPanel';
+import { AdminLogsPanel } from './AdminLogsPanel';
 
 interface WorkflowMappingData {
   filename: string;
@@ -57,7 +58,8 @@ const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
     llm: <><rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 10h.01M12 10h.01M16 10h.01M8 14h8M9 2v3m6-3v3" /></>,
     archives: <><rect x="4" y="7" width="16" height="13" rx="2" /><path d="M3 4h18v4H3zm6 8h6" /></>,
     update: <><path d="M20 7v5h-5" /><path d="M18.5 16a8 8 0 1 1 .8-9L20 12" /></>,
-    admin: <><path d="M12 3 4.5 6v5c0 4.8 3.2 8.5 7.5 10 4.3-1.5 7.5-5.2 7.5-10V6z" /><path d="m9 12 2 2 4-4" /></>
+    admin: <><path d="M12 3 4.5 6v5c0 4.8 3.2 8.5 7.5 10 4.3-1.5 7.5-5.2 7.5-10V6z" /><path d="m9 12 2 2 4-4" /></>,
+    logs: <><path d="M4 5h16v14H4z" /><path d="M7 9h2m2 0h6M7 13h2m2 0h6M7 17h2m2 0h4" /></>
   };
 
   return (
@@ -70,8 +72,8 @@ const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
 interface SettingsModalProps {
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
-  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin';
-  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin') => void;
+  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin' | 'logs';
+  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin' | 'logs') => void;
   params: GenParameters;
   setParams: (params: GenParameters) => void;
   lang: Language;
@@ -563,7 +565,10 @@ export const SettingsModal = ({
     { id: 'llm', label: t.tabLLM },
     { id: 'archives', label: t.tabArchives },
     { id: 'update', label: t.tabUpdate },
-    ...(currentUser?.isAdmin ? [{ id: 'admin' as const, label: t.tabAdmin }] : [])
+    ...(currentUser?.isAdmin ? [
+      { id: 'admin' as const, label: t.tabAdmin },
+      { id: 'logs' as const, label: t.tabLogs }
+    ] : [])
   ];
 
   return (
@@ -598,31 +603,81 @@ export const SettingsModal = ({
 
           <main className="tab-content">
           {activeTab === 'general' && (
-            <section className="companion-general-card">
-              <div className="companion-general-copy">
-                <SeedyCompanion state="waiting" settings={{ ...companionSettings, enabled: true }} />
-                <div>
-                  <h4>{t.companionTitle}</h4>
-                  <p>{t.companionHelp}</p>
+            <div className="general-settings-stack">
+              <section className="companion-general-card">
+                <div className="companion-general-copy">
+                  <SeedyCompanion state="waiting" settings={{ ...companionSettings, enabled: true }} />
+                  <div>
+                    <h4>{t.companionTitle}</h4>
+                    <p>{t.companionHelp}</p>
+                  </div>
                 </div>
-              </div>
-              <div className="companion-general-actions">
-                <label className="companion-enabled">
-                  <input
-                    type="checkbox"
-                    checked={companionSettings.enabled}
-                    onChange={event => setParams({
-                      ...params,
-                      companionSettings: { ...companionSettings, enabled: event.target.checked },
-                    })}
-                  />
-                  <span>{t.companionEnabled}</span>
-                </label>
-                <button type="button" className="companion-customize-btn" onClick={() => setActiveTab('companions')}>
-                  {t.customizeCompanion} →
-                </button>
-              </div>
-            </section>
+                <div className="companion-general-actions">
+                  <label className="companion-enabled">
+                    <input
+                      type="checkbox"
+                      checked={companionSettings.enabled}
+                      onChange={event => setParams({
+                        ...params,
+                        companionSettings: { ...companionSettings, enabled: event.target.checked },
+                      })}
+                    />
+                    <span>{t.companionEnabled}</span>
+                  </label>
+                  <button type="button" className="companion-customize-btn" onClick={() => setActiveTab('companions')}>
+                    {t.customizeCompanion} →
+                  </button>
+                </div>
+              </section>
+
+              <section className="lucky-settings-card">
+                <div className="lucky-settings-heading">
+                  <div>
+                    <h4>{t.luckySettingsTitle}</h4>
+                    <p>{t.luckySettingsHelp}</p>
+                  </div>
+                  <span className="lucky-settings-badge" aria-hidden="true">✨</span>
+                </div>
+                <div className="lucky-settings-controls">
+                  <label className="lucky-slider">
+                    <span className="lucky-slider-label">
+                      <strong>{t.luckyTemperature}</strong>
+                      <output>{params.luckyTemperature.toFixed(2)}</output>
+                    </span>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="1"
+                      step="0.05"
+                      value={params.luckyTemperature}
+                      onChange={event => setParams({
+                        ...params,
+                        luckyTemperature: Number(event.target.value),
+                      })}
+                    />
+                    <small>{t.luckyTemperatureHelp}</small>
+                  </label>
+                  <label className="lucky-slider">
+                    <span className="lucky-slider-label">
+                      <strong>{t.luckyFavoriteCount}</strong>
+                      <output>{params.luckyFavoriteCount}</output>
+                    </span>
+                    <input
+                      type="range"
+                      min="1"
+                      max="8"
+                      step="1"
+                      value={params.luckyFavoriteCount}
+                      onChange={event => setParams({
+                        ...params,
+                        luckyFavoriteCount: Number(event.target.value),
+                      })}
+                    />
+                    <small>{t.luckyFavoriteCountHelp}</small>
+                  </label>
+                </div>
+              </section>
+            </div>
           )}
 
           {activeTab === 'companions' && (
@@ -1360,8 +1415,11 @@ export const SettingsModal = ({
                   </table>
                 </div>
               </div>
+
             </div>
           )}
+
+          {activeTab === 'logs' && currentUser?.isAdmin && <AdminLogsPanel t={t} />}
           
           {activeTab === 'archives' && (
             <div className="settings-grid">

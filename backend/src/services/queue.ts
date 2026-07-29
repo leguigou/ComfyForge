@@ -8,6 +8,7 @@ import db from './database';
 import { getTargetComfyUrl, getWorkflow, parseComfyError } from './comfy';
 import { imagesDir, thumbnailsDir } from './image';
 import { QueueTask, GenerationParams, ComfyHistoryEntry } from '../types';
+import { writeAuditLog } from './audit-log';
 
 let isProcessingQueue = false;
 let wss: WebSocketServer | null = null;
@@ -67,6 +68,7 @@ export const processQueue = async () => {
     db.prepare('UPDATE queue SET status = ? WHERE id = ?').run('processing', task.id);
     db.prepare('UPDATE messages SET status = ? WHERE id = ?').run('processing', task.messageId);
     broadcastToSession(task.sessionId, { messageId: task.messageId, status: 'processing' });
+    const sessionOwner = db.prepare('SELECT userId FROM sessions WHERE id = ?').get(task.sessionId) as { userId: string } | undefined;
 
     const params: GenerationParams = JSON.parse(task.params);
     const workflow = getWorkflow(task.prompt, params);
@@ -91,9 +93,41 @@ export const processQueue = async () => {
     const scheduler: string = workflow[ksamplerNodeId]?.inputs?.scheduler || '';
 
     let promptId = '';
+    const submissionStartedAt = Date.now();
+    writeAuditLog({
+      source: 'comfyui',
+      direction: 'outbound',
+      event: 'comfy.prompt.request',
+      message: 'Workflow envoyé à ComfyUI',
+      status: 'sending',
+      userId: sessionOwner?.userId,
+      sessionId: task.sessionId,
+      messageId: task.messageId,
+      details: {
+        targetUrl: targetComfyUrl,
+        prompt: task.prompt,
+        originalPrompt: task.originalPrompt,
+        params,
+        workflowNodes: Object.keys(workflow).length,
+        saveNodeId,
+        samplerNodeId: ksamplerNodeId
+      }
+    });
     try {
       const response = await axios.post(`${targetComfyUrl}/prompt`, { prompt: workflow, client_id: uuidv4() }, { timeout: 10000 });
       promptId = response.data.prompt_id;
+      writeAuditLog({
+        source: 'comfyui',
+        direction: 'inbound',
+        event: 'comfy.prompt.response',
+        message: 'Workflow accepté par ComfyUI',
+        status: 'accepted',
+        durationMs: Date.now() - submissionStartedAt,
+        userId: sessionOwner?.userId,
+        sessionId: task.sessionId,
+        messageId: task.messageId,
+        details: { promptId, response: response.data }
+      });
     } catch (err: unknown) { 
       throw new Error(`Submission failed: ${parseComfyError(err)}`); 
     }
@@ -113,6 +147,19 @@ export const processQueue = async () => {
         hResp = await axios.get(`${targetComfyUrl}/history/${promptId}`, { timeout: 5000 }); 
       } catch (err: unknown) { 
         console.warn(`[Queue] Polling attempt failed: ${(err as Error).message}`); 
+        writeAuditLog({
+          level: 'warning',
+          source: 'comfyui',
+          direction: 'inbound',
+          event: 'comfy.history.retry',
+          message: 'Lecture du statut ComfyUI échouée, nouvelle tentative',
+          status: 'retrying',
+          durationMs: currentDuration * 1000,
+          userId: sessionOwner?.userId,
+          sessionId: task.sessionId,
+          messageId: task.messageId,
+          details: { promptId, error: (err as Error).message }
+        });
         await new Promise(r => setTimeout(r, 2000)); 
         continue; 
       }
@@ -142,6 +189,18 @@ export const processQueue = async () => {
     }
     
     const finalDuration = Math.floor((Date.now() - startTime) / 1000);
+    writeAuditLog({
+      source: 'comfyui',
+      direction: 'inbound',
+      event: 'comfy.generation.completed',
+      message: 'ComfyUI a terminé le rendu',
+      status: 'completed',
+      durationMs: finalDuration * 1000,
+      userId: sessionOwner?.userId,
+      sessionId: task.sessionId,
+      messageId: task.messageId,
+      details: { promptId, filename }
+    });
 
     let imgResp;
     try {
@@ -193,9 +252,22 @@ export const processQueue = async () => {
     const errorMsg = error instanceof Error ? error.message : 'Unexpected error';
     console.error(`[Queue] Fatal error for task ${task?.messageId}:`, errorMsg);
     if (task) {
+      const failedOwner = db.prepare('SELECT userId FROM sessions WHERE id = ?').get(task.sessionId) as { userId: string } | undefined;
       db.prepare('UPDATE messages SET status = ?, text = ? WHERE id = ?').run('failed', errorMsg, task.messageId);
       db.prepare('DELETE FROM queue WHERE id = ?').run(task.id);
       broadcastToSession(task.sessionId, { messageId: task.messageId, status: 'failed', error: errorMsg });
+      writeAuditLog({
+        level: 'error',
+        source: 'comfyui',
+        direction: 'inbound',
+        event: 'comfy.generation.failed',
+        message: errorMsg,
+        status: 'failed',
+        userId: failedOwner?.userId,
+        sessionId: task.sessionId,
+        messageId: task.messageId,
+        details: { queueId: task.id, prompt: task.prompt, params: task.params }
+      });
     }
   } finally { 
     isProcessingQueue = false; 

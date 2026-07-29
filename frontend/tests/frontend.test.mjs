@@ -122,6 +122,7 @@ test('migrates and preserves companion settings', () => {
 test('keeps generation timers independent from time spent waiting in the queue', () => {
   const now = 100_000;
 
+  assert.equal(generationTimer.getGenerationElapsedSeconds(0, now, now), 1);
   assert.equal(generationTimer.getGenerationElapsedSeconds(0, 97_000, now), 3);
   assert.equal(generationTimer.getGenerationElapsedSeconds(0, 99_000, now), 1);
   assert.equal(generationTimer.getGenerationElapsedSeconds(4, undefined, now), 4);

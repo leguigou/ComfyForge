@@ -445,6 +445,24 @@ div:focus:not(:focus-visible) {
   background-color: var(--lightbox-bg); display: flex; align-items: center; justify-content: center;
   z-index: 3000; cursor: zoom-out;
 }
+
+.app-toaster {
+  z-index: 10000 !important;
+  top: max(16px, calc(env(safe-area-inset-top) + 12px)) !important;
+}
+
+@media (max-width: 768px) {
+  .app-toaster {
+    top: max(72px, calc(env(safe-area-inset-top) + 64px)) !important;
+    left: 12px !important;
+    right: 12px !important;
+  }
+
+  .app-toaster > div > div {
+    max-width: calc(100vw - 24px);
+  }
+}
+
 .lightbox-content { 
   position: relative; 
   width: 95vw;
@@ -480,6 +498,83 @@ div:focus:not(:focus-visible) {
   inset: 0;
   z-index: 20;
   pointer-events: none;
+}
+
+.lightbox-prompt-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 30;
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(70vh, 640px);
+  overflow: auto;
+  padding: 1.1rem 1.15rem 1.2rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 1rem;
+  background: rgba(24, 24, 28, 0.94);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.58);
+  color: #f4f4f5;
+  cursor: default;
+  backdrop-filter: blur(18px);
+  transform: translate(-50%, -50%);
+  animation: lightbox-prompt-in 0.16s ease-out;
+}
+
+.lightbox-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}
+
+.lightbox-prompt-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.lightbox-prompt-close {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.09);
+  color: inherit;
+  cursor: pointer;
+}
+
+.lightbox-prompt-close:hover,
+.lightbox-prompt-close:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+  outline: none;
+}
+
+.lightbox-prompt-text {
+  margin: 0;
+  color: rgba(244, 244, 245, 0.9);
+  font-size: 0.9rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.light .lightbox-prompt-panel {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.2);
+  color: #18181b;
+}
+
+.light .lightbox-prompt-text {
+  color: rgba(24, 24, 27, 0.86);
+}
+
+.light .lightbox-prompt-close {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .lightbox-toolbar {
@@ -641,6 +736,10 @@ div:focus:not(:focus-visible) {
 @keyframes lightbox-menu-in {
   from { opacity: 0; transform: translateY(6px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes lightbox-prompt-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.98); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 .lightbox-btn.close {
   border-radius: 50%;

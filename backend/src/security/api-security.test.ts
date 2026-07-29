@@ -213,6 +213,100 @@ describe('API security boundaries', () => {
     expect(fs.existsSync(victimFile)).toBe(false);
   });
 
+  it('persists several custom companion sprite sheets in user settings', async () => {
+    const spriteDataUrl = `data:image/webp;base64,${'A'.repeat(180_000)}`;
+    const settings = {
+      width: 896,
+      companionSettings: {
+        enabled: true,
+        activeId: 'companion-two',
+        companions: [
+          { id: 'seedy-default', name: 'Seedy', source: 'builtin' },
+          { id: 'companion-one', name: 'Pixel', source: 'custom', spriteDataUrl },
+          { id: 'companion-two', name: 'Nova', source: 'custom', spriteDataUrl },
+        ],
+      },
+    };
+
+    const saveResponse = await request('/api/settings', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify(settings),
+    });
+    expect(saveResponse.status).toBe(200);
+
+    const savedSettings = await json(await request('/api/settings', { cookie: adminCookie }));
+    expect(savedSettings.companionSettings.companions).toHaveLength(3);
+    expect(savedSettings.companionSettings.activeId).toBe('companion-two');
+    expect(savedSettings.companionSettings.companions[2].spriteDataUrl).toBe(spriteDataUrl);
+  });
+
+  it('isolates admin logs by administrator account', async () => {
+    await request('/api/users', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ username: 'admin-two', password: 'admin-two-password', isAdmin: true }),
+    });
+    await request('/api/users', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ username: 'log-viewer', password: 'log-viewer-password', isAdmin: false }),
+    });
+
+    const secondAdmin = db.prepare('SELECT id FROM users WHERE username = ?').get('admin-two') as { id: string };
+    const { writeAuditLog } = await import('../services/audit-log');
+    writeAuditLog({
+      source: 'comfyui',
+      direction: 'outbound',
+      event: 'test.owner',
+      message: 'visible-only-to-first-admin',
+      userId: adminId,
+      details: { password: 'admin-two-password', apiKey: 'log-viewer-password' }
+    });
+    db.prepare(`
+      INSERT INTO audit_logs (timestamp, level, source, event, message, userId)
+      VALUES (?, 'error', 'llm', 'test.owner', ?, ?)
+    `).run(Date.now(), 'visible-only-to-second-admin', secondAdmin.id);
+
+    const secondLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'admin-two', password: 'admin-two-password' }),
+    });
+    const viewerLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'log-viewer', password: 'log-viewer-password' }),
+    });
+
+    const firstLogs = await json(await request('/api/admin/logs', { cookie: adminCookie }));
+    const secondLogs = await json(await request('/api/admin/logs', { cookie: authCookieFrom(secondLogin) }));
+    const forbidden = await request('/api/admin/logs', { cookie: authCookieFrom(viewerLogin) });
+
+    expect(firstLogs.logs.some((log: { message: string }) => log.message === 'visible-only-to-first-admin')).toBe(true);
+    expect(firstLogs.logs.some((log: { message: string }) => log.message === 'visible-only-to-second-admin')).toBe(false);
+    expect(JSON.stringify(firstLogs)).not.toContain('admin-two-password');
+    expect(JSON.stringify(firstLogs)).not.toContain('log-viewer-password');
+    expect(secondLogs.logs.some((log: { message: string }) => log.message === 'visible-only-to-second-admin')).toBe(true);
+    expect(secondLogs.logs.some((log: { message: string }) => log.message === 'visible-only-to-first-admin')).toBe(false);
+    expect(forbidden.status).toBe(403);
+  });
+
+  it('purges audit logs older than five days', async () => {
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO audit_logs (timestamp, level, source, event, message, userId)
+      VALUES (?, 'info', 'backend', 'test.retention', 'expired-log', ?)
+    `).run(now - 6 * 24 * 60 * 60 * 1000, adminId);
+    db.prepare(`
+      INSERT INTO audit_logs (timestamp, level, source, event, message, userId)
+      VALUES (?, 'info', 'backend', 'test.retention', 'recent-log', ?)
+    `).run(now - 4 * 24 * 60 * 60 * 1000, adminId);
+
+    const { purgeExpiredAuditLogs } = await import('../services/audit-log');
+    expect(purgeExpiredAuditLogs(now)).toBeGreaterThanOrEqual(1);
+    expect(db.prepare('SELECT id FROM audit_logs WHERE message = ?').get('expired-log')).toBeUndefined();
+    expect(db.prepare('SELECT id FROM audit_logs WHERE message = ?').get('recent-log')).toBeTruthy();
+  });
+
   it('accepts the signed login cookie and rejects a forged WebSocket cookie', async () => {
     const { getSignedUserId } = await import('./websocket');
 

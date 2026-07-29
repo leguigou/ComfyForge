@@ -68,15 +68,23 @@ export const useGeneration = (
     return data as { queued: number; messageIds: string[] };
   }, [params, setMessages, fetchSessions]);
 
-  const handleSend = useCallback(async (textToSend: string, isRegeneration = false, targetSessionId?: string, skipEnhancement = false) => {
+  const handleSend = useCallback(async (
+    textToSend: string,
+    isRegeneration = false,
+    targetSessionId?: string,
+    skipEnhancement = false,
+    runInBackground = false
+  ) => {
     const activeSessionId = targetSessionId || currentSessionId;
     if (!textToSend.trim() || !activeSessionId) return;
+    const shouldUpdateVisibleMessages = !runInBackground || activeSessionId === currentSessionId;
 
     const templatePrompt = textToSend;
     const randomResult = resolveRandomPromptsWithSelections(templatePrompt, params.randomPromptLists);
     const resolvedPrompt = randomResult.prompt;
+    const botMsgId = `temp-${Math.random().toString(36).substring(7)}`;
 
-    if (!isRegeneration) {
+    if (!isRegeneration && shouldUpdateVisibleMessages) {
       const userMsg: Message = { id: `temp-${Math.random().toString(36).substring(7)}`, role: 'user', text: templatePrompt, timestamp: Date.now() };
       setMessages(prev => [...prev, userMsg]);
     }
@@ -84,7 +92,6 @@ export const useGeneration = (
     try {
       let finalPrompt = resolvedPrompt;
       let finalNegativePrompt = params.negativePrompt;
-      const botMsgId = `temp-${Math.random().toString(36).substring(7)}`;
 
       // 1. Ajouter la bulle bot en chargement (texte vide au début pour éviter la card inutile)
       const initialBotMsg: Message = { 
@@ -104,8 +111,12 @@ export const useGeneration = (
         steps: params.steps,
         cfg: params.cfg
       };
-      setMessages(prev => [...prev, initialBotMsg]);
-      setTimeout(() => smoothScrollTo(`msg-${botMsgId}`), 50);
+      if (shouldUpdateVisibleMessages) {
+        setMessages(prev => [...prev, initialBotMsg]);
+      }
+      if (!runInBackground) {
+        setTimeout(() => smoothScrollTo(`msg-${botMsgId}`), 50);
+      }
       
       // 2. Interprétation IA
       if (params.llmEnabled && params.llmProviderId && !isRegeneration && !skipEnhancement) {
@@ -127,20 +138,26 @@ export const useGeneration = (
             finalPrompt = enhanceData.enhancedPrompt;
             if (enhanceData.negativePrompt) finalNegativePrompt = enhanceData.negativePrompt;
             // Mise à jour immédiate de la bulle bot avec le nouveau texte
-            setMessages(prev => prev.map(m => m.id === botMsgId ? { 
-              ...m, 
-              text: finalPrompt, 
-              generationPrompt: finalPrompt,
-              // Keep the original template for display/editing; regeneration uses generationPrompt.
-              prompt: templatePrompt,
-              isEnhancing: false 
-            } : m));
+            if (shouldUpdateVisibleMessages) {
+              setMessages(prev => prev.map(m => m.id === botMsgId ? {
+                ...m,
+                text: finalPrompt,
+                generationPrompt: finalPrompt,
+                // Keep the original template for display/editing; regeneration uses generationPrompt.
+                prompt: templatePrompt,
+                isEnhancing: false
+              } : m));
+            }
           } else {
-            setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, isEnhancing: false } : m));
+            if (shouldUpdateVisibleMessages) {
+              setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, isEnhancing: false } : m));
+            }
           }
         } catch (err) { 
           console.error('[Generation] Enhancement failed:', err); 
-          setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, text: finalPrompt, isEnhancing: false } : m));
+          if (shouldUpdateVisibleMessages) {
+            setMessages(prev => prev.map(m => m.id === botMsgId ? { ...m, text: finalPrompt, isEnhancing: false } : m));
+          }
         } finally { 
           enhancingCount.current--;
           if (enhancingCount.current <= 0) setIsEnhancing(false);
@@ -169,19 +186,27 @@ export const useGeneration = (
         }),
         credentials: 'include'
       });
-      const data = await res.json();
+      const data = await readApiResponse(res);
 
-      if (data.success) {
-        setMessages(prev => prev.map(m => m.id === botMsgId
-          ? { ...m, id: data.messageId, generationPrompt: finalPrompt, tags: data.tags || [] }
-          : m));
+      if (res.ok && data.success) {
+        if (shouldUpdateVisibleMessages) {
+          setMessages(prev => prev.map(m => m.id === botMsgId
+            ? { ...m, id: data.messageId, generationPrompt: finalPrompt, tags: data.tags || [] }
+            : m));
+        }
         fetchSessions(); 
+        return data;
       } else {
         throw new Error(data.error || 'Unknown error');
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      setMessages(prev => [...prev, { id: `error-${Date.now()}`, role: 'bot', text: `Error: ${message}`, status: 'failed', timestamp: Date.now() }]);
+      if (shouldUpdateVisibleMessages) {
+        setMessages(prev => prev.map(item => item.id === botMsgId
+          ? { ...item, text: message, status: 'failed', isEnhancing: false }
+          : item));
+      }
+      if (runInBackground) throw error;
     }
   }, [currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions]);
 
