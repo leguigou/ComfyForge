@@ -7,7 +7,7 @@ export const getGenerationElapsedSeconds = (
     ? 0
     : Math.max(0, Math.floor((now - generationStartedAt) / 1000));
 
-  return Math.max(serverDuration ?? 0, liveDuration);
+  return Math.max(1, serverDuration ?? 0, liveDuration);
 };
 
 export const resolveGenerationStartedAt = (

@@ -108,6 +108,12 @@
   gap: 1.25rem;
 }
 
+.general-settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
 .companion-general-card {
   display: flex;
   align-items: center;
@@ -198,6 +204,95 @@
 
 .companion-customize-btn:hover {
   filter: brightness(1.12);
+}
+
+.lucky-settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--social-bg);
+}
+
+.lucky-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.lucky-settings-heading h4 {
+  margin: 0 0 0.35rem;
+  color: var(--text-h);
+  font-size: 1.15rem;
+}
+
+.lucky-settings-heading p,
+.lucky-slider small {
+  display: block;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  opacity: 0.7;
+}
+
+.lucky-settings-badge {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--accent-border);
+  border-radius: 50%;
+  background: var(--accent-bg);
+}
+
+.lucky-settings-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+
+.lucky-slider {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--bg) 45%, transparent);
+}
+
+.lucky-slider-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--text-h);
+  font-size: 0.82rem;
+}
+
+.lucky-slider-label output {
+  min-width: 3.2rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  text-align: center;
+}
+
+.lucky-slider input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .companion-toolbar {
@@ -346,6 +441,10 @@
 
   .companion-general-actions {
     width: 100%;
+  }
+
+  .lucky-settings-controls {
+    grid-template-columns: 1fr;
   }
 
   .companion-enabled {
@@ -1499,6 +1598,270 @@
   margin-bottom: 1rem;
   font-size: 1.2rem;
   color: var(--text-h);
+}
+
+.admin-logs-panel {
+  min-width: 0;
+  padding: 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--social-bg);
+}
+
+.admin-logs-heading,
+.admin-log-controls,
+.admin-log-toggle-row,
+.admin-log-filter-group,
+.admin-log-chips,
+.admin-log-entry-main,
+.admin-log-context,
+.admin-logs-actions {
+  display: flex;
+  align-items: center;
+}
+
+.admin-logs-heading {
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.admin-logs-heading h3 { margin: 0 0 0.25rem; }
+.admin-logs-heading p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.8rem;
+  opacity: 0.78;
+}
+
+.admin-logs-actions { gap: 0.5rem; }
+.admin-logs-actions button,
+.admin-log-expanded button {
+  min-height: 36px;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.admin-log-controls {
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+}
+
+.admin-log-search {
+  display: grid;
+  flex: 1;
+  gap: 0.35rem;
+  color: var(--text);
+  font-size: 0.72rem;
+}
+
+.admin-log-search input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.admin-log-toggle-row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+
+.admin-log-toggle-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text);
+  font-size: 0.75rem;
+}
+
+.admin-log-toggle-row input { accent-color: var(--accent); }
+.admin-log-toggle-row select {
+  min-height: 36px;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.admin-log-filter-group {
+  align-items: flex-start;
+  gap: 0.8rem;
+  margin-bottom: 0.65rem;
+}
+
+.admin-log-filter-group > span {
+  flex: 0 0 58px;
+  padding-top: 0.38rem;
+  color: var(--text);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.admin-log-chips {
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.admin-log-chip {
+  min-height: 30px;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.72rem;
+  cursor: pointer;
+  opacity: 0.5;
+}
+
+.admin-log-chip.selected {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--text-h);
+  opacity: 1;
+}
+
+.admin-log-chip.level-warning.selected { border-color: #e6a817; background: rgba(230, 168, 23, 0.12); }
+.admin-log-chip.level-error.selected { border-color: #ef5350; background: rgba(239, 83, 80, 0.12); }
+.admin-log-chip small { margin-left: 0.2rem; opacity: 0.75; }
+
+.admin-log-list {
+  height: min(52dvh, 520px);
+  min-height: 320px;
+  margin-top: 1rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: #090c10;
+  color: #d9e2ec;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.admin-log-empty {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: #8b98a7;
+  font-size: 0.85rem;
+}
+
+.admin-log-entry {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-left: 3px solid #4e657d;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.admin-log-entry:last-child { border-bottom: 0; }
+.admin-log-entry.level-warning { border-left-color: #e6a817; background: rgba(230, 168, 23, 0.035); }
+.admin-log-entry.level-error { border-left-color: #ef5350; background: rgba(239, 83, 80, 0.055); }
+.admin-log-entry.level-info { border-left-color: #42a5f5; }
+.admin-log-entry.level-debug { border-left-color: #78909c; opacity: 0.88; }
+
+.admin-log-entry-main {
+  display: grid;
+  grid-template-columns: auto auto auto auto minmax(120px, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.62rem 0.75rem;
+  font-size: 0.68rem;
+  color: #d9e2ec;
+  cursor: pointer;
+  list-style: none;
+}
+
+.admin-log-entry-main::-webkit-details-marker { display: none; }
+.admin-log-entry-main time { color: #91a0b2; }
+.admin-log-entry-main strong { color: #f5f7fa; }
+.admin-log-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-log-level,
+.admin-log-source,
+.admin-log-direction,
+.admin-log-status {
+  padding: 0.15rem 0.38rem;
+  border-radius: 0.35rem;
+  background: rgba(255, 255, 255, 0.09);
+  text-transform: uppercase;
+}
+
+.admin-log-direction.direction-outbound { color: #8ecdf8; }
+.admin-log-direction.direction-inbound { color: #8ee6b0; }
+.admin-log-level.level-warning { color: #ffd166; }
+.admin-log-level.level-error { color: #ff7b79; }
+.admin-log-level.level-info { color: #70c1ff; }
+.admin-log-duration { color: #a9b6c5; text-align: right; }
+
+.admin-log-expanded {
+  padding: 0 0.85rem 0.8rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.admin-log-event {
+  margin-top: 0.65rem;
+  color: #8ecdf8;
+  font-size: 0.7rem;
+}
+
+.admin-log-context {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  color: #9fb0c2;
+  font-size: 0.66rem;
+}
+
+.admin-log-entry pre {
+  max-height: 320px;
+  margin: 0.55rem 0;
+  padding: 0.7rem;
+  overflow: auto;
+  border-radius: 0.5rem;
+  background: #05070a;
+  color: #cbd7e5;
+  font-size: 0.68rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .admin-logs-panel { padding: 0.75rem; }
+  .admin-logs-heading,
+  .admin-log-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .admin-logs-actions button { flex: 1; }
+  .admin-log-toggle-row { justify-content: flex-start; }
+  .admin-log-filter-group { flex-direction: column; gap: 0.35rem; }
+  .admin-log-filter-group > span { flex-basis: auto; }
+  .admin-log-list { height: 58dvh; min-height: 360px; }
+  .admin-log-entry-main {
+    grid-template-columns: auto auto auto minmax(90px, 1fr) auto;
+    gap: 0.35rem;
+  }
+  .admin-log-level,
+  .admin-log-status { display: none; }
+  .admin-log-entry-main time { font-size: 0.62rem; }
 }
 
 /* Toggle Switch Styles */

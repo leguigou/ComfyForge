@@ -151,7 +151,7 @@ router.post('/generate', authenticate, async (req, res) => {
     
     db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ? AND title = \'New Chat\'').run(displayPrompt.substring(0, 30), timestamp, sessionId);
     db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
-    
+
     res.json({ success: true, messageId, status: 'pending', tags });
     
     // Publish the new queue size immediately. Without this, clients only hear

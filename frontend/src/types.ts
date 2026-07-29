@@ -129,6 +129,8 @@ export interface GenParameters {
   negativePrompt: string;
   llmEnabled: boolean;
   llmProviderId?: string;
+  luckyTemperature: number;
+  luckyFavoriteCount: number;
   workflowFile: string;
   nodeMapping: NodeMapping;
   seedMode: 'random' | 'fixed';

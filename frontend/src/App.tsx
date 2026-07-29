@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import './App.css';
 import { translations } from './i18n';
 import type { 
@@ -7,7 +7,6 @@ import type {
   Theme, 
   Language,
   User,
-  Message,
   PromptTag
 } from './types';
 import { API_BASE, getFullImageUrl } from './services/api';
@@ -22,7 +21,7 @@ import { useSessions } from './hooks/useSessions';
 import { useGeneration } from './hooks/useGeneration';
 import { useWebSocket } from './hooks/useWebSocket';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
-import { ComposeIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon } from './components/ui/Icons';
+import { ComposeIcon, InfoIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon, XIcon } from './components/ui/Icons';
 import toast, { Toaster } from 'react-hot-toast';
 import NoSleep from 'nosleep.js';
 
@@ -147,7 +146,7 @@ function App() {
     () => sessionStorage.getItem('comfyforge.queueIndicatorLatched') === 'true'
   );
   const [isCreatingLuckyPrompt, setIsCreatingLuckyPrompt] = useState(false);
-  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin'>('images');
+  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin' | 'logs'>('images');
   
   const [input, setInput] = useState('');
   const [openOptionsRequest, setOpenOptionsRequest] = useState(0);
@@ -166,6 +165,8 @@ function App() {
       llmSystemMessage: "You are a professional stable diffusion prompt engineer. Transform the user's brief idea into a highly detailed, descriptive, and artistic prompt in ENGLISH. Also generate a negative prompt of things to avoid. Output your response as a JSON object with two keys: 'positive' and 'negative'. No other text.",
       negativePrompt: "low quality, bad anatomy, malformed, extra limbs, extra fingers, fused fingers, bad hands, poorly drawn hands, missing fingers, fused face, poorly drawn face, asymmetrical, cartoon, anime, 3d, render, watermark, text, logo, swept hair, portrait",
       llmEnabled: false,
+      luckyTemperature: 0.95,
+      luckyFavoriteCount: 6,
       workflowFile: 'workflow_lcm.json',
       nodeMapping: { checkpoint: "1", positive: "3", negative: "4", ksampler: "10", latent: "6", save: "99" },
       seedMode: 'random',
@@ -188,6 +189,8 @@ function App() {
   const isProgrammaticScrollRef = useRef<boolean>(false);
   const scrollAnimationFrameRef = useRef<number | null>(null);
   const scrollRequestTimeoutRef = useRef<number | null>(null);
+  const restoredScrollContextRef = useRef<string | null>(null);
+  const scrollSaveFrameRef = useRef<number | null>(null);
 
   const smoothScrollTo = useCallback((elementId: string) => {
     if (pendingAnchorRef.current || isAnchoringRef.current) return;
@@ -324,10 +327,10 @@ function App() {
 
   useEffect(() => {
     if (queueRemaining === null) return;
-    if (queueRemaining > 0) {
+    if (queueRemaining >= 2) {
       setShowQueueIndicator(true);
       sessionStorage.setItem('comfyforge.queueIndicatorLatched', 'true');
-    } else if (queueRemaining === 0) {
+    } else {
       setShowQueueIndicator(false);
       sessionStorage.removeItem('comfyforge.queueIndicatorLatched');
     }
@@ -341,6 +344,39 @@ function App() {
     source: 'chat' | 'gallery';
   } | null>(null);
   const [showLightboxMenu, setShowLightboxMenu] = useState(false);
+  const [showLightboxPrompt, setShowLightboxPrompt] = useState(false);
+  const lightboxChatWasNavigatedRef = useRef(false);
+
+  const closeLightbox = useCallback(() => {
+    const lightbox = activeLightbox;
+    const shouldRealignChat = lightbox?.source === 'chat' && lightboxChatWasNavigatedRef.current;
+
+    if (shouldRealignChat) {
+      if (scrollRequestTimeoutRef.current !== null) {
+        window.clearTimeout(scrollRequestTimeoutRef.current);
+        scrollRequestTimeoutRef.current = null;
+      }
+      if (scrollAnimationFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollAnimationFrameRef.current);
+        scrollAnimationFrameRef.current = null;
+      }
+
+      const element = document.getElementById(`img-${lightbox.messageId}`);
+      const container = containerRef.current;
+      if (element && container) {
+        const containerRect = container.getBoundingClientRect();
+        const elementRect = element.getBoundingClientRect();
+        const targetScroll = container.scrollTop + elementRect.top - containerRect.top - 40;
+        container.scrollTop = Math.max(
+          0,
+          Math.min(targetScroll, container.scrollHeight - container.clientHeight)
+        );
+      }
+    }
+
+    setActiveLightbox(null);
+    lightboxChatWasNavigatedRef.current = false;
+  }, [activeLightbox]);
 
   const [hdLoaded, setHdLoaded] = useState<string | null>(null);
   const [loadedHdImages, setLoadedHdImages] = useState<Set<string>>(new Set());
@@ -384,6 +420,7 @@ function App() {
       setZoomOffset({ x: 0, y: 0 });
     }
     setShowLightboxMenu(false);
+    setShowLightboxPrompt(false);
   }, [activeLightbox, hdLoaded]);
 
   const handleLightboxTouchStart = (e: React.TouchEvent) => {
@@ -505,10 +542,12 @@ function App() {
   }, [activeTab, fetchAdminUsers]);
 
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
+  const galleryItemsRef = useRef<GalleryItem[]>([]);
   const [hasMoreGallery, setHasMoreGallery] = useState(true);
   const hasMoreGalleryRef = useRef(true);
   const [isFetchingGallery, setIsFetchingGallery] = useState(false);
   const isFetchingGalleryRef = useRef(false);
+  const galleryFetchPromiseRef = useRef<Promise<GalleryItem[]> | null>(null);
   const [showArchivedInGallery, setShowArchivedInGallery] = useState(false);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [availablePromptTags, setAvailablePromptTags] = useState<PromptTag[]>([]);
@@ -518,6 +557,10 @@ function App() {
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const [favoritedId, setFavoritedId] = useState<string | null>(null);
   const clickTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    galleryItemsRef.current = galleryItems;
+  }, [galleryItems]);
 
   const toggleFavorite = useCallback(async (sessionId: string, messageId: string, currentStatus: number | undefined) => {
     const newStatus = currentStatus === 1 ? 0 : 1;
@@ -572,6 +615,7 @@ function App() {
     } else {
       clickTimeoutRef.current = window.setTimeout(() => {
         clickTimeoutRef.current = null;
+        lightboxChatWasNavigatedRef.current = false;
         setActiveLightbox({ 
           url: item.url, 
           thumbnailUrl: item.thumbnailUrl, 
@@ -585,7 +629,7 @@ function App() {
 
   const handleLightboxImageClick = useCallback((e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
-      setActiveLightbox(null);
+      closeLightbox();
       return;
     }
 
@@ -603,7 +647,7 @@ function App() {
         clickTimeoutRef.current = null;
       }, 350);
     }
-  }, [activeLightbox, messages, galleryItems, toggleFavorite]);
+  }, [activeLightbox, closeLightbox, messages, galleryItems, toggleFavorite]);
 
   const [comfyModels, setComfyModels] = useState<string[]>([]);
   const [diffusionModels, setDiffusionModels] = useState<string[]>([]);
@@ -645,10 +689,41 @@ function App() {
     }
   }, [sidebarOpen]);
 
+  const saveChatScrollPosition = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || view !== 'chat' || !currentSessionId) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const messageElements = container.querySelectorAll<HTMLElement>('[id^="msg-"]');
+    const anchor = Array.from(messageElements).find(element => (
+      element.getBoundingClientRect().bottom > containerRect.top
+    ));
+    const anchorRect = anchor?.getBoundingClientRect();
+
+    try {
+      localStorage.setItem(`comfyforge.scroll.chat.${currentSessionId}`, JSON.stringify({
+        top: container.scrollTop,
+        atBottom: container.scrollHeight - container.scrollTop - container.clientHeight < 20,
+        anchorId: anchor?.id,
+        anchorOffset: anchorRect ? anchorRect.top - containerRect.top : undefined
+      }));
+    } catch {
+      // Scroll restoration is a convenience; storage can be unavailable in
+      // private browsing without affecting the rest of the application.
+    }
+  }, [currentSessionId, view]);
+
   const handleScroll = useCallback((isUserScroll: boolean | React.UIEvent = false) => {
     if (isProgrammaticScrollRef.current) return;
     const container = containerRef.current;
     if (!container) return;
+
+    if (view === 'chat' && currentSessionId && scrollSaveFrameRef.current === null) {
+      scrollSaveFrameRef.current = window.requestAnimationFrame(() => {
+        scrollSaveFrameRef.current = null;
+        saveChatScrollPosition();
+      });
+    }
     
     const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
     
@@ -671,7 +746,7 @@ function App() {
     } else {
       setShowScrollBottom(true);
     }
-  }, []);
+  }, [currentSessionId, saveChatScrollPosition, view]);
 
   // Force scroll check when content changes
   useEffect(() => {
@@ -720,12 +795,19 @@ function App() {
   const fetchSettings = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/settings`, { credentials: 'include' });
+      if (!res.ok) throw new Error(`Failed to fetch settings: ${res.status}`);
       const data = await res.json();
       if (data && data.width) {
         setParams(prev => {
           const storedParams = {
             ...prev,
             ...data,
+            luckyTemperature: typeof data.luckyTemperature === 'number'
+              ? Math.min(1, Math.max(0.1, data.luckyTemperature))
+              : prev.luckyTemperature,
+            luckyFavoriteCount: typeof data.luckyFavoriteCount === 'number'
+              ? Math.min(8, Math.max(1, Math.round(data.luckyFavoriteCount)))
+              : prev.luckyFavoriteCount,
             favoriteModels: data.favoriteModels || prev.favoriteModels,
             randomPromptLists: data.randomPromptLists || prev.randomPromptLists,
             companionSettings: normalizeCompanionSettings(data.companionSettings || prev.companionSettings)
@@ -738,8 +820,10 @@ function App() {
           };
         });
       }
+      // Never enable autosave before the server settings were read successfully.
+      // Otherwise a transient loading error can overwrite custom companions with defaults.
+      setIsSettingsLoaded(true);
     } catch (err) { console.error('Error fetching settings:', err); }
-    finally { setIsSettingsLoaded(true); }
   }, []);
 
   useEffect(() => {
@@ -770,14 +854,19 @@ function App() {
         body: paramsString,
         credentials: 'include'
       });
-      if (res.ok) {
-        lastSavedParamsRef.current = paramsString;
-        if (!silent) {
-          toast.success(t.settingsSaved, { id: 'settings-save' });
-        }
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || `${t.settingsSaveFailed} (${res.status})`);
       }
-    } catch (err) { console.error('Error saving settings:', err); }
-  }, [isSettingsLoaded, t.settingsSaved]);
+      lastSavedParamsRef.current = paramsString;
+      if (!silent) {
+        toast.success(t.settingsSaved, { id: 'settings-save' });
+      }
+    } catch (err) {
+      console.error('Error saving settings:', err);
+      toast.error(err instanceof Error ? err.message : t.settingsSaveFailed, { id: 'settings-save' });
+    }
+  }, [isSettingsLoaded, t.settingsSaved, t.settingsSaveFailed]);
 
   useEffect(() => {
     if (!isAuthenticated || !isSettingsLoaded) return;
@@ -852,10 +941,90 @@ function App() {
     }
   }, []);
 
-  const fetchGallery = useCallback(async (isInitial = false) => {
-    if (!isInitial && (isFetchingGalleryRef.current || !hasMoreGalleryRef.current)) return;
+  useLayoutEffect(() => {
+    if (view !== 'chat' || !currentSessionId) {
+      restoredScrollContextRef.current = null;
+      return;
+    }
+
+    const context = `chat:${currentSessionId}`;
+    if (restoredScrollContextRef.current === context || messages.length === 0) return;
+
+    const container = containerRef.current;
+    if (!container) return;
+    restoredScrollContextRef.current = context;
+
+    let saved: {
+      top?: number;
+      atBottom?: boolean;
+      anchorId?: string;
+      anchorOffset?: number;
+    } | null;
+
+    try {
+      const raw = localStorage.getItem(`comfyforge.scroll.chat.${currentSessionId}`);
+      saved = raw ? JSON.parse(raw) : null;
+    } catch {
+      return;
+    }
+    if (!saved) return;
+
+    if (scrollRequestTimeoutRef.current !== null) {
+      window.clearTimeout(scrollRequestTimeoutRef.current);
+      scrollRequestTimeoutRef.current = null;
+    }
+    if (scrollAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationFrameRef.current);
+      scrollAnimationFrameRef.current = null;
+    }
+
+    isProgrammaticScrollRef.current = true;
+    const previousScrollBehavior = container.style.scrollBehavior;
+    container.style.scrollBehavior = 'auto';
+
+    const anchor = saved.anchorId ? document.getElementById(saved.anchorId) : null;
+    if (saved.atBottom) {
+      container.scrollTop = container.scrollHeight - container.clientHeight;
+    } else if (anchor && typeof saved.anchorOffset === 'number') {
+      const containerRect = container.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      container.scrollTop += anchorRect.top - containerRect.top - saved.anchorOffset;
+    } else if (typeof saved.top === 'number') {
+      container.scrollTop = saved.top;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      container.style.scrollBehavior = previousScrollBehavior;
+      isProgrammaticScrollRef.current = false;
+      handleScroll(false);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      container.style.scrollBehavior = previousScrollBehavior;
+      isProgrammaticScrollRef.current = false;
+    };
+  }, [currentSessionId, handleScroll, messages.length, view]);
+
+  useEffect(() => () => {
+    if (scrollSaveFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollSaveFrameRef.current);
+    }
+  }, []);
+
+  const fetchGallery = useCallback(async (isInitial = false): Promise<GalleryItem[]> => {
+    if (!isInitial && isFetchingGalleryRef.current) {
+      return galleryFetchPromiseRef.current ?? [];
+    }
+    if (!isInitial && !hasMoreGalleryRef.current) return [];
 
     const requestId = isInitial ? ++galleryRequestRef.current : galleryRequestRef.current;
+    let resolveFetch!: (items: GalleryItem[]) => void;
+    const fetchPromise = new Promise<GalleryItem[]>(resolve => {
+      resolveFetch = resolve;
+    });
+    galleryFetchPromiseRef.current = fetchPromise;
+    let loadedItems: GalleryItem[] = [];
     
     isFetchingGalleryRef.current = true;
     setIsFetchingGallery(true);
@@ -878,22 +1047,24 @@ function App() {
 
       if (!Array.isArray(data)) {
         console.error('Gallery API did not return an array:', data);
-        return;
+        return [];
       }
 
-      if (requestId !== galleryRequestRef.current) return;
+      if (requestId !== galleryRequestRef.current) return [];
 
       if (isInitial) {
+        loadedItems = data;
+        galleryItemsRef.current = data;
         setGalleryItems(data);
         galleryOffsetRef.current = data.length;
         hasMoreGalleryRef.current = data.length === 25;
         setHasMoreGallery(hasMoreGalleryRef.current);
       } else if (data.length > 0) {
-        setGalleryItems(prev => {
-          const existingIds = new Set(prev.map(item => item.messageId));
-          const uniqueNewData = data.filter(item => !existingIds.has(item.messageId));
-          return [...prev, ...uniqueNewData];
-        });
+        const existingIds = new Set(galleryItemsRef.current.map(item => item.messageId));
+        loadedItems = data.filter(item => !existingIds.has(item.messageId));
+        const nextItems = [...galleryItemsRef.current, ...loadedItems];
+        galleryItemsRef.current = nextItems;
+        setGalleryItems(nextItems);
         galleryOffsetRef.current += data.length;
         hasMoreGalleryRef.current = data.length === 25;
         setHasMoreGallery(hasMoreGalleryRef.current);
@@ -904,11 +1075,16 @@ function App() {
     } catch (err) { 
       console.error('Error fetching gallery:', err); 
     } finally { 
+      resolveFetch(loadedItems);
+      if (galleryFetchPromiseRef.current === fetchPromise) {
+        galleryFetchPromiseRef.current = null;
+      }
       if (requestId === galleryRequestRef.current) {
         setIsFetchingGallery(false);
         isFetchingGalleryRef.current = false;
       }
     }
+    return loadedItems;
   }, [showArchivedInGallery, favoritesOnly, selectedPromptTags, debouncedGallerySearch]);
 
   const observer = useRef<IntersectionObserver | null>(null);
@@ -1066,33 +1242,79 @@ function App() {
   const touchEnd = useRef<number | null>(null);
   const handleTouchStart = useCallback((e: React.TouchEvent) => { touchStart.current = e.targetTouches[0].clientX; }, []);
   const handleTouchMove = useCallback((e: React.TouchEvent) => { touchEnd.current = e.targetTouches[0].clientX; }, []);
+
+  const navigateLightbox = useCallback(async (direction: 1 | -1) => {
+    if (!activeLightbox) return;
+
+    if (activeLightbox.source === 'chat') {
+      const items = messages.filter(message => message.imageUrl);
+      const currentIndex = items.findIndex(message => message.id === activeLightbox.messageId);
+      if (currentIndex === -1 || items.length < 2) return;
+      const nextIndex = (currentIndex + direction + items.length) % items.length;
+      const next = items[nextIndex];
+      setHdLoaded(null);
+      lightboxChatWasNavigatedRef.current = true;
+      setActiveLightbox({
+        url: next.imageUrl!,
+        thumbnailUrl: next.thumbnailUrl,
+        sessionId: currentSessionId || '',
+        messageId: next.id,
+        source: 'chat'
+      });
+      return;
+    }
+
+    const originalMessageId = activeLightbox.messageId;
+    let items = galleryItemsRef.current;
+    let currentIndex = items.findIndex(item => item.messageId === originalMessageId);
+    if (currentIndex === -1) return;
+
+    // Horizontal navigation takes over the vertical grid's lazy-load trigger.
+    // Start early so the next page is usually ready before the last loaded image.
+    if (direction === 1 && currentIndex >= items.length - 5 && hasMoreGalleryRef.current) {
+      void fetchGallery(false);
+    }
+
+    if (direction === 1 && currentIndex === items.length - 1 && hasMoreGalleryRef.current) {
+      await fetchGallery(false);
+      items = galleryItemsRef.current;
+      currentIndex = items.findIndex(item => item.messageId === originalMessageId);
+    }
+
+    setActiveLightbox(current => {
+      if (!current || current.source !== 'gallery' || current.messageId !== originalMessageId) {
+        return current;
+      }
+
+      let nextIndex = currentIndex + direction;
+      if (nextIndex >= items.length) {
+        // Once the server confirms the real end, continue as an infinite carousel.
+        nextIndex = hasMoreGalleryRef.current ? currentIndex : 0;
+      } else if (nextIndex < 0) {
+        // Do not jump to a false "last" item while older pages are still unloaded.
+        nextIndex = hasMoreGalleryRef.current ? 0 : items.length - 1;
+      }
+
+      const next = items[nextIndex];
+      if (!next || next.messageId === current.messageId) return current;
+      return {
+        url: next.imageUrl,
+        thumbnailUrl: next.thumbnailUrl,
+        sessionId: next.sessionId,
+        messageId: next.messageId,
+        source: 'gallery'
+      };
+    });
+  }, [activeLightbox, currentSessionId, fetchGallery, messages]);
+
   const handleTouchEnd = useCallback(() => {
-    if (!touchStart.current || !touchEnd.current) return;
+    if (touchStart.current === null || touchEnd.current === null) return;
     const distance = touchStart.current - touchEnd.current;
     if (activeLightbox && Math.abs(distance) > 50) {
-      const isNext = distance > 0;
-      const items = activeLightbox.source === 'chat' ? messages.filter(m => m.imageUrl) : galleryItems;
-      const currentIndex = items.findIndex(m => {
-        if (activeLightbox.source === 'chat') return (m as Message).id === activeLightbox.messageId;
-        return (m as GalleryItem).messageId === activeLightbox.messageId;
-      });
-      if (currentIndex !== -1) {
-        const nextIdx = isNext ? currentIndex + 1 : currentIndex - 1;
-        if (nextIdx >= 0 && nextIdx < items.length) {
-          const next = items[nextIdx];
-          setHdLoaded(null);
-          if (activeLightbox.source === 'chat') {
-            const m = next as Message;
-            setActiveLightbox({ url: m.imageUrl!, thumbnailUrl: m.thumbnailUrl, sessionId: currentSessionId || '', messageId: m.id, source: 'chat' });
-          } else {
-            const g = next as GalleryItem;
-            setActiveLightbox({ url: g.imageUrl, thumbnailUrl: g.thumbnailUrl, sessionId: g.sessionId, messageId: g.messageId, source: 'gallery' });
-          }
-        }
-      }
+      void navigateLightbox(distance > 0 ? 1 : -1);
     }
     touchStart.current = touchEnd.current = null;
-  }, [activeLightbox, messages, galleryItems, currentSessionId]);
+  }, [activeLightbox, navigateLightbox]);
 
   const downloadImage = useCallback(async (url: string, filename: string) => {
     const res = await fetch(url, { credentials: 'include' });
@@ -1128,7 +1350,11 @@ function App() {
       const response = await fetch(`${API_BASE}/api/llm/lucky-prompt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerId: params.llmProviderId }),
+        body: JSON.stringify({
+          providerId: params.llmProviderId,
+          temperature: params.luckyTemperature,
+          favoriteCount: params.luckyFavoriteCount,
+        }),
         credentials: 'include',
       });
       const data = await response.json();
@@ -1145,37 +1371,27 @@ function App() {
     } finally {
       setIsCreatingLuckyPrompt(false);
     }
-  }, [createNewSession, currentSessionId, handleSend, isCreatingLuckyPrompt, params.llmProviderId, t.luckyNeedsFavorites, t.luckyNeedsProvider, t.luckyPromptFailed]);
+  }, [createNewSession, currentSessionId, handleSend, isCreatingLuckyPrompt, params.llmProviderId, params.luckyFavoriteCount, params.luckyTemperature, t.luckyNeedsFavorites, t.luckyNeedsProvider, t.luckyPromptFailed]);
 
   const onInputChange = useCallback((val: string) => setInput(val), []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setActiveLightbox(null);
-      if (activeLightbox && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
-        const items = activeLightbox.source === 'chat' ? messages.filter(m => m.imageUrl) : galleryItems;
-        const currentIndex = items.findIndex(m => {
-            if (activeLightbox.source === 'chat') return (m as Message).id === activeLightbox.messageId;
-            return (m as GalleryItem).messageId === activeLightbox.messageId;
-        });
-        if (currentIndex !== -1) {
-          const nextIdx = e.key === 'ArrowRight' ? currentIndex + 1 : currentIndex - 1;
-          if (nextIdx >= 0 && nextIdx < items.length) {
-            const next = items[nextIdx];
-            if (activeLightbox.source === 'chat') {
-              const m = next as Message;
-              setActiveLightbox({ url: m.imageUrl!, thumbnailUrl: m.thumbnailUrl, sessionId: currentSessionId!, messageId: m.id, source: 'chat' });
-            } else {
-              const g = next as GalleryItem;
-              setActiveLightbox({ url: g.imageUrl, thumbnailUrl: g.thumbnailUrl, sessionId: g.sessionId, messageId: g.messageId, source: 'gallery' });
-            }
-          }
+      if (e.key === 'Escape') {
+        if (showLightboxPrompt) {
+          setShowLightboxPrompt(false);
+        } else {
+          closeLightbox();
         }
+      }
+      if (activeLightbox && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        void navigateLightbox(e.key === 'ArrowRight' ? 1 : -1);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeLightbox, messages, galleryItems, currentSessionId]);
+  }, [activeLightbox, closeLightbox, navigateLightbox, showLightboxPrompt]);
 
   const [showSessionMenu, setShowSessionMenu] = useState(false);
   const sessionMenuRef = useRef<HTMLDivElement>(null);
@@ -1349,6 +1565,9 @@ function App() {
   ) : null;
 
   const isAlreadyLoaded = activeLightbox ? loadedHdImages.has(activeLightbox.messageId) : false;
+  const currentLightboxPrompt = currentLightboxItem
+    ? currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || ''
+    : '';
 
   const regenerateLightboxImage = async () => {
     if (!activeLightbox || !currentLightboxItem) return;
@@ -1357,26 +1576,22 @@ function App() {
     const { messageId, sessionId } = activeLightbox;
 
     setShowLightboxMenu(false);
-    setActiveLightbox(null);
-    setView('chat');
-
-    if (currentSessionId !== sessionId) {
-      setMessages([]);
-      setCurrentSessionId(sessionId);
-      await fetchSessionDetails(sessionId);
-    }
-
     recordRegeneration(messageId);
-    await handleSend(prompt, true, sessionId);
-    window.setTimeout(onScrollToBottom, 80);
+    toast.success(t.regenerationStarted);
+    try {
+      await handleSend(prompt, true, sessionId, false, true);
+    } catch (error) {
+      console.error('Background regeneration failed:', error);
+      toast.error(error instanceof Error ? error.message : t.retryFailed);
+    }
   };
 
   return (
     <ErrorBoundary name="ComfyForge App">
       <div className={`app-layout ${theme} ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
-        <Toaster position="top-right" />
+        <Toaster position="top-right" containerClassName="app-toaster" />
         {activeLightbox && (
-        <div className="lightbox" onClick={() => setActiveLightbox(null)} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd}>
+        <div className="lightbox" onClick={closeLightbox} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd}>
           <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick}>
             {activeLightbox.thumbnailUrl && !isAlreadyLoaded && (
               <img src={getFullImageUrl(activeLightbox.thumbnailUrl)} alt="Loading..." className="lightbox-thumb" style={{ filter: 'blur(10px)', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: hdLoaded === activeLightbox.messageId ? 0 : 1, transition: 'opacity 0.3s ease-out' }} />
@@ -1384,6 +1599,29 @@ function App() {
             <img src={getFullImageUrl(activeLightbox.url)} alt="Fullscreen" className="lightbox-hd" style={{ position: 'relative', zIndex: 2, opacity: (hdLoaded === activeLightbox.messageId || isAlreadyLoaded) ? 1 : 0, transition: isAlreadyLoaded ? 'none' : 'opacity 0.4s ease-in', transform: `translate(${zoomOffset.x}px, ${zoomOffset.y}px) scale(${zoomScale})` }} onLoad={() => { setHdLoaded(activeLightbox.messageId); setLoadedHdImages(prev => new Set(prev).add(activeLightbox.messageId)); }} />
             {favoritedId === activeLightbox.messageId && <div className="image-overlay-heart" style={{ fontSize: '8rem' }}>❤️</div>}
           </div>
+          {showLightboxPrompt && (
+            <section
+              className="lightbox-prompt-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="lightbox-prompt-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="lightbox-prompt-header">
+                <h2 id="lightbox-prompt-title">{t.finalPrompt}</h2>
+                <button
+                  type="button"
+                  className="lightbox-prompt-close"
+                  onClick={() => setShowLightboxPrompt(false)}
+                  title={t.close}
+                  aria-label={t.close}
+                >
+                  <XIcon size={18} />
+                </button>
+              </div>
+              <p className="lightbox-prompt-text">{currentLightboxPrompt}</p>
+            </section>
+          )}
           <div className="lightbox-actions" onClick={(e) => e.stopPropagation()}>
             <div className="lightbox-toolbar">
               <button className="lightbox-btn" onClick={() => { goToImage(activeLightbox.sessionId, activeLightbox.messageId); setActiveLightbox(null); }} title={t.viewInChat} aria-label={t.viewInChat}>💬</button>
@@ -1411,6 +1649,20 @@ function App() {
                     >
                       <span className="lightbox-menu-icon" aria-hidden="true">↓</span>
                       <span>{t.download}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="lightbox-menu-item"
+                      role="menuitem"
+                      disabled={!currentLightboxPrompt.trim()}
+                      onClick={() => {
+                        if (!currentLightboxPrompt.trim()) return;
+                        setShowLightboxMenu(false);
+                        setShowLightboxPrompt(true);
+                      }}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true"><InfoIcon size={18} /></span>
+                      <span>{t.viewPrompt}</span>
                     </button>
                     <button
                       type="button"
@@ -1478,7 +1730,7 @@ function App() {
               </div>
             </div>
             <div className="lightbox-top-actions">
-              <button className="lightbox-btn close" onClick={() => setActiveLightbox(null)} title={t.close} aria-label={t.close}>×</button>
+              <button className="lightbox-btn close" onClick={closeLightbox} title={t.close} aria-label={t.close}>×</button>
             </div>
           </div>
         </div>
@@ -1560,7 +1812,7 @@ function App() {
           </div>
 
           <div className="header-right">
-            {showQueueIndicator && (queueRemaining ?? 0) > 0 && (
+            {showQueueIndicator && (queueRemaining ?? 0) >= 2 && (
               <button
                 type="button"
                 className="queue-status-indicator"

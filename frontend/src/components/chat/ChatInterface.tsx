@@ -450,7 +450,13 @@ export const ChatInterface = ({
                         <div className="retry-actions">
                           <button className="retry-btn" onClick={async () => {
                             try {
-                              await retryMessage(msg.id);
+                              if (msg.id.startsWith('temp-')) {
+                                const prompt = msg.generationPrompt || msg.prompt || '';
+                                if (!prompt.trim()) throw new Error(t.retryFailed);
+                                await handleSend(prompt, true, true);
+                              } else {
+                                await retryMessage(msg.id);
+                              }
                               toast.success(t.retryStarted);
                             } catch (error) {
                               toast.error(error instanceof Error ? error.message : t.retryFailed);

@@ -5,7 +5,9 @@ import { resolveGenerationStartedAt } from '../utils/generationTimer';
 
 export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticated: boolean | null) => {
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(() => {
+    return localStorage.getItem('comfyforge.currentSessionId');
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
   const [messageToDelete, setMessageToDelete] = useState<string | null>(null);
@@ -23,7 +25,11 @@ export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticat
       const data = await res.json();
       setSessions(data);
       if (data.length > 0 && view !== 'archives') {
-        setCurrentSessionId(prev => prev || data[0].id);
+        setCurrentSessionId(prev => (
+          prev && data.some((session: Session) => session.id === prev)
+            ? prev
+            : data[0].id
+        ));
       }
     } catch (err) {
       console.error('Error fetching sessions:', err);
@@ -89,7 +95,15 @@ export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticat
             return prev;
           }
 
-          return [...updatedMessages, ...tempMessages.filter(tm => !updatedMessages.some((nm: Message) => nm.role === tm.role && (nm.prompt === tm.text || nm.text === tm.text)))];
+          return [
+            ...updatedMessages,
+            ...tempMessages.filter(tm => (
+              tm.status === 'failed'
+              || !updatedMessages.some((nm: Message) => (
+                nm.role === tm.role && (nm.prompt === tm.text || nm.text === tm.text)
+              ))
+            ))
+          ];
         });
       }
     } catch (err) {
@@ -98,10 +112,18 @@ export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticat
   }, []);
 
   useEffect(() => {
-    if (currentSessionId && (view === 'chat' || view === 'archives')) {
+    if (isAuthenticated && currentSessionId && (view === 'chat' || view === 'archives')) {
       fetchSessionDetails(currentSessionId);
     }
-  }, [currentSessionId, view, fetchSessionDetails]);
+  }, [currentSessionId, view, fetchSessionDetails, isAuthenticated]);
+
+  useEffect(() => {
+    if (currentSessionId) {
+      localStorage.setItem('comfyforge.currentSessionId', currentSessionId);
+    } else {
+      localStorage.removeItem('comfyforge.currentSessionId');
+    }
+  }, [currentSessionId]);
 
   const renameSession = async (id: string, newTitle: string) => {
     if (!newTitle.trim()) {

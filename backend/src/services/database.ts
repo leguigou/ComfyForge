@@ -137,6 +137,22 @@ export const initDatabase = () => {
       FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      level TEXT NOT NULL,
+      source TEXT NOT NULL,
+      direction TEXT,
+      event TEXT NOT NULL,
+      message TEXT NOT NULL,
+      status TEXT,
+      durationMs INTEGER,
+      userId TEXT,
+      sessionId TEXT,
+      messageId TEXT,
+      details TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_userId ON sessions(userId);
     CREATE INDEX IF NOT EXISTS idx_messages_sessionId ON messages(sessionId);
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
@@ -144,7 +160,18 @@ export const initDatabase = () => {
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
     CREATE INDEX IF NOT EXISTS idx_llm_providers_userId ON llm_providers(userId);
     CREATE INDEX IF NOT EXISTS idx_message_tags_tagId ON message_tags(tagId);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_level ON audit_logs(level);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_source ON audit_logs(source);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_userId ON audit_logs(userId);
   `);
+
+  try {
+    db.prepare('SELECT direction FROM audit_logs LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE audit_logs ADD COLUMN direction TEXT');
+    console.log('[Migration] Added direction column to audit_logs table');
+  }
 
   // Migrations
   const columnsToCheck = ['model', 'width', 'height', 'steps', 'cfg', 'workflow', 'status', 'thumbnailUrl', 'seed', 'duration', 'isFavorite', 'isPromptFavorite', 'sampler', 'scheduler', 'randomSelections', 'generationPrompt', 'generationParams'];
