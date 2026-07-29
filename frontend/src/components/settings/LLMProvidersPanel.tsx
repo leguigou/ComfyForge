@@ -43,6 +43,7 @@ export const LLMProvidersPanel = ({ params, setParams, t }: Props) => {
   const [draft, setDraft] = useState({ name: 'OpenAI / ChatGPT', type: 'openai' as LLMProvider['type'], baseUrl: 'https://api.openai.com', model: '', apiKey: '' });
   const [draftModels, setDraftModels] = useState<string[]>([]);
   const [models, setModels] = useState<Record<string, string[]>>({});
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
 
@@ -157,6 +158,24 @@ export const LLMProvidersPanel = ({ params, setParams, t }: Props) => {
     } finally { setBusy(null); }
   };
 
+  const updateApiKey = async (provider: LLMProvider) => {
+    const apiKey = apiKeys[provider.id]?.trim();
+    if (!apiKey) return;
+    setBusy(`key-${provider.id}`);
+    try {
+      const updated = await request(`/providers/${provider.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ apiKey }),
+      });
+      setProviders(value => value.map(item => item.id === provider.id ? updated : item));
+      setApiKeys(value => ({ ...value, [provider.id]: '' }));
+      setModels(value => ({ ...value, [provider.id]: [] }));
+      toast.success(t.providerApiKeyUpdated || 'API key updated');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally { setBusy(null); }
+  };
+
   return (
     <div className="llm-provider-panel">
       <div className="provider-toolbar">
@@ -204,6 +223,28 @@ export const LLMProvidersPanel = ({ params, setParams, t }: Props) => {
           <div className="provider-url-editor">
             <label>{t.providerApiUrl || 'API URL'}</label>
             <input key={`${provider.id}-${provider.baseUrl}`} defaultValue={provider.baseUrl} onBlur={event => updateBaseUrl(provider, event.currentTarget.value, event.currentTarget)} disabled={busy === `url-${provider.id}`} />
+          </div>
+          <div className="provider-key-editor">
+            <label htmlFor={`provider-key-${provider.id}`}>{t.changeApiKey || 'Change API key'}</label>
+            <div>
+              <input
+                id={`provider-key-${provider.id}`}
+                type="password"
+                autoComplete="new-password"
+                value={apiKeys[provider.id] || ''}
+                onChange={event => setApiKeys(value => ({ ...value, [provider.id]: event.target.value }))}
+                onKeyDown={event => { if (event.key === 'Enter') updateApiKey(provider); }}
+                placeholder={t.newApiKey || 'New API key / token'}
+                disabled={busy === `key-${provider.id}`}
+              />
+              <button
+                className="action-btn-small"
+                onClick={() => updateApiKey(provider)}
+                disabled={busy === `key-${provider.id}` || !apiKeys[provider.id]?.trim()}
+              >
+                {busy === `key-${provider.id}` ? '…' : t.saveApiKey || t.save || 'Save'}
+              </button>
+            </div>
           </div>
           <div className="model-select-group provider-model-row">
             {models[provider.id]?.length ? <select value={provider.model} onChange={event => updateModel(provider, event.target.value)}>{!models[provider.id].includes(provider.model) && <option>{provider.model}</option>}{models[provider.id].map(model => <option key={model}>{model}</option>)}</select> : <input value={provider.model} onChange={event => setProviders(value => value.map(item => item.id === provider.id ? { ...item, model: event.target.value } : item))} onBlur={event => updateModel(provider, event.target.value)} />}

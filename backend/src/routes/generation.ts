@@ -59,6 +59,43 @@ const parseStoredParams = (value: string | null) => {
   }
 };
 
+router.get('/estimate', authenticate, (req, res) => {
+  const user = (req as any).user;
+  const model = typeof req.query.model === 'string' ? req.query.model.trim() : '';
+  const workflow = typeof req.query.workflow === 'string' ? req.query.workflow.trim() : '';
+
+  if (!model || !workflow) {
+    return res.status(400).json({ error: 'Model and workflow are required' });
+  }
+
+  const estimate = db.prepare(`
+    SELECT AVG(duration) AS averageDuration, COUNT(*) AS sampleCount
+    FROM (
+      SELECT m.duration
+      FROM messages m
+      JOIN sessions s ON s.id = m.sessionId
+      WHERE s.userId = ?
+        AND m.model = ?
+        AND m.workflow = ?
+        AND m.status = 'completed'
+        AND m.imageUrl IS NOT NULL
+        AND m.duration > 0
+      ORDER BY m.timestamp DESC
+      LIMIT 20
+    )
+  `).get(user.id, model, workflow) as {
+    averageDuration: number | null;
+    sampleCount: number;
+  };
+
+  res.json({
+    estimateSeconds: estimate.averageDuration === null
+      ? null
+      : Math.max(1, Math.round(estimate.averageDuration)),
+    sampleCount: estimate.sampleCount
+  });
+});
+
 router.get('/active', authenticate, (req, res) => {
   const user = (req as any).user;
   const generations = db.prepare(`
@@ -104,7 +141,7 @@ const enqueueRetry = (message: RetryableMessage, fallbackParams: any, createdAt:
 router.post('/generate', authenticate, async (req, res) => {
   try {
     const user = (req as any).user;
-    const { prompt, originalPrompt, sessionId, params } = req.body;
+    const { prompt, originalPrompt, sessionId, params, recoveryMessageId } = req.body;
     if (typeof prompt !== 'string' || !prompt.trim() || !sessionId) {
       return res.status(400).json({ success: false, error: 'Prompt and sessionId are required' });
     }
@@ -114,43 +151,66 @@ router.post('/generate', authenticate, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Unauthorized session' });
     }
 
-    const safeParams = normalizeGenerationParams(params);
     const timestamp = Date.now();
-    const messageId = uuidv4();
-    const userMessageId = uuidv4();
-    
-    // Si prompt est différent d'originalPrompt, c'est que l'IA a bossé
-    const isEnhanced = prompt && originalPrompt && prompt !== originalPrompt;
-    const displayPrompt = originalPrompt || prompt;
-    const enhancedText = isEnhanced ? prompt : '';
-    const model = params?.comfyModel || 'dirtyRealism_DMDSAT.safetensors';
-    const workflowFile = params?.workflowFile || 'workflow_lcm.json';
-    const seed = (params?.seed && params.seed !== -1) ? params.seed : Math.floor(Math.random() * 1000000000000000);
-    const randomSelections = Array.isArray(req.body.randomSelections)
-      ? req.body.randomSelections.slice(0, 20).map((selection: any) => ({
-          listId: String(selection?.listId || '').slice(0, 80),
-          name: String(selection?.name || '').slice(0, 120),
-          slug: String(selection?.slug || '').slice(0, 80),
-          value: String(selection?.value || '').slice(0, 300)
-        })).filter((selection: { slug: string; value: string }) => selection.slug && selection.value)
-      : [];
-    
-    const insertMsg = db.prepare('INSERT INTO messages (id, sessionId, role, text, prompt, imageUrl, timestamp, model, width, height, steps, cfg, workflow, status, seed, randomSelections, generationPrompt, generationParams) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-    
-    if (!req.body.isRegeneration) {
-      insertMsg.run(userMessageId, sessionId, 'user', displayPrompt, '', null, timestamp - 1, null, null, null, null, null, null, 'completed', null, null, null, null);
+    let messageId: string;
+    let tags: Array<{ slug: string; category: string; labelFr: string; labelEn: string }>;
+
+    if (typeof recoveryMessageId === 'string' && recoveryMessageId) {
+      const recovery = db.prepare(`
+        SELECT m.* FROM messages m
+        JOIN sessions s ON s.id = m.sessionId
+        WHERE m.id = ? AND m.sessionId = ? AND s.userId = ?
+          AND m.role = 'bot' AND m.imageUrl IS NULL AND m.status = 'failed'
+      `).get(recoveryMessageId, sessionId, user.id) as RetryableMessage | undefined;
+      if (!recovery) {
+        return res.status(404).json({ success: false, error: 'Prompt récupérable introuvable' });
+      }
+
+      messageId = recovery.id;
+      tags = db.transaction(() => {
+        enqueueRetry(recovery, params, timestamp);
+        db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
+        return replaceAutoPromptTags(db, messageId, recovery.generationPrompt || recovery.prompt)
+          .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
+      })();
+    } else {
+      const safeParams = normalizeGenerationParams(params);
+      messageId = uuidv4();
+      const userMessageId = uuidv4();
+
+      // Si prompt est différent d'originalPrompt, c'est que l'IA a bossé
+      const isEnhanced = prompt && originalPrompt && prompt !== originalPrompt;
+      const displayPrompt = originalPrompt || prompt;
+      const enhancedText = isEnhanced ? prompt : '';
+      const model = params?.comfyModel || 'dirtyRealism_DMDSAT.safetensors';
+      const workflowFile = params?.workflowFile || 'workflow_lcm.json';
+      const seed = (params?.seed && params.seed !== -1) ? params.seed : Math.floor(Math.random() * 1000000000000000);
+      const randomSelections = Array.isArray(req.body.randomSelections)
+        ? req.body.randomSelections.slice(0, 20).map((selection: any) => ({
+            listId: String(selection?.listId || '').slice(0, 80),
+            name: String(selection?.name || '').slice(0, 120),
+            slug: String(selection?.slug || '').slice(0, 80),
+            value: String(selection?.value || '').slice(0, 300)
+          })).filter((selection: { slug: string; value: string }) => selection.slug && selection.value)
+        : [];
+
+      const insertMsg = db.prepare('INSERT INTO messages (id, sessionId, role, text, prompt, imageUrl, timestamp, model, width, height, steps, cfg, workflow, status, seed, randomSelections, generationPrompt, generationParams) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+
+      if (!req.body.isRegeneration) {
+        insertMsg.run(userMessageId, sessionId, 'user', displayPrompt, '', null, timestamp - 1, null, null, null, null, null, null, 'completed', null, null, null, null);
+      }
+
+      const storedParams = { ...safeParams, seed };
+      insertMsg.run(messageId, sessionId, 'bot', enhancedText, displayPrompt, null, timestamp, model, params?.width || 896, params?.height || 1152, params?.steps || 8, params?.cfg || 1.1, workflowFile, 'pending', seed, JSON.stringify(randomSelections), prompt, JSON.stringify(storedParams));
+      tags = replaceAutoPromptTags(db, messageId, prompt)
+        .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
+
+      db.prepare('INSERT INTO queue (messageId, prompt, originalPrompt, sessionId, params, status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(messageId, prompt, originalPrompt, sessionId, JSON.stringify(storedParams), 'pending', timestamp);
+
+      db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ? AND title = \'New Chat\'').run(displayPrompt.substring(0, 30), timestamp, sessionId);
+      db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
     }
-    
-    const storedParams = { ...safeParams, seed };
-    insertMsg.run(messageId, sessionId, 'bot', enhancedText, displayPrompt, null, timestamp, model, params?.width || 896, params?.height || 1152, params?.steps || 8, params?.cfg || 1.1, workflowFile, 'pending', seed, JSON.stringify(randomSelections), prompt, JSON.stringify(storedParams));
-    const tags = replaceAutoPromptTags(db, messageId, prompt)
-      .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
-    
-    db.prepare('INSERT INTO queue (messageId, prompt, originalPrompt, sessionId, params, status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(messageId, prompt, originalPrompt, sessionId, JSON.stringify(storedParams), 'pending', timestamp);
-    
-    db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ? AND title = \'New Chat\'').run(displayPrompt.substring(0, 30), timestamp, sessionId);
-    db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
 
     res.json({ success: true, messageId, status: 'pending', tags });
     

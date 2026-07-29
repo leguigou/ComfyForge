@@ -62,9 +62,9 @@ const detectWorkflowNodeMapping = (workflow: Record<string, any>) => {
     diffusionModel: findId(['UNETLoader', 'UNETLoaderGGUF']),
     positive: positiveNode?.[0] || textNodes[0]?.[0],
     negative: negativeNode?.[0] || textNodes[1]?.[0],
-    ksampler: findId(['KSampler', 'KSamplerAdvanced']),
+    ksampler: findId(['KSampler', 'KSamplerAdvanced', 'KSampler (Efficient)']),
     latent: latentNode?.[0],
-    save: findId(['SaveImage'])
+    save: findId(['SaveImage']) || findId(['PreviewImage'])
   };
 };
 

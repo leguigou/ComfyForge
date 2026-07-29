@@ -119,6 +119,20 @@ test('migrates and preserves companion settings', () => {
   assert.equal(customized.companions[1].name, 'Pixel');
 });
 
+test('removes duplicate companion IDs while normalizing settings', () => {
+  const normalized = companions.normalizeCompanionSettings({
+    activeId: 'companion-local-lina',
+    companions: [
+      { id: 'companion-local-lina', name: 'Lina', source: 'custom', spriteDataUrl: 'data:image/webp;base64,AAAA' },
+      { id: 'companion-local-lina', name: 'Lina duplicate', source: 'custom', spriteDataUrl: 'data:image/webp;base64,BBBB' },
+    ],
+  });
+
+  assert.equal(normalized.companions.filter(item => item.id === 'companion-local-lina').length, 1);
+  assert.equal(normalized.companions[1].name, 'Lina');
+  assert.equal(normalized.activeId, 'companion-local-lina');
+});
+
 test('keeps generation timers independent from time spent waiting in the queue', () => {
   const now = 100_000;
 
@@ -129,4 +143,12 @@ test('keeps generation timers independent from time spent waiting in the queue',
   assert.equal(generationTimer.resolveGenerationStartedAt('processing', undefined, undefined, now), now);
   assert.equal(generationTimer.resolveGenerationStartedAt('processing', undefined, 98_000, now), 98_000);
   assert.equal(generationTimer.resolveGenerationStartedAt('pending', undefined, undefined, now), undefined);
+});
+
+test('estimates generation progress without reaching completion early', () => {
+  assert.equal(generationTimer.getEstimatedGenerationProgress(1, undefined), undefined);
+  assert.equal(generationTimer.getEstimatedGenerationProgress(1, 0), undefined);
+  assert.equal(generationTimer.getEstimatedGenerationProgress(1, 100), 2);
+  assert.equal(generationTimer.getEstimatedGenerationProgress(50, 100), 50);
+  assert.equal(generationTimer.getEstimatedGenerationProgress(120, 100), 96);
 });

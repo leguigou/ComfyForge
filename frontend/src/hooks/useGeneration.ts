@@ -83,6 +83,8 @@ export const useGeneration = (
     const randomResult = resolveRandomPromptsWithSelections(templatePrompt, params.randomPromptLists);
     const resolvedPrompt = randomResult.prompt;
     const botMsgId = `temp-${Math.random().toString(36).substring(7)}`;
+    let recoveryMessageId: string | undefined;
+    let recoveredPrompt = resolvedPrompt;
 
     if (!isRegeneration && shouldUpdateVisibleMessages) {
       const userMsg: Message = { id: `temp-${Math.random().toString(36).substring(7)}`, role: 'user', text: templatePrompt, timestamp: Date.now() };
@@ -128,14 +130,30 @@ export const useGeneration = (
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
               prompt: resolvedPrompt,
+              originalPrompt: templatePrompt,
+              sessionId: activeSessionId,
               providerId: params.llmProviderId,
-              systemMessage: params.llmSystemMessage
+              systemMessage: params.llmSystemMessage,
+              randomSelections: randomResult.selections,
+              params: {
+                ...params,
+                negativePrompt: finalNegativePrompt,
+                workflowFile: params.workflowFile,
+                nodeMapping: params.nodeMapping,
+                seed: params.seedMode === 'fixed' && params.forcedSeed
+                  ? parseInt(params.forcedSeed, 10)
+                  : -1
+              }
             }),
             credentials: 'include'
           });
           const enhanceData = await enhanceRes.json();
+          recoveryMessageId = typeof enhanceData.recoveryMessageId === 'string'
+            ? enhanceData.recoveryMessageId
+            : undefined;
           if (enhanceData.enhancedPrompt) {
             finalPrompt = enhanceData.enhancedPrompt;
+            recoveredPrompt = finalPrompt;
             if (enhanceData.negativePrompt) finalNegativePrompt = enhanceData.negativePrompt;
             // Mise à jour immédiate de la bulle bot avec le nouveau texte
             if (shouldUpdateVisibleMessages) {
@@ -171,6 +189,7 @@ export const useGeneration = (
         body: JSON.stringify({ 
           prompt: finalPrompt, 
           originalPrompt: templatePrompt,
+          recoveryMessageId,
           randomSelections: randomResult.selections,
           sessionId: activeSessionId,
           clientId: clientIdRef.current,
@@ -203,7 +222,14 @@ export const useGeneration = (
       const message = error instanceof Error ? error.message : 'Unknown error';
       if (shouldUpdateVisibleMessages) {
         setMessages(prev => prev.map(item => item.id === botMsgId
-          ? { ...item, text: message, status: 'failed', isEnhancing: false }
+          ? {
+              ...item,
+              id: recoveryMessageId || item.id,
+              text: message,
+              generationPrompt: recoveredPrompt,
+              status: 'failed',
+              isEnhancing: false
+            }
           : item));
       }
       if (runInBackground) throw error;

@@ -10,6 +10,7 @@ import { formatBytes, getFullImageUrl, API_BASE } from '../../services/api';
 import toast from 'react-hot-toast';
 import { LLMProvidersPanel } from './LLMProvidersPanel';
 import { AdminLogsPanel } from './AdminLogsPanel';
+import { DEFAULT_LLM_SYSTEM_MESSAGE } from '../../config';
 
 interface WorkflowMappingData {
   filename: string;
@@ -56,7 +57,6 @@ const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
     random: <><path d="M4 7h3c4 0 4 10 8 10h5" /><path d="m17 14 3 3-3 3" /><path d="M4 17h3c1.5 0 2.5-1.5 3.5-3" /><path d="M14 7h6m-3-3 3 3-3 3" /></>,
     comfy: <><path d="M12 2v3m0 14v3M4.93 4.93l2.12 2.12m9.9 9.9 2.12 2.12M2 12h3m14 0h3M4.93 19.07l2.12-2.12m9.9-9.9 2.12-2.12" /><circle cx="12" cy="12" r="4" /></>,
     llm: <><rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 10h.01M12 10h.01M16 10h.01M8 14h8M9 2v3m6-3v3" /></>,
-    archives: <><rect x="4" y="7" width="16" height="13" rx="2" /><path d="M3 4h18v4H3zm6 8h6" /></>,
     update: <><path d="M20 7v5h-5" /><path d="M18.5 16a8 8 0 1 1 .8-9L20 12" /></>,
     admin: <><path d="M12 3 4.5 6v5c0 4.8 3.2 8.5 7.5 10 4.3-1.5 7.5-5.2 7.5-10V6z" /><path d="m9 12 2 2 4-4" /></>,
     logs: <><path d="M4 5h16v14H4z" /><path d="M7 9h2m2 0h6M7 13h2m2 0h6M7 17h2m2 0h4" /></>
@@ -69,11 +69,26 @@ const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
   );
 };
 
+const SessionActionIcon = ({ type }: { type: 'archive' | 'delete' }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {type === 'archive' ? (
+      <>
+        <rect x="4" y="7" width="16" height="13" rx="2" />
+        <path d="M3 4h18v4H3zm6 8h6" />
+      </>
+    ) : (
+      <>
+        <path d="M4 7h16m-10 4v5m4-5v5M9 7l1-3h4l1 3m3 0-1 13H7L6 7" />
+      </>
+    )}
+  </svg>
+);
+
 interface SettingsModalProps {
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
-  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin' | 'logs';
-  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin' | 'logs') => void;
+  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs';
+  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs') => void;
   params: GenParameters;
   setParams: (params: GenParameters) => void;
   lang: Language;
@@ -100,8 +115,8 @@ interface SettingsModalProps {
   newPasswordValue: string;
   setNewPasswordValue: (val: string) => void;
   handleResetPassword: (id: string) => void;
-  archiveAllSessions: () => void;
-  deleteAllActiveSessions: () => void;
+  requestArchiveAll: () => void;
+  requestDeleteAll: () => void;
   updateProfile: (params: { username?: string; password?: string; avatarUrl?: string | null }) => Promise<{ success: boolean; error?: string }>;
   galleryItems: GalleryItem[];
   fetchGallery: (initial?: boolean) => void;
@@ -137,8 +152,8 @@ export const SettingsModal = ({
   newPasswordValue,
   setNewPasswordValue,
   handleResetPassword,
-  archiveAllSessions,
-  deleteAllActiveSessions,
+  requestArchiveAll,
+  requestDeleteAll,
   updateProfile,
   galleryItems,
   fetchGallery
@@ -427,6 +442,11 @@ export const SettingsModal = ({
     // The App.tsx saveSettings will pick up the change and show a toast
   };
 
+  const resetLLMSystemMessage = () => {
+    setLocalLLMSystemMessage(DEFAULT_LLM_SYSTEM_MESSAGE);
+    setParams({ ...params, llmSystemMessage: DEFAULT_LLM_SYSTEM_MESSAGE });
+  };
+
   const updateRandomList = (id: string, patch: Partial<RandomPromptList>) => {
     setParams({
       ...params,
@@ -458,6 +478,11 @@ export const SettingsModal = ({
     } else {
       toast.error(result.error || t.profileUpdateFailed);
     }
+  };
+
+  const openAvatarPicker = () => {
+    setShowImagePicker(true);
+    fetchGallery(true);
   };
 
   const handleRemoveAvatar = async () => {
@@ -563,7 +588,6 @@ export const SettingsModal = ({
     { id: 'random', label: t.tabRandom },
     { id: 'comfy', label: t.tabComfy },
     { id: 'llm', label: t.tabLLM },
-    { id: 'archives', label: t.tabArchives },
     { id: 'update', label: t.tabUpdate },
     ...(currentUser?.isAdmin ? [
       { id: 'admin' as const, label: t.tabAdmin },
@@ -675,6 +699,31 @@ export const SettingsModal = ({
                     />
                     <small>{t.luckyFavoriteCountHelp}</small>
                   </label>
+                </div>
+              </section>
+
+              <section className="session-management-card">
+                <div className="session-management-heading">
+                  <h4>{t.sessionManagementTitle}</h4>
+                  <p>{t.sessionManagementHelp}</p>
+                </div>
+                <div className="session-management-actions">
+                  <button type="button" className="session-action-card archive" onClick={requestArchiveAll}>
+                    <span className="session-action-icon"><SessionActionIcon type="archive" /></span>
+                    <span className="session-action-copy">
+                      <strong>{t.archiveAll}</strong>
+                      <small>{t.archiveAllHelp}</small>
+                    </span>
+                    <span className="session-action-arrow" aria-hidden="true">→</span>
+                  </button>
+                  <button type="button" className="session-action-card delete" onClick={requestDeleteAll}>
+                    <span className="session-action-icon"><SessionActionIcon type="delete" /></span>
+                    <span className="session-action-copy">
+                      <strong>{t.deleteAll}</strong>
+                      <small>{t.deleteAllHelp}</small>
+                    </span>
+                    <span className="session-action-arrow" aria-hidden="true">→</span>
+                  </button>
                 </div>
               </section>
             </div>
@@ -817,21 +866,40 @@ export const SettingsModal = ({
           )}
           {activeTab === 'profile' && (
             <div className="profile-edit-section">
-              <div className="avatar-edit-container">
-                <div className="avatar-preview-wrapper" onClick={() => { setShowImagePicker(true); fetchGallery(true); }}>
+              <section className="avatar-edit-container">
+                <button type="button" className="avatar-preview-wrapper" onClick={openAvatarPicker} aria-label={t.changeAvatar}>
                   {currentUser?.avatarUrl ? (
                     <img src={getFullImageUrl(currentUser.avatarUrl)} alt="Avatar" className="avatar-preview-img" />
                   ) : (
                     <div className="avatar-preview-initial">{userInitial}</div>
                   )}
-                  <div className="avatar-edit-overlay">
-                    <span>{t.changeAvatar}</span>
+                  <span className="avatar-edit-badge" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
+                    </svg>
+                  </span>
+                </button>
+                <div className="avatar-editor-content">
+                  <div>
+                    <strong>{t.profilePhoto}</strong>
+                    <p>{t.profilePhotoHelp}</p>
+                  </div>
+                  <div className="avatar-editor-actions">
+                    <button type="button" className="change-avatar-btn" onClick={openAvatarPicker}>
+                      {t.changeAvatar}
+                    </button>
+                    {currentUser?.avatarUrl && (
+                      <button type="button" className="remove-avatar-btn" onClick={handleRemoveAvatar}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M4 7h16m-10 4v5m4-5v5M9 7l1-3h4l1 3m3 0-1 13H7L6 7" />
+                        </svg>
+                        {t.deleteAvatar}
+                      </button>
+                    )}
                   </div>
                 </div>
-                {currentUser?.avatarUrl && (
-                  <button className="remove-avatar-btn" onClick={(e) => { e.stopPropagation(); handleRemoveAvatar(); }} title={t.deleteAvatar}>🗑️</button>
-                )}
-              </div>
+              </section>
 
               <div className="settings-grid">
                 <div className="setting-item" style={{ gridColumn: 'span 2' }}>
@@ -1314,12 +1382,23 @@ export const SettingsModal = ({
               </div>
               <div className="setting-item" style={{ gridColumn: 'span 2' }}>
                 <label>{t.llmSystemMessage}</label>
-                <textarea 
-                  className="system-message-textarea" 
-                  value={localLLMSystemMessage} 
-                  onChange={(e) => setLocalLLMSystemMessage(e.target.value)} 
-                  rows={5} 
-                />
+                <div className="textarea-with-reset">
+                  <textarea
+                    className="system-message-textarea"
+                    value={localLLMSystemMessage}
+                    onChange={(e) => setLocalLLMSystemMessage(e.target.value)}
+                    rows={5}
+                  />
+                  <button
+                    type="button"
+                    onClick={resetLLMSystemMessage}
+                    disabled={localLLMSystemMessage === DEFAULT_LLM_SYSTEM_MESSAGE && params.llmSystemMessage === DEFAULT_LLM_SYSTEM_MESSAGE}
+                    title={t.resetSystemMessage || 'Reset to the original system prompt'}
+                    aria-label={t.resetSystemMessage || 'Reset to the original system prompt'}
+                  >
+                    ↺
+                  </button>
+                </div>
                 <button 
                   className="action-btn-small" 
                   onClick={() => handleSaveTextarea('llmSystemMessage')}
@@ -1421,18 +1500,6 @@ export const SettingsModal = ({
 
           {activeTab === 'logs' && currentUser?.isAdmin && <AdminLogsPanel t={t} />}
           
-          {activeTab === 'archives' && (
-            <div className="settings-grid">
-              <div className="setting-item" style={{ gridColumn: 'span 2' }}>
-                <p style={{ fontSize: '0.85rem', marginBottom: '1rem', opacity: 0.8 }}>{t.bulkActions}</p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-                  <button className="action-btn-large" onClick={archiveAllSessions}>📦 {t.archiveAll}</button>
-                  <button className="action-btn-large delete" onClick={deleteAllActiveSessions}>🗑️ {t.deleteAll}</button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {activeTab === 'update' && <UpdateTab t={t} />}
           </main>
         </div>

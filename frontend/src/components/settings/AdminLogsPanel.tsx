@@ -29,6 +29,38 @@ const LEVELS: LogLevel[] = ['debug', 'info', 'warning', 'error'];
 const SOURCES: LogSource[] = ['comfyui', 'llm'];
 const REFRESH_INTERVALS = [1, 2, 5, 10, 30];
 
+const LogLevelIcon = ({ level }: { level: LogLevel }) => {
+  if (level === 'warning') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 3 2.8 20h18.4L12 3Z" />
+        <path d="M12 9v5M12 17.5v.1" />
+      </svg>
+    );
+  }
+  if (level === 'error') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" />
+        <path d="m9 9 6 6m0-6-6 6" />
+      </svg>
+    );
+  }
+  if (level === 'debug') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M8 9h8v7a4 4 0 0 1-8 0V9Zm2-3h4M5 12h3m8 0h3M5 16h3m8 0h3" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5M12 8v.1" />
+    </svg>
+  );
+};
+
 const formatDuration = (durationMs?: number) => {
   if (durationMs === undefined || durationMs === null) return '—';
   if (durationMs < 1000) return `${durationMs} ms`;
@@ -214,14 +246,24 @@ export const AdminLogsPanel = ({ t }: Props) => {
               <time dateTime={new Date(log.timestamp).toISOString()}>
                 {new Date(log.timestamp).toLocaleString()}
               </time>
-              <span className={`admin-log-level level-${log.level}`}>{t[`logLevel_${log.level}`]}</span>
+              <span
+                className={`admin-log-level level-${log.level}`}
+                title={t[`logLevel_${log.level}`]}
+                aria-label={t[`logLevel_${log.level}`]}
+              >
+                <LogLevelIcon level={log.level} />
+              </span>
               <span className="admin-log-source">{log.source}</span>
-              <span className={`admin-log-direction direction-${log.direction}`}>
-                {log.direction === 'outbound' ? '→' : '←'} {t[`logDirection_${log.direction}`]}
+              <span
+                className={`admin-log-direction direction-${log.direction}`}
+                title={t[`logDirection_${log.direction}`]}
+                aria-label={t[`logDirection_${log.direction}`]}
+              >
+                {log.direction === 'outbound' ? '→' : '←'}
               </span>
               <strong className="admin-log-message">{log.message}</strong>
               {log.status && <span className="admin-log-status">{log.status}</span>}
-              <span className="admin-log-duration">{formatDuration(log.durationMs)}</span>
+              {log.durationMs !== undefined && <span className="admin-log-duration">{formatDuration(log.durationMs)}</span>}
             </summary>
             <div className="admin-log-expanded">
               <div className="admin-log-event">{log.event}</div>

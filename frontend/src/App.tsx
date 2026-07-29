@@ -15,7 +15,7 @@ import { SettingsModal } from './components/settings/SettingsModal';
 import { DEFAULT_RANDOM_PROMPT_LISTS, migrateRandomPromptLists, RANDOM_PROMPT_LISTS_VERSION } from './utils/randomPrompts';
 import { DEFAULT_COMPANION_SETTINGS, normalizeCompanionSettings } from './utils/companions';
 import { ChatInterface } from './components/chat/ChatInterface';
-import { APP_CONFIG } from './config';
+import { APP_CONFIG, DEFAULT_LLM_SYSTEM_MESSAGE } from './config';
 import { useAuth } from './hooks/useAuth';
 import { useSessions } from './hooks/useSessions';
 import { useGeneration } from './hooks/useGeneration';
@@ -24,6 +24,7 @@ import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { ComposeIcon, InfoIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon, XIcon } from './components/ui/Icons';
 import toast, { Toaster } from 'react-hot-toast';
 import NoSleep from 'nosleep.js';
+import comfyForgeLogo from './assets/comfyforge-logo-v2.png';
 
 function App() {
   const [lang, setLang] = useState<Language>(() => {
@@ -132,7 +133,7 @@ function App() {
     confirmDeleteSession,
     toggleArchive,
     archiveAllSessions,
-    deleteAllActiveSessions,
+    deleteSessions,
     deleteMessage,
     massActionType,
     setMassActionType
@@ -146,7 +147,7 @@ function App() {
     () => sessionStorage.getItem('comfyforge.queueIndicatorLatched') === 'true'
   );
   const [isCreatingLuckyPrompt, setIsCreatingLuckyPrompt] = useState(false);
-  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'archives' | 'update' | 'admin' | 'logs'>('images');
+  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs'>('images');
   
   const [input, setInput] = useState('');
   const [openOptionsRequest, setOpenOptionsRequest] = useState(0);
@@ -162,7 +163,7 @@ function App() {
       comfyModelType: 'checkpoint',
       llmUrl: '',
       llmModel: 'llama3:latest',
-      llmSystemMessage: "You are a professional stable diffusion prompt engineer. Transform the user's brief idea into a highly detailed, descriptive, and artistic prompt in ENGLISH. Also generate a negative prompt of things to avoid. Output your response as a JSON object with two keys: 'positive' and 'negative'. No other text.",
+      llmSystemMessage: DEFAULT_LLM_SYSTEM_MESSAGE,
       negativePrompt: "low quality, bad anatomy, malformed, extra limbs, extra fingers, fused fingers, bad hands, poorly drawn hands, missing fingers, fused face, poorly drawn face, asymmetrical, cartoon, anime, 3d, render, watermark, text, logo, swept hair, portrait",
       llmEnabled: false,
       luckyTemperature: 0.95,
@@ -1547,7 +1548,9 @@ function App() {
     <div className={`login-screen ${theme}`}>
       <div className="theme-toggle-corner"><button className="theme-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☀️' : '🌙'}</button></div>
       <form className="login-form" onSubmit={(e) => { e.preventDefault(); login(loginUsername, loginPassword).then(r => !r.success && alert(r.error)); }}>
-        <div className="login-header"><div className="login-icon">✨</div><h1>{t.title}</h1><p>Connectez-vous pour commencer</p></div>
+        <div className="login-header">
+          <img className="login-logo" src={comfyForgeLogo} alt={`${t.title} — Connectez-vous pour commencer`} />
+        </div>
         <div className="input-group"><label>{t.username}</label><input type="text" autoFocus value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} className={loginError ? 'error' : ''} /></div>
         <div className="input-group"><label>{t.password}</label><input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className={loginError ? 'error' : ''} />{loginError && <p className="error-msg">{t.incorrectLogin}</p>}</div>
         <button type="submit" disabled={isLoginLoading}>{isLoginLoading ? '...' : t.login}</button>
@@ -1756,7 +1759,8 @@ function App() {
         availableWorkflows={availableWorkflows} fetchWorkflows={fetchWorkflows}
         adminUsers={adminUsers} newUser={newUser} setNewUser={setNewUser} handleAddUser={handleAddUser} isAdminLoading={isAdminLoading}
         deleteUser={internalDeleteUser} resetPasswordId={resetPasswordId} setResetPasswordId={setResetPasswordId} newPasswordValue={newPasswordValue}
-        setNewPasswordValue={setNewPasswordValue} handleResetPassword={handleResetPassword} archiveAllSessions={archiveAllSessions} deleteAllActiveSessions={deleteAllActiveSessions}
+        setNewPasswordValue={setNewPasswordValue} handleResetPassword={handleResetPassword}
+        requestArchiveAll={() => setMassActionType('archiveAll')} requestDeleteAll={() => setMassActionType('deleteAll')}
         updateProfile={updateProfile} galleryItems={galleryItems} fetchGallery={fetchGallery}
       />
 
@@ -1775,12 +1779,36 @@ function App() {
 
       {massActionType && (
         <div className="settings-modal-overlay" onClick={() => setMassActionType(null)}>
-          <div className="settings-modal confirm-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>{massActionType === 'archiveAll' ? t.archiveAll : t.confirmDeleteAll}</h3>
-            <div className="confirm-buttons">
-              <button className={`confirm-btn ${massActionType === 'deleteAll' ? 'delete' : 'archive'}`} onClick={massActionType === 'archiveAll' ? archiveAllSessions : deleteAllActiveSessions}>{t.confirm}</button>
-              <button className="confirm-btn cancel" onClick={() => setMassActionType(null)}>{t.cancel}</button>
-            </div>
+          <div className={`settings-modal confirm-modal ${massActionType === 'deleteAll' ? 'delete-scope-modal' : ''}`} onClick={(e) => e.stopPropagation()}>
+            {massActionType === 'archiveAll' ? (
+              <>
+                <h3>{t.archiveAll}</h3>
+                <div className="confirm-buttons">
+                  <button className="confirm-btn archive" onClick={archiveAllSessions}>{t.confirm}</button>
+                  <button className="confirm-btn cancel" onClick={() => setMassActionType(null)}>{t.cancel}</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3>{t.deleteConversationsTitle}</h3>
+                <p className="delete-scope-intro">{t.deleteConversationsHelp}</p>
+                <div className="delete-scope-options">
+                  <button type="button" onClick={() => void deleteSessions('active')}>
+                    <strong>{t.deleteActiveOnly}</strong>
+                    <small>{t.deleteActiveOnlyHelp}</small>
+                  </button>
+                  <button type="button" onClick={() => void deleteSessions('archived')}>
+                    <strong>{t.deleteArchivesOnly}</strong>
+                    <small>{t.deleteArchivesOnlyHelp}</small>
+                  </button>
+                  <button type="button" className="delete-everything" onClick={() => void deleteSessions('all')}>
+                    <strong>{t.deleteActiveAndArchives}</strong>
+                    <small>{t.deleteActiveAndArchivesHelp}</small>
+                  </button>
+                </div>
+                <button type="button" className="delete-scope-cancel" onClick={() => setMassActionType(null)}>{t.cancel}</button>
+              </>
+            )}
           </div>
         </div>
       )}

@@ -13,6 +13,7 @@ import {
   resolveProviderUrl,
   StoredProvider,
 } from '../services/llm-providers';
+import { replaceAutoPromptTags } from '../services/prompt-tags';
 
 const router = express.Router();
 const DEFAULT_SYSTEM_MESSAGE = "You are a professional stable diffusion prompt engineer. Transform user's ideas into highly detailed English prompts. Output JSON with 'positive' and 'negative' keys.";
@@ -63,6 +64,122 @@ const parseEnhancedContent = (content: string) => {
   }
   if (result.positive === content) result.positive = content.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, '$1').trim();
   return result;
+};
+
+const sanitizeRandomSelections = (value: unknown) => (
+  Array.isArray(value)
+    ? value.slice(0, 20).map((selection: any) => ({
+        listId: String(selection?.listId || '').slice(0, 80),
+        name: String(selection?.name || '').slice(0, 120),
+        slug: String(selection?.slug || '').slice(0, 80),
+        value: String(selection?.value || '').slice(0, 300),
+      })).filter((selection: { slug: string; value: string }) => selection.slug && selection.value)
+    : []
+);
+
+const persistEnhancedPromptRecovery = (
+  userId: string,
+  sessionId: string,
+  originalPrompt: string,
+  generationPrompt: string,
+  negativePrompt: string,
+  rawParams: any,
+  rawRandomSelections: unknown,
+) => {
+  const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND userId = ?').get(sessionId, userId);
+  if (!session) return null;
+
+  const timestamp = Date.now();
+  const userMessageId = uuidv4();
+  const messageId = uuidv4();
+  const params = rawParams && typeof rawParams === 'object' ? rawParams : {};
+  const seed = Number.isFinite(Number(params.seed)) && Number(params.seed) !== -1
+    ? Number(params.seed)
+    : Math.floor(Math.random() * 1000000000000000);
+  const storedParams = {
+    comfyModel: params.comfyModel,
+    comfyModelType: params.comfyModelType,
+    comfyUrl: params.comfyUrl,
+    workflowFile: params.workflowFile,
+    width: Number(params.width) || undefined,
+    height: Number(params.height) || undefined,
+    steps: Number(params.steps) || undefined,
+    cfg: Number(params.cfg) || undefined,
+    seed,
+    sampler: params.sampler,
+    scheduler: params.scheduler,
+    negativePrompt: negativePrompt || params.negativePrompt,
+    nodeMapping: params.nodeMapping,
+  };
+  const randomSelections = sanitizeRandomSelections(rawRandomSelections);
+  const model = params.comfyModel || 'dirtyRealism_DMDSAT.safetensors';
+  const workflowFile = params.workflowFile || 'workflow_lcm.json';
+
+  const tags = db.transaction(() => {
+    const insertMsg = db.prepare(`
+      INSERT INTO messages (
+        id, sessionId, role, text, prompt, imageUrl, timestamp, model, width, height,
+        steps, cfg, workflow, status, seed, randomSelections, generationPrompt, generationParams
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertMsg.run(
+      userMessageId, sessionId, 'user', originalPrompt, '', null, timestamp - 1,
+      null, null, null, null, null, null, 'completed', null, null, null, null,
+    );
+    insertMsg.run(
+      messageId, sessionId, 'bot',
+      'Prompt sauvegardé : la génération n’a pas été mise en file. Vous pouvez la relancer.',
+      originalPrompt, null, timestamp, model,
+      Number(params.width) || 896, Number(params.height) || 1152,
+      Number(params.steps) || 8, Number(params.cfg) || 1.1,
+      workflowFile, 'failed', seed, JSON.stringify(randomSelections),
+      generationPrompt, JSON.stringify(storedParams),
+    );
+    db.prepare(`
+      UPDATE sessions
+      SET title = CASE WHEN title = 'New Chat' THEN ? ELSE title END, updatedAt = ?
+      WHERE id = ?
+    `).run(originalPrompt.substring(0, 30), timestamp, sessionId);
+    return replaceAutoPromptTags(db, messageId, generationPrompt)
+      .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
+  })();
+
+  return { messageId, tags };
+};
+
+const updateEnhancedPromptRecovery = (
+  messageId: string,
+  userId: string,
+  generationPrompt: string,
+  negativePrompt: string,
+) => {
+  const message = db.prepare(`
+    SELECT m.generationParams
+    FROM messages m
+    JOIN sessions s ON s.id = m.sessionId
+    WHERE m.id = ? AND s.userId = ? AND m.role = 'bot'
+      AND m.imageUrl IS NULL AND m.status = 'failed'
+  `).get(messageId, userId) as { generationParams: string | null } | undefined;
+  if (!message) return [];
+
+  let storedParams: Record<string, unknown> = {};
+  try {
+    storedParams = message.generationParams ? JSON.parse(message.generationParams) : {};
+  } catch {
+    storedParams = {};
+  }
+  if (negativePrompt) storedParams.negativePrompt = negativePrompt;
+
+  return db.transaction(() => {
+    db.prepare(`
+      UPDATE messages
+      SET generationPrompt = ?, generationParams = ?,
+          text = 'Prompt sauvegardé : la génération n’a pas été mise en file. Vous pouvez la relancer.'
+      WHERE id = ?
+    `).run(generationPrompt, JSON.stringify(storedParams), messageId);
+    return replaceAutoPromptTags(db, messageId, generationPrompt)
+      .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
+  })();
 };
 
 router.get('/presets', authenticate, (_req, res) => res.json(PROVIDER_PRESETS));
@@ -221,14 +338,48 @@ router.post('/providers/:id/check', authenticate, async (req, res) => {
 });
 
 router.post('/enhance-prompt', authenticate, async (req, res) => {
+  let recovery: ReturnType<typeof persistEnhancedPromptRecovery> = null;
   try {
-    const provider = getProvider((req as any).user.id, req.body.providerId);
+    const userId = (req as any).user.id;
+    const provider = getProvider(userId, req.body.providerId);
     if (!provider) return res.status(400).json({ error: 'No active LLM provider' });
-    const content = await completeWithProvider(provider, String(req.body.prompt || ''), req.body.systemMessage || DEFAULT_SYSTEM_MESSAGE);
+    const sourcePrompt = String(req.body.prompt || '');
+    const sessionId = typeof req.body.sessionId === 'string' ? req.body.sessionId : '';
+    const originalPrompt = typeof req.body.originalPrompt === 'string'
+      ? req.body.originalPrompt
+      : sourcePrompt;
+    recovery = sessionId && sourcePrompt.trim()
+      ? persistEnhancedPromptRecovery(
+          userId,
+          sessionId,
+          originalPrompt,
+          sourcePrompt,
+          String(req.body.params?.negativePrompt || ''),
+          req.body.params,
+          req.body.randomSelections,
+        )
+      : null;
+    const content = await completeWithProvider(provider, sourcePrompt, req.body.systemMessage || DEFAULT_SYSTEM_MESSAGE);
     const result = parseEnhancedContent(content);
-    res.json({ enhancedPrompt: result.positive, negativePrompt: result.negative });
+    const tags = recovery && result.positive.trim()
+      ? updateEnhancedPromptRecovery(
+          recovery.messageId,
+          userId,
+          result.positive.trim(),
+          result.negative.trim(),
+        )
+      : recovery?.tags || [];
+    res.json({
+      enhancedPrompt: result.positive,
+      negativePrompt: result.negative,
+      recoveryMessageId: recovery?.messageId,
+      tags,
+    });
   } catch (error: any) {
-    res.status(502).json({ error: 'LLM Error: ' + (error.response?.data?.error?.message || error.message) });
+    res.status(502).json({
+      error: 'LLM Error: ' + (error.response?.data?.error?.message || error.message),
+      recoveryMessageId: recovery?.messageId,
+    });
   }
 });
 

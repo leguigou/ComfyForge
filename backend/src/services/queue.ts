@@ -9,6 +9,7 @@ import { getTargetComfyUrl, getWorkflow, parseComfyError } from './comfy';
 import { imagesDir, thumbnailsDir } from './image';
 import { QueueTask, GenerationParams, ComfyHistoryEntry } from '../types';
 import { writeAuditLog } from './audit-log';
+import { resolveComfyHistoryImage, ResolvedComfyHistoryImage } from './comfy-history';
 
 let isProcessingQueue = false;
 let wss: WebSocketServer | null = null;
@@ -132,11 +133,11 @@ export const processQueue = async () => {
       throw new Error(`Submission failed: ${parseComfyError(err)}`); 
     }
 
-    let finished = false, filename = '';
+    let completedImage: ResolvedComfyHistoryImage | undefined;
     const startTime = Date.now();
     const POLLING_TIMEOUT = 5 * 60 * 1000; 
 
-    while (!finished) {
+    while (!completedImage) {
       if (Date.now() - startTime > POLLING_TIMEOUT) throw new Error('Generation timed out after 5 minutes.');
       
       const currentDuration = Math.floor((Date.now() - startTime) / 1000);
@@ -170,14 +171,10 @@ export const processQueue = async () => {
           const errMsg = (history.status?.messages?.[0]?.[1] as { message?: string } | undefined)?.message || 'ComfyUI execution error';
           throw new Error(`Execution failed: ${errMsg}`);
         }
-        const nodeOutput = history.outputs?.[saveNodeId];
-        if (nodeOutput?.images?.length) {
-          filename = String(nodeOutput.images[0].filename);
-          finished = true;
-        }
+        completedImage = resolveComfyHistoryImage(history, saveNodeId);
       }
       
-      if (!finished) {
+      if (!completedImage) {
         await new Promise(r => setTimeout(r, 1000));
         const stillExists = db.prepare('SELECT id FROM queue WHERE id = ?').get(task.id);
         if (!stillExists) { 
@@ -189,6 +186,7 @@ export const processQueue = async () => {
     }
     
     const finalDuration = Math.floor((Date.now() - startTime) / 1000);
+    const { filename, subfolder = '', type = 'output', nodeId: outputNodeId } = completedImage;
     writeAuditLog({
       source: 'comfyui',
       direction: 'inbound',
@@ -199,12 +197,16 @@ export const processQueue = async () => {
       userId: sessionOwner?.userId,
       sessionId: task.sessionId,
       messageId: task.messageId,
-      details: { promptId, filename }
+      details: { promptId, filename, subfolder, type, outputNodeId }
     });
 
     let imgResp;
     try {
-      imgResp = await axios.get(`${targetComfyUrl}/view`, { params: { filename }, responseType: 'arraybuffer', timeout: 15000 });
+      imgResp = await axios.get(`${targetComfyUrl}/view`, {
+        params: { filename, subfolder, type },
+        responseType: 'arraybuffer',
+        timeout: 15000
+      });
     } catch (err: unknown) { 
       throw new Error(`Failed to retrieve image: ${parseComfyError(err)}`); 
     }

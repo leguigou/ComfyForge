@@ -28,12 +28,19 @@ export const normalizeCompanionSettings = (value?: Partial<CompanionSettings>): 
     ? value.companions.filter((companion): companion is CompanionProfile => (
         companion?.source === 'custom'
         && typeof companion.id === 'string'
+        && companion.id.trim().length > 0
         && typeof companion.name === 'string'
         && typeof companion.spriteDataUrl === 'string'
         && companion.spriteDataUrl.startsWith('data:image/')
       ))
     : [];
-  const companions = [builtinCompanion, ...customCompanions.filter(companion => companion.id !== DEFAULT_COMPANION_ID)];
+  const seenCompanionIds = new Set<string>([DEFAULT_COMPANION_ID]);
+  const uniqueCustomCompanions = customCompanions.filter(companion => {
+    if (seenCompanionIds.has(companion.id)) return false;
+    seenCompanionIds.add(companion.id);
+    return true;
+  });
+  const companions = [builtinCompanion, ...uniqueCustomCompanions];
   const activeId = companions.some(companion => companion.id === value?.activeId)
     ? value!.activeId!
     : DEFAULT_COMPANION_ID;

@@ -2,6 +2,22 @@ import { useState, useEffect, useCallback } from 'react';
 import { API_BASE } from '../services/api';
 import type { User } from '../types';
 
+interface AuthCheckResponse {
+  authenticated?: boolean;
+  user?: User;
+}
+
+const readAuthCheckResponse = async (response: Response): Promise<AuthCheckResponse | null> => {
+  const body = await response.text();
+  if (!body.trim()) return null;
+
+  try {
+    return JSON.parse(body) as AuthCheckResponse;
+  } catch {
+    return null;
+  }
+};
+
 export const useAuth = () => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -12,9 +28,15 @@ export const useAuth = () => {
     console.log('[Auth] Checking current authentication status...');
     try {
       const res = await fetch(`${API_BASE}/api/auth/check`, { credentials: 'include' });
-      const data = await res.json();
-      setIsAuthenticated(data.authenticated);
-      if (data.authenticated && data.user) {
+      const data = await readAuthCheckResponse(res);
+      const authenticated = res.ok && data?.authenticated === true;
+
+      if (!data) {
+        console.warn(`[Auth] Check returned an empty or invalid response (HTTP ${res.status}).`);
+      }
+
+      setIsAuthenticated(authenticated);
+      if (authenticated && data?.user) {
         setCurrentUser(data.user);
       } else {
         setCurrentUser(null);

@@ -198,9 +198,18 @@ export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticat
     setMassActionType(null);
   };
 
-  const deleteAllActiveSessions = async () => {
-    await fetch(`${API_BASE}/api/history/all/active`, { method: 'DELETE', credentials: 'include' });
-    fetchSessions();
+  const deleteSessions = async (scope: 'active' | 'archived' | 'all') => {
+    const response = await fetch(`${API_BASE}/api/history/all/${scope}`, { method: 'DELETE', credentials: 'include' });
+    if (!response.ok) throw new Error('Failed to delete sessions');
+    if (
+      scope === 'all'
+      || (scope === 'archived' && view === 'archives')
+      || (scope === 'active' && view !== 'archives')
+    ) {
+      setCurrentSessionId(null);
+      setMessages([]);
+    }
+    await fetchSessions();
     setMassActionType(null);
   };
 
@@ -238,7 +247,7 @@ export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticat
     confirmDeleteSession,
     toggleArchive,
     archiveAllSessions,
-    deleteAllActiveSessions,
+    deleteSessions,
     deleteMessage
   };
 };

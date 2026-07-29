@@ -18,3 +18,17 @@ export const resolveGenerationStartedAt = (
 ) => status === 'processing'
   ? (loadedStartedAt ?? existingStartedAt ?? now)
   : loadedStartedAt;
+
+export const getEstimatedGenerationProgress = (
+  elapsedSeconds: number,
+  estimatedDurationSeconds: number | undefined
+) => {
+  if (
+    estimatedDurationSeconds === undefined
+    || !Number.isFinite(estimatedDurationSeconds)
+    || estimatedDurationSeconds <= 0
+  ) return undefined;
+
+  const rawProgress = (Math.max(0, elapsedSeconds) / estimatedDurationSeconds) * 100;
+  return Math.min(96, Math.max(2, rawProgress));
+};

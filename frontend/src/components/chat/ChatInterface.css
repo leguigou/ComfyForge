@@ -558,6 +558,60 @@
   opacity: 0.68;
 }
 
+.generation-estimate-track {
+  display: block;
+  width: 76px;
+  height: 3px;
+  margin: 0.38rem auto 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 11%, transparent);
+}
+
+.generation-estimate-fill {
+  position: relative;
+  display: block;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 70%, transparent),
+    var(--accent)
+  );
+  box-shadow: 0 0 7px color-mix(in srgb, var(--accent) 38%, transparent);
+  animation-name: generation-estimate-progress;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+.generation-estimate-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.48), transparent);
+  transform: translateX(-100%);
+  animation: generation-estimate-glint 2.2s ease-in-out infinite;
+}
+
+@keyframes generation-estimate-glint {
+  55%, 100% { transform: translateX(100%); }
+}
+
+@keyframes generation-estimate-progress {
+  to { width: 96%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generation-estimate-fill {
+    animation: none;
+  }
+
+  .generation-estimate-fill::after {
+    animation: none;
+  }
+}
+
 /* Input Area */
 .input-container { 
   padding: 1rem 1.5rem 2rem; 

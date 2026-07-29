@@ -5,8 +5,9 @@ import { WelcomeScreen } from './WelcomeScreen';
 import { MessageText } from './MessageText';
 import { SeedyCompanion } from './SeedyCompanion';
 import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon, ThumbUpIcon, ComposeIcon, MagicWandIcon } from '../ui/Icons';
-import { getFullImageUrl, formatDuration } from '../../services/api';
-import { getGenerationElapsedSeconds } from '../../utils/generationTimer';
+import { API_BASE, getFullImageUrl, formatDuration } from '../../services/api';
+import { getEstimatedGenerationProgress, getGenerationElapsedSeconds } from '../../utils/generationTimer';
+import { hasResolvableRandomPrompt } from '../../utils/randomPrompts';
 import toast from 'react-hot-toast';
 
 const LUCKY_PHRASE_COUNT = 5;
@@ -23,6 +24,82 @@ const getTouchDistance = (touches: React.TouchList) => {
   const [first, second] = [touches.item(0), touches.item(1)];
   if (!first || !second) return 0;
   return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+};
+
+const GenerationProgress = ({ message }: { message: Message }) => {
+  const [animation, setAnimation] = useState<{
+    startProgress: number;
+    remainingSeconds: number;
+  }>();
+  const timingRef = useRef({
+    duration: message.duration,
+    generationStartedAt: message.generationStartedAt
+  });
+  timingRef.current = {
+    duration: message.duration,
+    generationStartedAt: message.generationStartedAt
+  };
+
+  useEffect(() => {
+    if (message.status !== 'processing' || !message.model || !message.workflow) {
+      setAnimation(undefined);
+      return;
+    }
+
+    setAnimation(undefined);
+    const controller = new AbortController();
+    const query = new URLSearchParams({
+      model: message.model,
+      workflow: message.workflow
+    });
+
+    void fetch(`${API_BASE}/api/generate/estimate?${query.toString()}`, {
+      credentials: 'include',
+      signal: controller.signal
+    })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (typeof data?.estimateSeconds === 'number' && data.estimateSeconds > 0) {
+          const timing = timingRef.current;
+          const elapsedSeconds = getGenerationElapsedSeconds(
+            timing.duration,
+            timing.generationStartedAt,
+            Date.now()
+          );
+          const startProgress = getEstimatedGenerationProgress(
+            elapsedSeconds,
+            data.estimateSeconds
+          );
+          if (startProgress !== undefined) {
+            setAnimation({
+              startProgress,
+              remainingSeconds: Math.max(0.1, data.estimateSeconds - elapsedSeconds)
+            });
+          }
+        }
+      })
+      .catch(error => {
+        if (error instanceof Error && error.name !== 'AbortError') {
+          console.error('[Generation] Failed to load duration estimate:', error);
+        }
+      });
+
+    return () => controller.abort();
+  }, [message.model, message.status, message.workflow]);
+
+  if (!animation) return null;
+
+  return (
+    <span className="generation-estimate-track" aria-hidden="true">
+      <span
+        className="generation-estimate-fill"
+        style={{
+          width: `${animation.startProgress}%`,
+          animationDuration: `${animation.remainingSeconds}s`
+        }}
+      />
+    </span>
+  );
 };
 
 interface ChatInterfaceProps {
@@ -384,6 +461,8 @@ export const ChatInterface = ({
             )}
             {messages.map((msg, index) => {
               const messageText = msg.text || msg.prompt;
+              const dynamicPrompt = msg.role === 'user' ? (msg.text || '') : '';
+              const canRegenerateDynamicPrompt = hasResolvableRandomPrompt(dynamicPrompt, params.randomPromptLists);
               const prevMsg = index > 0 ? messages[index - 1] : null;
               const prevText = prevMsg ? (prevMsg.text || prevMsg.prompt) : null;
               
@@ -429,6 +508,7 @@ export const ChatInterface = ({
                                 msg.generationStartedAt,
                                 timerNow
                               ))}
+                              <GenerationProgress message={msg} />
                             </span>
                           )}
                         </p>
@@ -510,6 +590,25 @@ export const ChatInterface = ({
                       const textToEdit = msg.role === 'user' ? (msg.text || '') : (msg.generationPrompt || msg.prompt || msg.text || '');
                       handleEdit(textToEdit); 
                     }} title={msg.role === 'bot' ? t.reusePrompt : t.edit}>✎</button>
+                    {canRegenerateDynamicPrompt && (
+                      <button
+                        className="action-btn-icon regenerate"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          recordRegeneration(msg.id);
+                          handleSend(dynamicPrompt, true);
+                        }}
+                        title={t.regenerateDynamicPrompt}
+                        aria-label={`${t.regenerateDynamicPrompt}${(regenerationCounts[msg.id] || 0) >= 2 ? ` ×${regenerationCounts[msg.id]}` : ''}`}
+                      >
+                        <RefreshIcon />
+                        {(regenerationCounts[msg.id] || 0) >= 2 && (
+                          <span className="regeneration-count-badge" aria-hidden="true">
+                            ×{regenerationCounts[msg.id]}
+                          </span>
+                        )}
+                      </button>
+                    )}
                     {msg.imageUrl && (
                       <>
                         <button

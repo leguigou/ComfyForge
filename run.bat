@@ -44,15 +44,13 @@ if not exist "frontend\node_modules" (
   exit /b 1
 )
 
-call :ensure_port_free 3001
+call :release_port 3001
 if errorlevel 1 exit /b 1
-call :ensure_port_free 5173
+call :release_port 5173
 if errorlevel 1 exit /b 1
-
-start "ComfyForge Backend" cmd /k "cd /d ""%~dp0backend"" && npm run dev"
-start "ComfyForge Frontend" cmd /k "cd /d ""%~dp0frontend"" && npm run dev"
 
 echo Attente du backend...
+start "ComfyForge Backend" cmd /k "cd /d ""%~dp0backend"" && npm run dev"
 call :wait_for_port 3001 60
 if errorlevel 1 (
   echo [ERREUR] Le backend n'a pas demarre sur le port 3001.
@@ -61,6 +59,7 @@ if errorlevel 1 (
 )
 
 echo Attente du frontend...
+start "ComfyForge Frontend" cmd /k "cd /d ""%~dp0frontend"" && npm run dev"
 call :wait_for_port 5173 60
 if errorlevel 1 (
   echo [ERREUR] Le frontend n'a pas demarre sur le port 5173.
@@ -72,11 +71,10 @@ echo ComfyForge est pret sur http://localhost:5173
 start "" http://localhost:5173
 exit /b 0
 
-:ensure_port_free
-powershell -NoProfile -Command ^
-  "if (Get-NetTCPConnection -State Listen -LocalPort %~1 -ErrorAction SilentlyContinue) { exit 1 }"
+:release_port
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\release-port.ps1" -Port %~1 -Workspace "%~dp0."
 if errorlevel 1 (
-  echo [ERREUR] Le port %~1 est deja utilise. Arretez le service concerne puis reessayez.
+  echo [ERREUR] Impossible de liberer le port %~1.
   pause
   exit /b 1
 )

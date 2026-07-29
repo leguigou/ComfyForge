@@ -1,6 +1,7 @@
 import fs from 'fs';
 import http from 'http';
 import path from 'path';
+import axios from 'axios';
 import { AddressInfo } from 'net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RawData, WebSocket, WebSocketServer } from 'ws';
@@ -241,6 +242,104 @@ describe('API security boundaries', () => {
     expect(savedSettings.companionSettings.companions[2].spriteDataUrl).toBe(spriteDataUrl);
   });
 
+  it('persists an LLM prompt as retryable before image generation is queued', async () => {
+    const { encryptApiKey } = await import('../services/llm-providers');
+    const providerId = 'recovery-test-provider';
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO llm_providers (
+        id, userId, name, type, baseUrl, model, apiKey, isActive, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      providerId,
+      adminId,
+      'Recovery test',
+      'openai',
+      'https://llm.example.test',
+      'test-model',
+      encryptApiKey('test-api-key'),
+      1,
+      now,
+      now,
+    );
+
+    const llmResponse = {
+      data: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              positive: 'Recovered enhanced prompt',
+              negative: 'Recovered negative prompt',
+            }),
+          },
+        }],
+      },
+    };
+    const postSpy = vi.spyOn(axios, 'post').mockResolvedValueOnce(llmResponse);
+    try {
+      const response = await request('/api/llm/enhance-prompt', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: JSON.stringify({
+          prompt: 'Original recovery prompt',
+          originalPrompt: 'Original recovery prompt',
+          sessionId: adminSessionId,
+          providerId,
+          params: {
+            comfyModel: 'test-model.safetensors',
+            workflowFile: 'workflow_lcm.json',
+            width: 768,
+            height: 1024,
+            negativePrompt: 'Initial negative prompt',
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      const body = await json(response);
+      expect(body.recoveryMessageId).toBeTruthy();
+
+      const recovered = db.prepare(`
+        SELECT status, prompt, generationPrompt, generationParams
+        FROM messages
+        WHERE id = ?
+      `).get(body.recoveryMessageId) as {
+        status: string;
+        prompt: string;
+        generationPrompt: string;
+        generationParams: string;
+      };
+      expect(recovered.status).toBe('failed');
+      expect(recovered.prompt).toBe('Original recovery prompt');
+      expect(recovered.generationPrompt).toBe('Recovered enhanced prompt');
+      expect(JSON.parse(recovered.generationParams).negativePrompt).toBe('Recovered negative prompt');
+      expect(db.prepare('SELECT id FROM queue WHERE messageId = ?').get(body.recoveryMessageId)).toBeUndefined();
+
+      postSpy.mockRejectedValueOnce(new Error('LLM unavailable'));
+      const failedResponse = await request('/api/llm/enhance-prompt', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: JSON.stringify({
+          prompt: 'Prompt saved before a failed LLM call',
+          sessionId: adminSessionId,
+          providerId,
+          params: { workflowFile: 'workflow_lcm.json' },
+        }),
+      });
+      expect(failedResponse.status).toBe(502);
+      const failedBody = await json(failedResponse);
+      expect(failedBody.recoveryMessageId).toBeTruthy();
+      const failedRecovery = db.prepare(`
+        SELECT status, generationPrompt
+        FROM messages
+        WHERE id = ?
+      `).get(failedBody.recoveryMessageId) as { status: string; generationPrompt: string };
+      expect(failedRecovery.status).toBe('failed');
+      expect(failedRecovery.generationPrompt).toBe('Prompt saved before a failed LLM call');
+    } finally {
+      postSpy.mockRestore();
+    }
+  });
+
   it('isolates admin logs by administrator account', async () => {
     await request('/api/users', {
       method: 'POST',
@@ -305,6 +404,47 @@ describe('API security boundaries', () => {
     expect(purgeExpiredAuditLogs(now)).toBeGreaterThanOrEqual(1);
     expect(db.prepare('SELECT id FROM audit_logs WHERE message = ?').get('expired-log')).toBeUndefined();
     expect(db.prepare('SELECT id FROM audit_logs WHERE message = ?').get('recent-log')).toBeTruthy();
+  });
+
+  it('deletes active sessions, archives, or both according to the selected scope', async () => {
+    await request('/api/users', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ username: 'bulk-delete-user', password: 'bulk-delete-password' }),
+    });
+    const login = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'bulk-delete-user', password: 'bulk-delete-password' }),
+    });
+    const cookie = authCookieFrom(login);
+    const user = db.prepare('SELECT id FROM users WHERE username = ?').get('bulk-delete-user') as { id: string };
+    const insertSession = (id: string, isArchived: number) => db.prepare(`
+      INSERT INTO sessions (id, userId, title, updatedAt, isArchived)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, user.id, id, Date.now(), isArchived);
+    const sessionExists = (id: string) => Boolean(db.prepare('SELECT id FROM sessions WHERE id = ?').get(id));
+
+    insertSession('bulk-active-one', 0);
+    insertSession('bulk-archive-one', 1);
+    const archivesResponse = await request('/api/history/all/archived', { method: 'DELETE', cookie });
+    expect(archivesResponse.status).toBe(200);
+    expect(sessionExists('bulk-active-one')).toBe(true);
+    expect(sessionExists('bulk-archive-one')).toBe(false);
+
+    insertSession('bulk-archive-two', 1);
+    const activeResponse = await request('/api/history/all/active', { method: 'DELETE', cookie });
+    expect(activeResponse.status).toBe(200);
+    expect(sessionExists('bulk-active-one')).toBe(false);
+    expect(sessionExists('bulk-archive-two')).toBe(true);
+
+    insertSession('bulk-active-two', 0);
+    const allResponse = await request('/api/history/all/all', { method: 'DELETE', cookie });
+    expect(allResponse.status).toBe(200);
+    expect(sessionExists('bulk-active-two')).toBe(false);
+    expect(sessionExists('bulk-archive-two')).toBe(false);
+
+    const invalidResponse = await request('/api/history/all/unknown', { method: 'DELETE', cookie });
+    expect(invalidResponse.status).toBe(400);
   });
 
   it('accepts the signed login cookie and rejects a forged WebSocket cookie', async () => {

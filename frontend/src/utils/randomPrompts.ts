@@ -72,6 +72,17 @@ export const normalizeRandomSlug = (value: string) => value
   .replace(/[^a-zA-Z0-9_-]/g, '')
   .slice(0, 40);
 
+export const hasResolvableRandomPrompt = (prompt: string, lists: RandomPromptList[] = []) => {
+  const enabledSlugs = new Set(
+    lists
+      .filter(list => list.enabled && list.slug && list.values.some(value => value.trim()))
+      .map(list => list.slug.toLowerCase())
+  );
+
+  return [...prompt.matchAll(/\[([a-zA-Z0-9_-]+)\]/g)]
+    .some(match => enabledSlugs.has(match[1].toLowerCase()));
+};
+
 export const resolveRandomPromptsWithSelections = (prompt: string, lists: RandomPromptList[] = []) => {
   const available = new Map(
     lists

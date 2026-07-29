@@ -124,7 +124,13 @@ export const getWorkflow = (prompt: string, params?: Partial<GenerationParams>) 
     }
   }
 
-  if (workflow[nodes.save!]?.inputs) {
+  if (
+    workflow[nodes.save!]?.inputs
+    && (
+      workflow[nodes.save!]?.class_type === 'SaveImage'
+      || 'filename_prefix' in workflow[nodes.save!].inputs
+    )
+  ) {
     workflow[nodes.save!].inputs.filename_prefix = "ComfyForge";
   }
   return workflow;

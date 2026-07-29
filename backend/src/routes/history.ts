@@ -92,18 +92,31 @@ router.post('/archive-all', authenticate, (req, res) => {
   res.json({ success: true });
 });
 
-router.delete('/all/active', authenticate, (req, res) => {
+router.delete('/all/:scope', authenticate, (req, res) => {
   const user = (req as any).user;
+  const scope = Array.isArray(req.params.scope) ? req.params.scope[0] : req.params.scope;
+  if (!['active', 'archived', 'all'].includes(scope)) {
+    return res.status(400).json({ error: 'Invalid deletion scope' });
+  }
+  const archiveFilter = scope === 'active'
+    ? 'AND s.isArchived = 0'
+    : scope === 'archived'
+      ? 'AND s.isArchived = 1'
+      : '';
   const messages = db.prepare(`
-    SELECT m.imageUrl, m.thumbnailUrl 
-    FROM messages m 
-    JOIN sessions s ON m.sessionId = s.id 
-    WHERE s.isArchived = 0 AND s.userId = ? AND m.imageUrl IS NOT NULL
+    SELECT m.imageUrl, m.thumbnailUrl
+    FROM messages m
+    JOIN sessions s ON m.sessionId = s.id
+    WHERE s.userId = ? ${archiveFilter} AND m.imageUrl IS NOT NULL
   `).all(user.id) as any[];
   deleteFiles(messages);
 
-  db.prepare('DELETE FROM sessions WHERE isArchived = 0 AND userId = ?').run(user.id);
-  res.json({ success: true });
+  const result = db.prepare(`
+    DELETE FROM sessions
+    WHERE userId = ?
+      ${scope === 'active' ? 'AND isArchived = 0' : scope === 'archived' ? 'AND isArchived = 1' : ''}
+  `).run(user.id);
+  res.json({ success: true, deleted: result.changes, scope });
 });
 
 router.patch('/:sessionId/message/:messageId/favorite', authenticate, (req, res) => {
