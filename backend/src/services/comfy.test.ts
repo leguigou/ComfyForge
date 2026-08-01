@@ -4,15 +4,20 @@ import { parseComfyError, releaseComfyMemory } from './comfy';
 
 describe('releaseComfyMemory', () => {
   it('requests model unloading and cache release from ComfyUI', async () => {
-    const postSpy = vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: {} });
+    const post = vi.fn().mockResolvedValueOnce({ data: {} });
+    const createSpy = vi.spyOn(axios, 'create').mockReturnValueOnce({ post } as any);
 
     await releaseComfyMemory('http://127.0.0.1:8188');
 
-    expect(postSpy).toHaveBeenCalledWith('http://127.0.0.1:8188/free', {
+    expect(createSpy).toHaveBeenCalledWith({
+      baseURL: 'http://127.0.0.1:8188',
+      timeout: 30000,
+    });
+    expect(post).toHaveBeenCalledWith('/free', {
       unload_models: true,
       free_memory: true,
-    }, { timeout: 30000 });
-    postSpy.mockRestore();
+    });
+    createSpy.mockRestore();
   });
 });
 

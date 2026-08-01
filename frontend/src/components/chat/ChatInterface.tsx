@@ -26,6 +26,29 @@ const MIN_GALLERY_COLUMNS = 1;
 const MAX_GALLERY_COLUMNS = 6;
 const GALLERY_PINCH_STEP = 1.16;
 
+const createSafeImagePreview = async (file: File) => {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const maxDimension = 1024;
+    const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Unable to prepare image preview');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const previewBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('Unable to encode image preview'));
+      }, 'image/png');
+    });
+    return URL.createObjectURL(previewBlob);
+  } finally {
+    bitmap.close();
+  }
+};
+
 const normalizeSearchValue = (value: string) => value
   .toLocaleLowerCase()
   .normalize('NFD')
@@ -254,7 +277,7 @@ export const ChatInterface = ({
   const [isResolvingSlashCommand, setIsResolvingSlashCommand] = useState(false);
   const [isPromptFocused, setIsPromptFocused] = useState(false);
   const [isAnalyzingImage, setIsAnalyzingImage] = useState(false);
-  const [analysisPreview, setAnalysisPreview] = useState<{ url: string; name: string } | null>(null);
+  const [analysisPreview, setAnalysisPreview] = useState<{ url: string } | null>(null);
   const [isGallerySearchFocused, setIsGallerySearchFocused] = useState(false);
   const [pendingPromptEditor, setPendingPromptEditor] = useState<{
     displayMessageId: string;
@@ -310,8 +333,8 @@ export const ChatInterface = ({
       return;
     }
 
-    const previewUrl = URL.createObjectURL(file);
-    setAnalysisPreview({ url: previewUrl, name: file.name });
+    const previewUrl = await createSafeImagePreview(file).catch(() => null);
+    setAnalysisPreview(previewUrl ? { url: previewUrl } : null);
     setIsAnalyzingImage(true);
     setShowOptions(false);
     window.setTimeout(() => smoothScrollTo('vision-analysis-post'), 60);
@@ -1018,13 +1041,13 @@ export const ChatInterface = ({
               </div>
               );
             })}
-            {isAnalyzingImage && analysisPreview && (
+            {isAnalyzingImage && (
               <div id="vision-analysis-post" className="message-row bot vision-analysis-row" aria-live="polite">
                 <div className="avatar vision-avatar"><CameraIcon size={18} /></div>
                 <div className="message-content loading">
                   <div className="vision-analysis-stage">
-                    <div className="vision-scan-frame">
-                      <img src={analysisPreview.url} alt={analysisPreview.name} />
+                    <div className={`vision-scan-frame ${analysisPreview ? '' : 'without-preview'}`}>
+                      {analysisPreview && <img src={analysisPreview.url} alt="Imported preview" />}
                       <span className="vision-scan-line" aria-hidden="true" />
                       <span className="vision-scan-grid" aria-hidden="true" />
                       <span className="vision-pixel-cloud vision-pixel-cloud-a" aria-hidden="true" />

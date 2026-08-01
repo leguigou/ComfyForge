@@ -39,10 +39,15 @@ export const getTargetComfyUrl = (requestedUrl?: string) => {
 };
 
 export const releaseComfyMemory = async (targetUrl: string) => {
-  await axios.post(`${targetUrl}/free`, {
+  const validatedBaseUrl = getTargetComfyUrl(targetUrl);
+  const comfyClient = axios.create({
+    baseURL: validatedBaseUrl,
+    timeout: 30000,
+  });
+  await comfyClient.post('/free', {
     unload_models: true,
     free_memory: true,
-  }, { timeout: 30000 });
+  });
 };
 
 export const getWorkflow = (prompt: string, params?: Partial<GenerationParams>) => {
