@@ -21,6 +21,45 @@ router.get('/tags', authenticate, (req, res) => {
   res.json(tags);
 });
 
+router.get('/random-prompt', authenticate, (req, res) => {
+  const user = (req as any).user;
+  const source = req.query.source === 'favorite' ? 'favorite' : 'liked';
+  const favoriteColumn = source === 'favorite' ? 'm.isFavorite' : 'm.isPromptFavorite';
+  const result = db.prepare(`
+    SELECT COALESCE(
+      NULLIF(TRIM(m.generationPrompt), ''),
+      NULLIF(TRIM(m.prompt), ''),
+      TRIM(m.text)
+    ) AS prompt
+    FROM messages m
+    JOIN sessions s ON s.id = m.sessionId
+    WHERE s.userId = ?
+      AND m.role = 'bot'
+      AND ${favoriteColumn} = 1
+      AND TRIM(COALESCE(
+        NULLIF(TRIM(m.generationPrompt), ''),
+        NULLIF(TRIM(m.prompt), ''),
+        TRIM(m.text)
+      )) <> ''
+    GROUP BY COALESCE(
+      NULLIF(TRIM(m.generationPrompt), ''),
+      NULLIF(TRIM(m.prompt), ''),
+      TRIM(m.text)
+    )
+    ORDER BY RANDOM()
+    LIMIT 1
+  `).get(user.id) as { prompt: string } | undefined;
+
+  if (!result?.prompt) {
+    return res.status(404).json({
+      code: source === 'favorite' ? 'NO_FAVORITE_PROMPTS' : 'NO_LIKED_PROMPTS',
+      error: 'No matching saved prompt'
+    });
+  }
+
+  res.json({ prompt: result.prompt, source });
+});
+
 router.get('/', authenticate, (req, res) => {
   const user = (req as any).user;
   const limit = parseInt(req.query.limit as string) || 25;
@@ -35,8 +74,7 @@ router.get('/', authenticate, (req, res) => {
     .filter(Boolean))];
   const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 300) : '';
   
-  let query = `
-    SELECT m.sessionId, m.id as messageId, m.imageUrl, m.thumbnailUrl, m.prompt, m.text, m.generationPrompt, m.timestamp, m.model, m.width, m.height, m.steps, m.cfg, m.workflow, m.seed, m.isFavorite, m.isPromptFavorite, m.duration, m.sampler, m.scheduler, m.randomSelections
+  let filteredSource = `
     FROM messages m JOIN sessions s ON m.sessionId = s.id
     WHERE m.imageUrl IS NOT NULL AND s.userId = ?
   `;
@@ -44,17 +82,17 @@ router.get('/', authenticate, (req, res) => {
   const params: any[] = [user.id];
   
   if (favoritesOnly) {
-    query += ` AND m.isFavorite = 1`;
+    filteredSource += ` AND m.isFavorite = 1`;
   }
   if (promptFavoritesOnly) {
-    query += ` AND m.isPromptFavorite = 1`;
+    filteredSource += ` AND m.isPromptFavorite = 1`;
   }
   if (!favoritesOnly && !promptFavoritesOnly) {
-    query += ` AND s.isArchived = ?`;
+    filteredSource += ` AND s.isArchived = ?`;
     params.push(onlyArchived ? 1 : 0);
   }
   if (selectedTags.length > 0) {
-    query += ` AND m.id IN (
+    filteredSource += ` AND m.id IN (
       SELECT mt.messageId
       FROM message_tags mt
       WHERE mt.tagId IN (${selectedTags.map(() => '?').join(',')})
@@ -65,19 +103,28 @@ router.get('/', authenticate, (req, res) => {
   }
   if (search) {
     const escapedSearch = search.toLowerCase().replace(/[\\%_]/g, '\\$&');
-    query += ` AND lower(
+    filteredSource += ` AND lower(
       COALESCE(m.generationPrompt, '') || ' ' ||
       COALESCE(m.prompt, '') || ' ' ||
       COALESCE(m.text, '')
     ) LIKE ? ESCAPE '\\'`;
     params.push(`%${escapedSearch}%`);
   }
-  
-  query += ` ORDER BY m.timestamp DESC LIMIT ? OFFSET ?`;
-  params.push(limit, offset);
-  
-  const results = db.prepare(query).all(...params) as Record<string, unknown>[];
+
+  const totalRow = db.prepare(`SELECT COUNT(*) AS total ${filteredSource}`)
+    .get(...params) as { total: number };
+  const results = db.prepare(`
+    SELECT m.sessionId, m.id as messageId, m.imageUrl, m.thumbnailUrl, m.prompt, m.text,
+      m.generationPrompt, m.timestamp, m.model, m.width, m.height, m.steps, m.cfg,
+      m.workflow, m.seed, m.isFavorite, m.isPromptFavorite, m.duration, m.sampler,
+      m.scheduler, m.randomSelections, m.comparisonMessageId
+    ${filteredSource}
+    ORDER BY m.timestamp DESC LIMIT ? OFFSET ?
+  `).all(...params, limit, offset) as Record<string, unknown>[];
   const enrichedResults = attachPromptTags(db, results.map(withParsedRandomSelections), 'messageId');
+  if (req.query.includeTotal === 'true') {
+    return res.json({ items: enrichedResults, total: totalRow.total });
+  }
   res.json(enrichedResults);
 });
 

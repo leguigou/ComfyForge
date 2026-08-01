@@ -1,9 +1,9 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { API_BASE } from '../services/api';
-import type { Session, Message } from '../types';
+import type { Session, Message, AppView } from '../types';
 import { resolveGenerationStartedAt } from '../utils/generationTimer';
 
-export const useSessions = (view: 'chat' | 'gallery' | 'archives', isAuthenticated: boolean | null) => {
+export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(() => {
     return localStorage.getItem('comfyforge.currentSessionId');

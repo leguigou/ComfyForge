@@ -2,8 +2,7 @@
 
 # ComfyForge
 
-Une interface web multi-utilisateur pour générer, organiser et retrouver vos
-images ComfyUI.
+**A self-hosted, multi-user workspace for generating, comparing, organizing, and rediscovering ComfyUI images.**
 
 [![Build and Publish Docker Images](https://github.com/leguigou/ComfyForge/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/leguigou/ComfyForge/actions/workflows/docker-publish.yml)
 [![CodeQL](https://github.com/leguigou/ComfyForge/actions/workflows/codeql.yml/badge.svg)](https://github.com/leguigou/ComfyForge/actions/workflows/codeql.yml)
@@ -12,151 +11,201 @@ images ComfyUI.
 
 </div>
 
-![Vue principale de ComfyForge](docs/images/overview.png)
+![ComfyForge main interface](docs/images/overview.png)
 
-ComfyForge associe une application React, une API Express, une base SQLite et
-un suivi WebSocket à votre installation ComfyUI. Les images et les comptes
-restent hébergés sur votre machine ou votre serveur.
+ComfyForge connects a React application, an Express API, SQLite storage, and real-time WebSocket updates to your existing ComfyUI installation. Accounts, settings, prompts, and generated images remain on your own machine or server.
 
-> ComfyForge ne remplace pas ComfyUI. Une instance ComfyUI fonctionnelle,
-> ainsi que les modèles nécessaires à vos workflows, sont indispensables.
+> ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
-## Fonctionnalités
+## What's new in 2.3.0
 
-- génération ComfyUI avec progression en temps réel, file d’attente, annulation
-  et reprise ;
-- historique par conversation, galerie, favoris et archives ;
-- comptes isolés et administration multi-utilisateur ;
-- import de workflows ComfyUI au format API et association guidée des nœuds ;
-- réglage du checkpoint, des dimensions, de la seed, des steps, du CFG, du
-  sampler et du scheduler ;
-- listes aléatoires réutilisables dans les prompts ;
-- amélioration facultative des prompts avec OpenAI, Anthropic, Gemini,
-  DeepSeek, xAI, Mistral, Groq, OpenRouter, Together, Ollama ou une API
-  compatible OpenAI ;
-- chiffrement des clés de providers dans SQLite ;
-- miniatures WebP, thèmes clair/sombre, interface responsive et PWA ;
-- interface disponible en français et en anglais.
+Version 2.3.0 is a major feature update over the previous 2.1.1 code on `main` and the 2.1.0 public release.
 
-| Options de génération | Interface mobile |
+- **Model comparison workspace:** generate the same prompt and seed with several favorite model/workflow pairs, browse every version, inspect matching images with a draggable split view, zoom and pan, vote for the better result or a tie, and safely delete comparison versions.
+- **Creative statistics:** explore weekly, monthly, or yearly generation activity, success rate, average duration, conversations, model and workflow usage, favorites, liked prompts, tag trends, and recent text/vision LLM activity.
+- **Vision-powered image recreation:** import JPEG, PNG, WebP, or AVIF images and turn them into detailed reconstruction prompts through a configured multimodal model.
+- **Guided image variations:** describe only the change you want, optionally keep the original seed, and let the active LLM rewrite the existing prompt before the new version is queued.
+- **A richer Lucky workflow:** preview the liked-prompt references selected for a draw, filter them by tag, reroll one or all references, add optional creative guidance, and tune reference count and temperature. Selection favors coherent but diverse references while avoiding near-duplicates.
+- **Quick slash commands:** use `/ai`, `/luck`, `/seed`, `/steps`, `/cfg`, `/random`, and `/favorite` directly in the prompt composer, with keyboard navigation and validation.
+- **One-shot AI enhancement:** enhance one prompt without permanently enabling automatic LLM enhancement.
+- **Editable queued prompts:** correct a pending prompt before ComfyUI starts it; the queue, linked user message, extracted tags, and live UI stay synchronized.
+- **More capable local AI support:** first-class LM Studio preset, model discovery, configurable vision model and system prompt, automatic vision-model expiry, and manual memory release for Ollama and LM Studio.
+- **ComfyUI memory controls:** unload models and clear the ComfyUI cache from settings; model comparisons also release memory immediately before a model switch.
+- **Better live generation feedback:** persisted start timestamps and WebSocket updates keep elapsed-time displays accurate across views and refreshes.
+- **Responsive UI expansion:** dedicated navigation for Statistics and Comparisons, comparison badges in chat and gallery, mobile-friendly comparison grids with pinch column control, and polished English/French copy for the new workflows.
+
+## Feature overview
+
+### Generation and queue management
+
+- Real-time ComfyUI progress, queue status, elapsed time, cancellation, retry, and retry-all for incomplete generations.
+- Prompt, negative prompt, checkpoint or diffusion model, workflow, width, height, seed, steps, CFG, sampler, and scheduler controls.
+- Fixed or random seeds, reusable random prompt lists such as `[R-Color]`, and regeneration with fresh dynamic selections.
+- Pending-prompt editing before execution and synchronized status updates over WebSockets.
+- Favorite models with associated workflows and saved generation defaults for one-click switching.
+
+### Prompt intelligence
+
+- Optional automatic or one-shot prompt enhancement through hosted or local LLMs.
+- Presets for OpenAI, Anthropic, Google Gemini, DeepSeek, xAI, Mistral, Groq, OpenRouter, Together AI, LM Studio, and Ollama, plus custom OpenAI-compatible endpoints.
+- Multiple stored providers, per-user active-provider selection, model discovery, connection checks, and encrypted API keys.
+- Vision-based image analysis and prompt reconstruction with a dedicated multimodal provider, model, system message, and local-model time-to-live.
+- Image variation by natural-language instruction, with optional seed preservation.
+- Quick commands for AI enhancement, Lucky generation, seed, steps, CFG, and prompt reuse.
+
+### Library and discovery
+
+- Conversation history, archives, bulk archive/delete tools, gallery browsing, image favorites, and liked prompts.
+- Automatic prompt tags, tag search and filtering, tag-focused browsing, prompt reuse, and random selection from liked or favorite content.
+- Lucky generations built from weighted, coherent, non-duplicate liked-prompt references, with a visual preview and reroll controls.
+- Full-resolution lightbox, metadata, downloads, thumbnails, and direct navigation back to the originating chat.
+
+### Model comparison
+
+- Re-render an existing image with another favorite model while preserving the prompt and seed.
+- Keep multiple comparison versions linked to the original and follow queued or active versions in real time.
+- Compare any two same-size completed versions with a draggable split slider, zoom, pan, and reset controls.
+- Record pairwise preferences as left, right, or tie; inspect generation metadata and delete individual variants.
+- Browse a dedicated comparison history with a configurable one-to-six-column grid and touch pinch controls.
+
+### Statistics
+
+- Week, month, and year ranges with previous-period comparisons.
+- Generated images, attempts, failures, success rate, average render time, and conversation counts.
+- Activity charts for generations, model usage, LLM text/vision calls, favorites, and liked prompts.
+- All-time totals, ranked models, top workflows, and LLM failure/performance summaries.
+- Searchable tag analytics with category and favorite/liked-prompt scopes.
+
+### Administration, privacy, and UX
+
+- Isolated user accounts, administrator-managed users, password changes, and per-user storage.
+- Encrypted LLM credentials in SQLite, authenticated image access, rate limiting, service URL validation, and configurable origin allowlists.
+- Searchable audit logs for ComfyUI and LLM exchanges.
+- Light and dark themes, responsive desktop/mobile layouts, PWA support, custom profile images, and customizable generation companions.
+- English and French interface translations.
+
+| Generation options | Mobile interface |
 | --- | --- |
-| ![Options de génération](docs/images/generation-options.png) | <img src="docs/images/mobile.png" alt="Interface mobile de ComfyForge" width="390"> |
+| ![ComfyForge generation options](docs/images/generation-options.png) | <img src="docs/images/mobile.png" alt="ComfyForge mobile interface" width="390"> |
 
-## Installation rapide avec Docker
+## Quick start with Docker
 
-### 1. Prérequis
+### 1. Requirements
 
-- Docker Desktop, ou Docker Engine avec Docker Compose v2 ;
-- Git ;
-- ComfyUI lancé sur le port `8188`.
+- Docker Desktop, or Docker Engine with Docker Compose v2
+- Git
+- ComfyUI running on port `8188`
 
-Si ComfyUI tourne sur la même machine, il doit accepter les connexions venant
-de Docker. Sous Linux, cela nécessite généralement de le lancer ainsi :
+If ComfyUI runs on the same host, it must accept connections from Docker. On Linux, this usually means starting it with:
 
 ```bash
 python main.py --listen 0.0.0.0 --port 8188
 ```
 
-N’exposez pas directement ce port sur Internet.
+Do not expose the ComfyUI port directly to the Internet.
 
-### 2. Télécharger et configurer ComfyForge
+### 2. Download and configure ComfyForge
 
 ```bash
 git clone https://github.com/leguigou/ComfyForge.git
 cd ComfyForge
 ```
 
-Sous Windows, l’assistant crée `.env`, demande le mot de passe administrateur
-et génère automatiquement une clé secrète :
+On Windows, the setup helper creates `.env`, asks for the initial administrator password, and generates a secret:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\init-env.ps1
 ```
 
-Sous Linux ou macOS :
+On Linux or macOS:
 
 ```bash
 sh scripts/init-env.sh
 ```
 
-Vous pouvez aussi copier `.env.example` vers `.env` et remplacer manuellement
-`APP_PASSWORD`, `AUTH_SECRET` et `COMFY_URL`.
+You can also copy `.env.example` to `.env` and set `APP_PASSWORD`, `AUTH_SECRET`, and `COMFY_URL` manually.
 
-### 3. Démarrer
+### 3. Start the application
 
 ```bash
 docker compose -f docker-compose.production.yml up -d
 ```
 
-Ouvrez <http://localhost:5173>, puis connectez-vous avec :
+Open <http://localhost:5173> and sign in with:
 
-- utilisateur : `admin` ;
-- mot de passe : celui choisi pendant la configuration.
+- username: `admin`
+- password: the password selected during setup
 
-Le mot de passe `APP_PASSWORD` sert uniquement lors de la création du premier
-administrateur. Le modifier ensuite dans `.env` ne modifie pas le compte
-existant.
+`APP_PASSWORD` is used only when the first administrator account is created. Changing it later in `.env` does not update the existing account.
 
-### 4. Première génération
+### 4. Generate your first image
 
-1. Ouvrez **Paramètres** et vérifiez la connexion à ComfyUI.
-2. Sélectionnez un workflow compatible avec les modèles installés.
-3. Saisissez un prompt et lancez la génération.
+1. Open **Settings** and verify the ComfyUI connection.
+2. Import or select an API-format workflow compatible with your installed models and nodes.
+3. Review the detected workflow mapping and choose a model.
+4. Enter a prompt and start the generation.
 
-Les workflows d’exemple peuvent nécessiter des modèles et des nœuds ComfyUI
-supplémentaires. Pour commencer avec votre propre workflow, consultez
-[le guide des workflows](docs/workflows.md).
+Example workflows may require additional ComfyUI models or custom nodes. See the [workflow guide](docs/workflows.md) to use your own workflow.
 
-## Mise à jour et maintenance
+## Workflows and models
+
+ComfyForge accepts JSON exported from ComfyUI with **Save (API format)**. Its mapping assistant detects the relevant checkpoint or diffusion loader, positive and optional negative prompts, main sampler, latent dimensions, and image output node. You can review the mapping, save corrections, replace a workflow, and retain defaults extracted from the file.
+
+Favorite models can be associated with a workflow and generation defaults. This association powers one-click model activation and the model comparison workspace.
+
+## LLM and vision setup
+
+LLM features are optional. In **Settings > AI (LLM)** you can install multiple provider profiles, discover available models, test connections, and select the active text provider. API keys are encrypted on the backend and are never displayed again after saving.
+
+Image import requires a separate vision-capable provider/model selection. The model must support image inputs. Supported upload formats are JPEG, PNG, WebP, and AVIF, up to 15 MB. For local Ollama and LM Studio models, ComfyForge can release memory manually and expire an idle vision model automatically.
+
+## Updates, data, and maintenance
 
 ```bash
-# Télécharger les dernières images et redémarrer
+# Pull the newest images and restart
 docker compose -f docker-compose.production.yml pull
 docker compose -f docker-compose.production.yml up -d
 
-# Consulter les journaux
+# Follow logs
 docker compose -f docker-compose.production.yml logs -f
 
-# Arrêter sans supprimer les données
+# Stop without deleting persistent data
 docker compose -f docker-compose.production.yml down
 ```
 
-Les données persistantes se trouvent dans :
+Persistent data lives in:
 
-- `backend/data` : base SQLite et données applicatives ;
-- `backend/workflows` : workflows et associations de nœuds ;
-- `images` : images et miniatures, séparées par utilisateur.
+- `backend/data`: SQLite database and application data
+- `backend/workflows`: workflows and saved node mappings
+- `images`: per-user images and thumbnails
 
-Sauvegardez régulièrement ces trois emplacements. Ne les ajoutez jamais à Git.
+Back up all three locations regularly. Never commit them to Git.
 
-## Configuration
+## Configuration reference
 
-| Variable | Description | Valeur par défaut |
+| Variable | Purpose | Default |
 | --- | --- | --- |
-| `APP_PASSWORD` | Mot de passe initial du premier administrateur, 12 caractères minimum | obligatoire |
-| `AUTH_SECRET` | Signature des cookies et chiffrement des clés LLM, 32 caractères minimum | obligatoire |
-| `COMFY_URL` | URL de ComfyUI vue depuis le backend | `http://host.docker.internal:8188` |
-| `FRONTEND_PORT` | Port web exposé par Docker | `5173` |
-| `CORS_ORIGINS` | Origines frontend supplémentaires, séparées par des virgules | vide |
-| `SERVICE_URL_ALLOWLIST` | Origines ComfyUI/LLM personnalisées autorisées | vide |
-| `ALLOW_PRIVATE_SERVICE_URLS` | Autorise les IP littérales privées et de boucle locale | `false` |
-| `ALLOW_USER_LLM_URLS` | Autorise chaque utilisateur à choisir librement son URL LLM | `false` |
-| `PORT` | Port interne de l’API | `3001` |
+| `APP_PASSWORD` | Initial password for the first administrator; minimum 12 characters | required |
+| `AUTH_SECRET` | Cookie signing and LLM-key encryption secret; minimum 32 characters | required |
+| `COMFY_URL` | ComfyUI URL as seen by the backend | `http://host.docker.internal:8188` |
+| `FRONTEND_PORT` | Web port published by Docker | `5173` |
+| `CORS_ORIGINS` | Additional comma-separated frontend origins | empty |
+| `SERVICE_URL_ALLOWLIST` | Allowed custom ComfyUI/LLM service origins | empty |
+| `ALLOW_PRIVATE_SERVICE_URLS` | Allow literal private and loopback IP addresses | `false` |
+| `ALLOW_USER_LLM_URLS` | Allow each user to choose an arbitrary LLM URL | `false` |
+| `PORT` | Internal API port | `3001` |
 
-Ne changez pas `AUTH_SECRET` après avoir enregistré des clés API sans prévoir
-de les ressaisir : elles sont chiffrées avec une clé dérivée de ce secret.
+Do not change `AUTH_SECRET` after saving API keys unless you plan to enter them again: provider credentials are encrypted with a key derived from this secret.
 
-### Accès distant
+### Remote access
 
-Pour un accès depuis Internet, placez le port web derrière un reverse proxy
-HTTPS tel que Caddy, Traefik ou Nginx. N’exposez ni ComfyUI ni le backend
-directement. Consultez également la [politique de sécurité](SECURITY.md).
+For Internet access, put the frontend behind an HTTPS reverse proxy such as Caddy, Traefik, or Nginx. Do not expose ComfyUI or the backend API directly. Review the [security policy](SECURITY.md) as well.
 
-## Développement local
+## Local development
 
-Prérequis : Node.js 22, npm et ComfyUI.
+Requirements: Node.js 22, npm, and ComfyUI.
 
-Créez une configuration dédiée au backend :
+Create a development configuration:
 
 ```powershell
 # Windows
@@ -164,11 +213,11 @@ powershell -ExecutionPolicy Bypass -File scripts\init-env.ps1 -Development
 ```
 
 ```bash
-# Linux ou macOS
+# Linux or macOS
 sh scripts/init-env.sh --development
 ```
 
-Installez les dépendances :
+Install dependencies:
 
 ```bash
 cd backend
@@ -178,14 +227,9 @@ npm ci
 cd ..
 ```
 
-Vous pouvez ensuite lancer `run.bat` sous Windows ou `bash run.sh` sous Linux et
-macOS. Il est également possible d’exécuter `npm run dev` séparément dans les
-dossiers `backend` et `frontend`.
+Run `run.bat` on Windows or `bash run.sh` on Linux and macOS. You can also run `npm run dev` separately in `backend` and `frontend`. The development frontend is available at <http://localhost:5173>; Vite proxies `/api` and WebSocket traffic to the backend.
 
-L’application de développement est disponible sur <http://localhost:5173>.
-Vite redirige automatiquement `/api` et les WebSockets vers le backend.
-
-## Vérifications
+## Validation
 
 ```bash
 cd backend
@@ -200,65 +244,56 @@ npm test
 npm run build
 ```
 
-Ces vérifications sont exécutées automatiquement par GitHub Actions. Dependabot
-surveille également npm et les actions GitHub, tandis que CodeQL analyse le
-code JavaScript et TypeScript.
+GitHub Actions runs these checks automatically. Dependabot monitors npm packages and GitHub Actions, and CodeQL analyzes the JavaScript and TypeScript code.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Browser[Navigateur / PWA] -->|HTTP + WebSocket| Frontend[React + Nginx]
+    Browser[Browser / PWA] -->|HTTP + WebSocket| Frontend[React + Nginx]
     Frontend -->|/api| Backend[Express + WebSocket]
     Backend --> Database[(SQLite)]
     Backend --> Storage[(Images + workflows)]
-    Backend -->|API ComfyUI| ComfyUI[ComfyUI]
-    Backend -. optionnel .-> LLM[Provider LLM]
+    Backend -->|ComfyUI API| ComfyUI[ComfyUI]
+    Backend -. optional .-> LLM[Hosted or local LLM]
 ```
 
 ```text
-frontend/           application React, Vite et TypeScript
-backend/            API Express, WebSocket et SQLite
-backend/workflows/  workflows ComfyUI et associations de nœuds
-docs/               documentation et captures
-scripts/            assistants de configuration
-.github/            CI, sécurité et modèles de contribution
+frontend/           React, Vite, and TypeScript application
+backend/            Express, WebSocket, and SQLite API
+backend/workflows/  ComfyUI workflows and node mappings
+docs/               Documentation and screenshots
+scripts/            Environment setup helpers
+.github/            CI, security, and contribution automation
 ```
 
-## Dépannage
+## Troubleshooting
 
-### ComfyUI est inaccessible
+### ComfyUI is unreachable
 
-- Vérifiez que ComfyUI répond sur `http://127.0.0.1:8188` depuis l’hôte.
-- Vérifiez `COMFY_URL` dans `.env`.
-- Sous Linux, lancez ComfyUI avec `--listen 0.0.0.0`.
-- Consultez les journaux avec `docker compose -f docker-compose.production.yml logs backend`.
+- Verify that ComfyUI responds at `http://127.0.0.1:8188` from the host.
+- Check `COMFY_URL` in `.env`.
+- On Linux, start ComfyUI with `--listen 0.0.0.0`.
+- Inspect backend logs with `docker compose -f docker-compose.production.yml logs backend`.
 
-### Un modèle ou un nœud est introuvable
+### A model or node cannot be found
 
-Le workflow référence un fichier ou une extension absente de ComfyUI. Ouvrez le
-workflow dans ComfyUI, installez les nœuds manquants, puis vérifiez les noms des
-modèles. Consultez [docs/workflows.md](docs/workflows.md).
+The workflow references a file or extension that is missing from ComfyUI. Open the workflow in ComfyUI, install the missing custom nodes, verify model filenames, and then review the [workflow guide](docs/workflows.md).
 
-### Le port 5173 est déjà utilisé
+### Port 5173 is already in use
 
-Modifiez `FRONTEND_PORT` dans `.env`, par exemple :
+Set another `FRONTEND_PORT` in `.env`, for example:
 
 ```dotenv
 FRONTEND_PORT=8080
 ```
 
-### Le mot de passe défini dans `.env` ne fonctionne plus
+### The password from `.env` no longer works
 
-`APP_PASSWORD` n’est lu que lors de la création initiale du compte `admin`.
-Utilisez l’administration de l’application pour modifier un mot de passe
-existant.
+`APP_PASSWORD` is read only when the initial `admin` account is created. Use ComfyForge administration to change an existing password.
 
-## Contribution et licence
+## Contributing and license
 
-Les contributions sont bienvenues. Lisez [CONTRIBUTING.md](CONTRIBUTING.md) et
-le [code de conduite](CODE_OF_CONDUCT.md) avant d’ouvrir une pull request.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md) before opening a pull request.
 
-Le code de ComfyForge est distribué sous [licence MIT](LICENSE). ComfyUI, les
-modèles, les LoRA, les VAE et les workflows tiers peuvent avoir leurs propres
-licences et conditions d’utilisation.
+ComfyForge is distributed under the [MIT License](LICENSE). ComfyUI, checkpoints, diffusion models, LoRAs, VAEs, and third-party workflows may have their own licenses and usage terms.

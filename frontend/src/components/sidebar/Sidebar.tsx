@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import './Sidebar.css';
-import type { Session, Language, Theme, User, Message } from '../../types';
+import type { Session, Language, Theme, User, Message, AppView } from '../../types';
 import { getFullImageUrl } from '../../services/api';
 import { APP_CONFIG } from '../../config';
 
@@ -9,9 +9,10 @@ interface SidebarProps {
   setSidebarOpen: (open: boolean) => void;
   backendError: boolean;
   t: Record<string, string>;
-  createNewSession: () => void;
-  view: 'chat' | 'gallery' | 'archives';
-  setView: (view: 'chat' | 'gallery' | 'archives') => void;
+  createNewSession: () => Promise<string>;
+  view: AppView;
+  setView: (view: AppView) => void;
+  openComparisonHome: () => void;
   fetchGallery: (initial?: boolean) => void;
   sessions: Session[];
   onSessionViewed: (id: string) => void;
@@ -43,6 +44,7 @@ export const Sidebar = ({
   createNewSession,
   view,
   setView,
+  openComparisonHome,
   fetchGallery,
   sessions,
   onSessionViewed,
@@ -93,7 +95,7 @@ export const Sidebar = ({
           {sidebarOpen && <button className="close-sidebar-mobile" onClick={() => setSidebarOpen(false)}>×</button>}
           {backendError && <div className="backend-warning" title={t.backendOffline}>⚠️</div>}
         </div>
-        <button className="new-chat-btn" onClick={() => { createNewSession(); closeSidebarOnMobile(); }}>
+        <button className="new-chat-btn" onClick={() => { void createNewSession(); closeSidebarOnMobile(); }}>
           <span>+</span> {t.newChat}
         </button>
         <button className={`new-chat-btn gallery-btn ${view === 'gallery' ? 'active' : ''}`} onClick={() => { setView('gallery'); fetchGallery(true); closeSidebarOnMobile(); }}>
@@ -174,6 +176,16 @@ export const Sidebar = ({
                 </button>
                 <button className="popover-item" onClick={() => { setKeepAwake(!keepAwake); setProfileMenuOpen(false); }}>
                   <span>{keepAwake ? '📱' : '📱'}</span> {keepAwake ? (lang === 'fr' ? 'Écran actif (Oui)' : 'Keep Awake (On)') : (lang === 'fr' ? 'Écran actif (Non)' : 'Keep Awake (Off)')}
+                </button>
+                <button className={`popover-item ${view === 'statistics' ? 'active' : ''}`} onClick={() => { setView('statistics'); setProfileMenuOpen(false); closeSidebarOnMobile(); }}>
+                  <span aria-hidden="true">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M4 19V9M10 19V5M16 19v-7M22 19V2" /><path d="M2 19h21" />
+                    </svg>
+                  </span> {lang === 'fr' ? 'Statistiques' : 'Statistics'}
+                </button>
+                <button className={`popover-item ${view === 'comparison' ? 'active' : ''}`} onClick={() => { openComparisonHome(); setProfileMenuOpen(false); closeSidebarOnMobile(); }}>
+                  <span aria-hidden="true">A/B</span> {lang === 'fr' ? 'Comparaison' : 'Comparison'}
                 </button>
                 <button className="popover-item" onClick={() => { setShowSettings(true); setProfileMenuOpen(false); closeSidebarOnMobile(); }}>
                   <span>⚙️</span> {t.settings}

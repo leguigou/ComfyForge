@@ -37,6 +37,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { id: 'groq', name: 'Groq', type: 'openai', baseUrl: 'https://api.groq.com/openai', defaultModel: 'llama-3.3-70b-versatile', requiresApiKey: true },
   { id: 'openrouter', name: 'OpenRouter', type: 'openai', baseUrl: 'https://openrouter.ai/api', defaultModel: 'openai/gpt-4.1-mini', requiresApiKey: true },
   { id: 'together', name: 'Together AI', type: 'openai', baseUrl: 'https://api.together.xyz', defaultModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', requiresApiKey: true },
+  { id: 'lmstudio', name: 'LM Studio (local)', type: 'openai', baseUrl: 'http://127.0.0.1:1234', defaultModel: '', requiresApiKey: false },
   { id: 'ollama', name: 'Ollama (local)', type: 'openai', baseUrl: 'http://127.0.0.1:11434', defaultModel: 'llama3:latest', requiresApiKey: false },
 ];
 
@@ -156,6 +157,197 @@ export const completeWithProvider = async (provider: StoredProvider, prompt: str
       durationMs: Date.now() - startedAt,
       userId: provider.userId,
       details: { providerId: provider.id, model: provider.model, response: error.response?.data }
+    });
+    throw error;
+  }
+};
+
+export type LocalProviderEngine = 'ollama' | 'lmstudio';
+
+export const detectLocalProviderEngine = (provider: Pick<StoredProvider, 'name' | 'baseUrl' | 'type'>): LocalProviderEngine | null => {
+  if (provider.type !== 'openai') return null;
+  const name = provider.name.toLowerCase();
+  try {
+    const url = new URL(provider.baseUrl);
+    if (name.includes('ollama') || url.port === '11434') return 'ollama';
+    if (name.includes('lm studio') || name.includes('lmstudio') || url.port === '1234') return 'lmstudio';
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+const nativeServiceOrigin = (provider: StoredProvider) => new URL(provider.baseUrl).origin;
+
+export interface UnloadModelResult {
+  engine: LocalProviderEngine;
+  model: string;
+  status: 'unloaded' | 'not_loaded';
+  instances?: number;
+}
+
+export const unloadProviderModel = async (provider: StoredProvider, model: string): Promise<UnloadModelResult> => {
+  const engine = detectLocalProviderEngine(provider);
+  if (!engine) throw new Error('This provider does not expose a supported local memory API');
+  const selectedModel = model.trim();
+  if (!selectedModel) throw new Error('A model is required');
+  const origin = nativeServiceOrigin(provider);
+
+  if (engine === 'ollama') {
+    await axios.post(`${origin}/api/generate`, {
+      model: selectedModel,
+      keep_alive: 0,
+    }, { headers: authHeaders(provider), timeout: 30000 });
+    return { engine, model: selectedModel, status: 'unloaded', instances: 1 };
+  }
+
+  const response = await axios.get(`${origin}/api/v1/models`, {
+    headers: authHeaders(provider),
+    timeout: 10000,
+  });
+  const models = Array.isArray(response.data?.models) ? response.data.models : [];
+  const matchingInstances = models.flatMap((candidate: any) => {
+    const instances = Array.isArray(candidate?.loaded_instances) ? candidate.loaded_instances : [];
+    if (candidate?.key === selectedModel) return instances;
+    return instances.filter((instance: any) => instance?.id === selectedModel);
+  });
+  const instanceIds = [...new Set(matchingInstances.map((instance: any) => String(instance.id || '')).filter(Boolean))];
+  if (instanceIds.length === 0) return { engine, model: selectedModel, status: 'not_loaded', instances: 0 };
+
+  for (const instanceId of instanceIds) {
+    await axios.post(`${origin}/api/v1/models/unload`, {
+      instance_id: instanceId,
+    }, { headers: authHeaders(provider), timeout: 30000 });
+  }
+  return { engine, model: selectedModel, status: 'unloaded', instances: instanceIds.length };
+};
+
+export interface VisionInput {
+  data: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/avif';
+}
+
+export const completeVisionWithProvider = async (
+  provider: StoredProvider,
+  model: string,
+  image: VisionInput,
+  prompt: string,
+  systemMessage: string,
+  ttlSeconds = 1800,
+) => {
+  const baseUrl = provider.baseUrl.replace(/\/$/, '');
+  const selectedModel = model.trim();
+  if (!selectedModel) throw new Error('A vision model is required');
+  const startedAt = Date.now();
+  writeAuditLog({
+    source: 'llm',
+    direction: 'outbound',
+    event: 'llm.vision.request',
+    message: `Image envoyée à ${provider.name}`,
+    status: 'sending',
+    userId: provider.userId,
+    details: {
+      providerId: provider.id,
+      type: provider.type,
+      baseUrl,
+      model: selectedModel,
+      prompt,
+      imageMimeType: image.mimeType,
+      imageBytes: Buffer.byteLength(image.data, 'base64'),
+    },
+  });
+
+  try {
+    let content = '';
+    let responseData: unknown;
+    const localEngine = detectLocalProviderEngine(provider);
+    const normalizedTtlSeconds = Math.min(7200, Math.max(900, Math.round(ttlSeconds)));
+    if (localEngine === 'ollama') {
+      const response = await axios.post(`${nativeServiceOrigin(provider)}/api/chat`, {
+        model: selectedModel,
+        messages: [
+          { role: 'system', content: systemMessage },
+          { role: 'user', content: prompt, images: [image.data] },
+        ],
+        stream: false,
+        keep_alive: `${normalizedTtlSeconds}s`,
+        options: { temperature: 0.2 },
+      }, { headers: authHeaders(provider), timeout: 120000 });
+      responseData = response.data;
+      content = response.data.message?.content || '';
+    } else if (provider.type === 'anthropic') {
+      const response = await axios.post(`${baseUrl}/v1/messages`, {
+        model: selectedModel,
+        max_tokens: 4096,
+        temperature: 0.2,
+        system: systemMessage,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: image.mimeType, data: image.data } },
+            { type: 'text', text: prompt },
+          ],
+        }],
+      }, { headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 120000 });
+      responseData = response.data;
+      content = response.data.content?.map((part: any) => part.text || '').join('') || '';
+    } else if (provider.type === 'google') {
+      const key = decryptApiKey(provider.apiKey);
+      const response = await axios.post(`${baseUrl}/v1beta/models/${encodeURIComponent(selectedModel)}:generateContent`, {
+        systemInstruction: { parts: [{ text: systemMessage }] },
+        contents: [{
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: image.mimeType, data: image.data } },
+            { text: prompt },
+          ],
+        }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
+      }, { params: { key }, timeout: 120000 });
+      responseData = response.data;
+      content = response.data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('') || '';
+    } else {
+      const response = await axios.post(`${baseUrl}/v1/chat/completions`, {
+        model: selectedModel,
+        messages: [
+          { role: 'system', content: systemMessage },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: `data:${image.mimeType};base64,${image.data}`, detail: 'high' } },
+            ],
+          },
+        ],
+        temperature: 0.2,
+        ...(localEngine === 'lmstudio' ? { ttl: normalizedTtlSeconds } : {}),
+      }, { headers: authHeaders(provider), timeout: 120000 });
+      responseData = response.data;
+      content = response.data.choices?.[0]?.message?.content || '';
+    }
+
+    writeAuditLog({
+      source: 'llm',
+      direction: 'inbound',
+      event: 'llm.vision.response',
+      message: `Analyse d'image reçue de ${provider.name}`,
+      status: 'completed',
+      durationMs: Date.now() - startedAt,
+      userId: provider.userId,
+      details: { providerId: provider.id, model: selectedModel, content, response: responseData },
+    });
+    return content.trim();
+  } catch (error: any) {
+    writeAuditLog({
+      level: 'error',
+      source: 'llm',
+      direction: 'inbound',
+      event: 'llm.vision.failed',
+      message: error.response?.data?.error?.message || error.message || 'Erreur vision',
+      status: String(error.response?.status || 'failed'),
+      durationMs: Date.now() - startedAt,
+      userId: provider.userId,
+      details: { providerId: provider.id, model: selectedModel, response: error.response?.data },
     });
     throw error;
   }

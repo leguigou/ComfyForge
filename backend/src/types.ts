@@ -32,6 +32,7 @@ export interface Message {
   status: 'pending' | 'processing' | 'completed' | 'failed';
   seed: number | null;
   duration: number | null;
+  generationStartedAt: number | null;
   isFavorite: number | null;
   isPromptFavorite: number | null;
   sampler: string | null;
@@ -74,6 +75,8 @@ export interface GenerationParams {
   scheduler?: string;
   negativePrompt?: string;
   nodeMapping?: WorkflowNodeMapping;
+  /** Internal queue flag used by model comparisons. */
+  unloadBeforeRun?: boolean;
 }
 
 export interface WorkflowNodeMapping {

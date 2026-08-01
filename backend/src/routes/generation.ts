@@ -81,7 +81,7 @@ router.get('/estimate', authenticate, (req, res) => {
         AND m.imageUrl IS NOT NULL
         AND m.duration > 0
       ORDER BY m.timestamp DESC
-      LIMIT 20
+      LIMIT 8
     )
   `).get(user.id, model, workflow) as {
     averageDuration: number | null;
@@ -133,7 +133,7 @@ const enqueueRetry = (message: RetryableMessage, fallbackParams: any, createdAt:
   db.prepare(`
     UPDATE messages
     SET status = 'pending', text = ?, imageUrl = NULL, thumbnailUrl = NULL,
-        duration = NULL, generationPrompt = ?, generationParams = ?
+        duration = NULL, generationStartedAt = NULL, generationPrompt = ?, generationParams = ?
     WHERE id = ?
   `).run(executionPrompt !== message.prompt ? executionPrompt : '', executionPrompt, JSON.stringify(params), message.id);
 };
@@ -273,6 +273,84 @@ router.post('/retry-incomplete', authenticate, (req, res) => {
   } catch (error: any) {
     if (error instanceof ServiceUrlError) return res.status(error.statusCode).json({ success: false, error: error.message });
     return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch('/pending/:messageId/prompt', authenticate, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 20_000) : '';
+    if (!prompt) return res.status(400).json({ success: false, error: 'Prompt is required' });
+
+    const pendingMessage = db.prepare(`
+      SELECT m.id, m.sessionId, m.timestamp, m.prompt, q.id AS queueId
+      FROM messages m
+      JOIN sessions s ON s.id = m.sessionId
+      JOIN queue q ON q.messageId = m.id
+      WHERE m.id = ? AND s.userId = ? AND m.role = 'bot'
+        AND m.status = 'pending' AND q.status = 'pending'
+    `).get(req.params.messageId, user.id) as {
+      id: string;
+      sessionId: string;
+      timestamp: number;
+      prompt: string;
+      queueId: number;
+    } | undefined;
+    if (!pendingMessage) {
+      return res.status(409).json({
+        success: false,
+        code: 'GENERATION_ALREADY_STARTED',
+        error: 'Generation has already started and can no longer be edited',
+      });
+    }
+
+    const linkedUserMessage = db.prepare(`
+      SELECT id FROM messages
+      WHERE sessionId = ? AND role = 'user' AND timestamp = ? AND text = ?
+      LIMIT 1
+    `).get(pendingMessage.sessionId, pendingMessage.timestamp - 1, pendingMessage.prompt) as { id: string } | undefined;
+
+    const tags = db.transaction(() => {
+      const queueUpdate = db.prepare(`
+        UPDATE queue SET prompt = ?, originalPrompt = ?
+        WHERE id = ? AND status = 'pending'
+      `).run(prompt, prompt, pendingMessage.queueId);
+      if (queueUpdate.changes !== 1) throw new Error('GENERATION_ALREADY_STARTED');
+
+      db.prepare(`
+        UPDATE messages
+        SET text = '', prompt = ?, generationPrompt = ?
+        WHERE id = ? AND status = 'pending'
+      `).run(prompt, prompt, pendingMessage.id);
+      if (linkedUserMessage) {
+        db.prepare('UPDATE messages SET text = ? WHERE id = ?').run(prompt, linkedUserMessage.id);
+      }
+      db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(Date.now(), pendingMessage.sessionId);
+      return replaceAutoPromptTags(db, pendingMessage.id, prompt)
+        .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
+    })();
+
+    const update = {
+      messageId: pendingMessage.id,
+      status: 'pending' as const,
+      text: '',
+      prompt,
+      generationPrompt: prompt,
+      tags,
+      linkedUserMessageId: linkedUserMessage?.id,
+      linkedUserText: linkedUserMessage ? prompt : undefined,
+    };
+    broadcastToSession(pendingMessage.sessionId, update);
+    return res.json({ success: true, ...update });
+  } catch (error: any) {
+    if (error?.message === 'GENERATION_ALREADY_STARTED') {
+      return res.status(409).json({
+        success: false,
+        code: 'GENERATION_ALREADY_STARTED',
+        error: 'Generation has already started and can no longer be edited',
+      });
+    }
+    return res.status(500).json({ success: false, error: error.message || 'Failed to update prompt' });
   }
 });
 

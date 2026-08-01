@@ -15,6 +15,8 @@ import galleryRoutes from './routes/gallery';
 import miscRoutes from './routes/misc';
 import updateRoutes from './routes/updates';
 import adminLogRoutes from './routes/admin-logs';
+import statisticsRoutes from './routes/statistics';
+import comparisonRoutes from './routes/comparisons';
 import { configureProviderEncryption } from './services/llm-providers';
 import { startAuditLogRetention } from './services/audit-log';
 
@@ -63,6 +65,8 @@ export const createApp = (authSecret: string) => {
   apiRouter.use('/gallery', galleryRoutes);
   apiRouter.use('/updates', updateRoutes);
   apiRouter.use('/admin/logs', adminLogRoutes);
+  apiRouter.use('/statistics', statisticsRoutes);
+  apiRouter.use('/comparisons', comparisonRoutes);
   apiRouter.use('/image-files', miscRoutes);
   apiRouter.use('/', miscRoutes);
 

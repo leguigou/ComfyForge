@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
 import db from './database';
 import { GenerationParams, WorkflowNodeMapping } from '../types';
-import { validateServiceUrl } from '../security/service-url';
+import { getAllowedServiceOrigins, ServiceUrlError, validateServiceUrl } from '../security/service-url';
 
 export const getComfyWsUrl = (httpUrl: string) => {
   return httpUrl.replace(/^http/, 'ws') + '/ws';
@@ -35,6 +36,29 @@ export const getTargetComfyUrl = (requestedUrl?: string) => {
     ? configured.url
     : requestedUrl || configured.url;
   return validateServiceUrl(target, 'ComfyUI');
+};
+
+export const releaseComfyMemory = async (targetUrl: string) => {
+  // Revalidate at the network boundary even when the caller already resolved
+  // the URL. validateServiceUrl restricts the protocol, credentials, and
+  // origin to the configured allowlist (or an explicit private-network opt-in).
+  const requestedUrl = new URL(getTargetComfyUrl(targetUrl));
+  const configuredUrl = new URL(validateServiceUrl(getEffectiveComfyUrl().url, 'ComfyUI'));
+  const trustedCandidates = [configuredUrl.toString(), ...getAllowedServiceOrigins()]
+    .map(candidate => new URL(candidate));
+  const trustedBaseUrl = trustedCandidates.find(candidate => candidate.origin === requestedUrl.origin);
+  if (!trustedBaseUrl) {
+    throw new ServiceUrlError('ComfyUI origin is not configured for memory release');
+  }
+  const comfyClient = axios.create({
+    // The request host comes from server configuration, never from targetUrl.
+    baseURL: trustedBaseUrl.toString().replace(/\/$/, ''),
+    timeout: 30000,
+  });
+  await comfyClient.post('/free', {
+    unload_models: true,
+    free_memory: true,
+  });
 };
 
 export const getWorkflow = (prompt: string, params?: Partial<GenerationParams>) => {

@@ -1,5 +1,36 @@
-import { describe, it, expect } from 'vitest';
-import { parseComfyError } from './comfy';
+import axios from 'axios';
+import { describe, it, expect, vi } from 'vitest';
+import { parseComfyError, releaseComfyMemory } from './comfy';
+
+describe('releaseComfyMemory', () => {
+  it('requests model unloading and cache release from ComfyUI', async () => {
+    const post = vi.fn().mockResolvedValueOnce({ data: {} });
+    const createSpy = vi.spyOn(axios, 'create').mockReturnValueOnce({ post } as any);
+
+    await releaseComfyMemory('http://127.0.0.1:8188');
+
+    expect(createSpy).toHaveBeenCalledWith({
+      baseURL: 'http://127.0.0.1:8188',
+      timeout: 30000,
+    });
+    expect(post).toHaveBeenCalledWith('/free', {
+      unload_models: true,
+      free_memory: true,
+    });
+    createSpy.mockRestore();
+  });
+
+  it('rejects an unlisted origin before creating the HTTP client', async () => {
+    const createSpy = vi.spyOn(axios, 'create');
+
+    await expect(releaseComfyMemory('https://unlisted.example.test')).rejects.toThrow(
+      'ComfyUI origin is not allowed'
+    );
+
+    expect(createSpy).not.toHaveBeenCalled();
+    createSpy.mockRestore();
+  });
+});
 
 describe('parseComfyError', () => {
   it('returns a user-friendly message for ECONNREFUSED', () => {

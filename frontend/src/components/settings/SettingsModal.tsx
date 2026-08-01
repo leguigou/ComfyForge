@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import './SettingsModal.css';
 import type { GenParameters, User, Language, GalleryItem, RandomPromptList } from '../../types';
 import { normalizeRandomSlug } from '../../utils/randomPrompts';
@@ -90,7 +90,7 @@ interface SettingsModalProps {
   activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs';
   setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs') => void;
   params: GenParameters;
-  setParams: (params: GenParameters) => void;
+  setParams: Dispatch<SetStateAction<GenParameters>>;
   lang: Language;
   t: Record<string, string>;
   currentUser: User | null;
@@ -163,6 +163,8 @@ export const SettingsModal = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
   const [showImagePicker, setShowImagePicker] = useState(false);
+  const [isUnloadingLlm, setIsUnloadingLlm] = useState(false);
+  const [isFreeingComfyMemory, setIsFreeingComfyMemory] = useState(false);
 
   // Local states for textareas to allow manual save
   const [localNegativePrompt, setLocalNegativePrompt] = useState(params.negativePrompt);
@@ -177,6 +179,54 @@ export const SettingsModal = ({
   const companionFileInputRef = useRef<HTMLInputElement>(null);
   const activeTabButtonRef = useRef<HTMLButtonElement>(null);
   const hydratedProfilesRef = useRef('');
+
+  const unloadLlmMemory = async () => {
+    setIsUnloadingLlm(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/llm/unload-models`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          visionProviderId: params.visionProviderId,
+          visionModel: params.visionModel,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = data.code === 'NO_SUPPORTED_LOCAL_PROVIDER'
+          ? t.llmMemoryUnsupported
+          : data.error || t.llmMemoryReleaseFailed;
+        throw new Error(message);
+      }
+      toast.success(data.unloaded > 0
+        ? `${t.llmMemoryReleased} (${data.unloaded})`
+        : t.llmMemoryAlreadyFree);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.llmMemoryReleaseFailed);
+    } finally {
+      setIsUnloadingLlm(false);
+    }
+  };
+
+  const freeComfyMemory = async () => {
+    setIsFreeingComfyMemory(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/comfy/free`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comfyUrl: params.comfyUrl }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || t.comfyMemoryReleaseFailed);
+      toast.success(t.comfyMemoryReleased);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.comfyMemoryReleaseFailed);
+    } finally {
+      setIsFreeingComfyMemory(false);
+    }
+  };
 
   useEffect(() => {
     if (showSettings) {
@@ -700,6 +750,49 @@ export const SettingsModal = ({
                     <small>{t.luckyFavoriteCountHelp}</small>
                   </label>
                 </div>
+              </section>
+
+              <section className="llm-memory-card">
+                <div className="llm-memory-heading">
+                  <span className="llm-memory-icon" aria-hidden="true">RAM</span>
+                  <div>
+                    <h4>{t.llmMemoryTitle}</h4>
+                    <p>{t.llmMemoryHelp}</p>
+                  </div>
+                </div>
+                <div className="llm-memory-status">
+                  {params.llmProviderId && <span>{t.llmMemoryTextBadge}</span>}
+                  {params.visionProviderId && params.visionModel && <span>{t.llmMemoryVisionBadge}</span>}
+                </div>
+                <button
+                  type="button"
+                  className="llm-memory-release-btn"
+                  onClick={() => void unloadLlmMemory()}
+                  disabled={isUnloadingLlm || (!params.llmProviderId && !params.visionProviderId)}
+                >
+                  {isUnloadingLlm ? t.llmMemoryReleasing : t.llmMemoryReleaseAction}
+                </button>
+              </section>
+
+              <section className="llm-memory-card comfy-memory-card">
+                <div className="llm-memory-heading">
+                  <span className="llm-memory-icon comfy-memory-icon" aria-hidden="true">GPU</span>
+                  <div>
+                    <h4>{t.comfyMemoryTitle}</h4>
+                    <p>{t.comfyMemoryHelp}</p>
+                  </div>
+                </div>
+                <div className="llm-memory-status">
+                  <span>{t.comfyMemoryBadge}</span>
+                </div>
+                <button
+                  type="button"
+                  className="llm-memory-release-btn"
+                  onClick={() => void freeComfyMemory()}
+                  disabled={isFreeingComfyMemory}
+                >
+                  {isFreeingComfyMemory ? t.comfyMemoryReleasing : t.comfyMemoryReleaseAction}
+                </button>
               </section>
 
               <section className="session-management-card">
@@ -1378,35 +1471,41 @@ export const SettingsModal = ({
                 </div>
               </div>
               <div style={{ gridColumn: 'span 2' }}>
-                <LLMProvidersPanel params={params} setParams={setParams} t={t} />
-              </div>
-              <div className="setting-item" style={{ gridColumn: 'span 2' }}>
-                <label>{t.llmSystemMessage}</label>
-                <div className="textarea-with-reset">
-                  <textarea
-                    className="system-message-textarea"
-                    value={localLLMSystemMessage}
-                    onChange={(e) => setLocalLLMSystemMessage(e.target.value)}
-                    rows={5}
-                  />
-                  <button
-                    type="button"
-                    onClick={resetLLMSystemMessage}
-                    disabled={localLLMSystemMessage === DEFAULT_LLM_SYSTEM_MESSAGE && params.llmSystemMessage === DEFAULT_LLM_SYSTEM_MESSAGE}
-                    title={t.resetSystemMessage || 'Reset to the original system prompt'}
-                    aria-label={t.resetSystemMessage || 'Reset to the original system prompt'}
-                  >
-                    ↺
-                  </button>
-                </div>
-                <button 
-                  className="action-btn-small" 
-                  onClick={() => handleSaveTextarea('llmSystemMessage')}
-                  disabled={localLLMSystemMessage === params.llmSystemMessage}
-                  style={{ marginTop: '0.5rem', alignSelf: 'flex-start' }}
-                >
-                  {t.save}
-                </button>
+                <LLMProvidersPanel
+                  params={params}
+                  setParams={setParams}
+                  t={t}
+                  beforeVision={(
+                    <div className="setting-item">
+                      <label>{t.llmSystemMessage}</label>
+                      <div className="textarea-with-reset">
+                        <textarea
+                          className="system-message-textarea"
+                          value={localLLMSystemMessage}
+                          onChange={(e) => setLocalLLMSystemMessage(e.target.value)}
+                          rows={5}
+                        />
+                        <button
+                          type="button"
+                          onClick={resetLLMSystemMessage}
+                          disabled={localLLMSystemMessage === DEFAULT_LLM_SYSTEM_MESSAGE && params.llmSystemMessage === DEFAULT_LLM_SYSTEM_MESSAGE}
+                          title={t.resetSystemMessage || 'Reset to the original system prompt'}
+                          aria-label={t.resetSystemMessage || 'Reset to the original system prompt'}
+                        >
+                          ↺
+                        </button>
+                      </div>
+                      <button
+                        className="action-btn-small"
+                        onClick={() => handleSaveTextarea('llmSystemMessage')}
+                        disabled={localLLMSystemMessage === params.llmSystemMessage}
+                        style={{ marginTop: '0.5rem', alignSelf: 'flex-start' }}
+                      >
+                        {t.save}
+                      </button>
+                    </div>
+                  )}
+                />
               </div>
             </div>
           )}

@@ -4,16 +4,50 @@ import type { Message, Language, GalleryItem, GenParameters, PromptTag } from '.
 import { WelcomeScreen } from './WelcomeScreen';
 import { MessageText } from './MessageText';
 import { SeedyCompanion } from './SeedyCompanion';
-import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon, ThumbUpIcon, ComposeIcon, MagicWandIcon } from '../ui/Icons';
+import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon, ThumbUpIcon, ComposeIcon, MagicWandIcon, CameraIcon } from '../ui/Icons';
 import { API_BASE, getFullImageUrl, formatDuration } from '../../services/api';
-import { getEstimatedGenerationProgress, getGenerationElapsedSeconds } from '../../utils/generationTimer';
+import {
+  getEstimatedGenerationProgress,
+  getGenerationElapsedSeconds,
+  getTrackedGenerationElapsedSeconds
+} from '../../utils/generationTimer';
 import { hasResolvableRandomPrompt } from '../../utils/randomPrompts';
+import {
+  getSlashCommandQuery,
+  parseBoundedNumberCommand,
+  parseSeedCommand,
+  parseSlashCommand,
+  type SlashCommandName
+} from '../../utils/slashCommands';
 import toast from 'react-hot-toast';
 
 const LUCKY_PHRASE_COUNT = 5;
 const MIN_GALLERY_COLUMNS = 1;
 const MAX_GALLERY_COLUMNS = 6;
 const GALLERY_PINCH_STEP = 1.16;
+
+const createSafeImagePreview = async (file: File) => {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const maxDimension = 1024;
+    const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Unable to prepare image preview');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const previewBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('Unable to encode image preview'));
+      }, 'image/png');
+    });
+    return URL.createObjectURL(previewBlob);
+  } finally {
+    bitmap.close();
+  }
+};
 
 const normalizeSearchValue = (value: string) => value
   .toLocaleLowerCase()
@@ -26,27 +60,26 @@ const getTouchDistance = (touches: React.TouchList) => {
   return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
 };
 
-const GenerationProgress = ({ message }: { message: Message }) => {
-  const [animation, setAnimation] = useState<{
-    startProgress: number;
-    remainingSeconds: number;
+const GenerationProgress = React.memo(({ message }: { message: Message }) => {
+  const [estimate, setEstimate] = useState<{
+    durationSeconds: number;
+    trackingStartedAt: number;
+    elapsedAtTrackingStart: number;
   }>();
-  const timingRef = useRef({
-    duration: message.duration,
-    generationStartedAt: message.generationStartedAt
-  });
-  timingRef.current = {
-    duration: message.duration,
-    generationStartedAt: message.generationStartedAt
-  };
+  const fillRef = useRef<HTMLSpanElement>(null);
+  const latestDurationRef = useRef(message.duration);
+
+  useEffect(() => {
+    latestDurationRef.current = message.duration;
+  }, [message.duration]);
 
   useEffect(() => {
     if (message.status !== 'processing' || !message.model || !message.workflow) {
-      setAnimation(undefined);
+      setEstimate(undefined);
       return;
     }
 
-    setAnimation(undefined);
+    setEstimate(undefined);
     const controller = new AbortController();
     const query = new URLSearchParams({
       model: message.model,
@@ -60,22 +93,11 @@ const GenerationProgress = ({ message }: { message: Message }) => {
       .then(response => response.ok ? response.json() : null)
       .then(data => {
         if (typeof data?.estimateSeconds === 'number' && data.estimateSeconds > 0) {
-          const timing = timingRef.current;
-          const elapsedSeconds = getGenerationElapsedSeconds(
-            timing.duration,
-            timing.generationStartedAt,
-            Date.now()
-          );
-          const startProgress = getEstimatedGenerationProgress(
-            elapsedSeconds,
-            data.estimateSeconds
-          );
-          if (startProgress !== undefined) {
-            setAnimation({
-              startProgress,
-              remainingSeconds: Math.max(0.1, data.estimateSeconds - elapsedSeconds)
-            });
-          }
+          setEstimate({
+            durationSeconds: data.estimateSeconds,
+            trackingStartedAt: Date.now(),
+            elapsedAtTrackingStart: Math.max(1, latestDurationRef.current ?? 0)
+          });
         }
       })
       .catch(error => {
@@ -87,20 +109,44 @@ const GenerationProgress = ({ message }: { message: Message }) => {
     return () => controller.abort();
   }, [message.model, message.status, message.workflow]);
 
-  if (!animation) return null;
+  useLayoutEffect(() => {
+    if (estimate === undefined || message.status !== 'processing') return;
+
+    let animationFrame: number | undefined;
+    const updateProgress = () => {
+      const elapsedSeconds = getTrackedGenerationElapsedSeconds(
+        message.duration,
+        message.generationStartedAt,
+        estimate.trackingStartedAt,
+        estimate.elapsedAtTrackingStart,
+        Date.now()
+      );
+      const progress = getEstimatedGenerationProgress(elapsedSeconds, estimate.durationSeconds);
+      if (progress !== undefined && fillRef.current) {
+        fillRef.current.style.width = `${progress}%`;
+      }
+      animationFrame = window.requestAnimationFrame(updateProgress);
+    };
+
+    updateProgress();
+    return () => {
+      if (animationFrame !== undefined) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+    };
+  }, [estimate, message.duration, message.generationStartedAt, message.status]);
+
+  if (estimate === undefined) return null;
 
   return (
     <span className="generation-estimate-track" aria-hidden="true">
       <span
+        ref={fillRef}
         className="generation-estimate-fill"
-        style={{
-          width: `${animation.startProgress}%`,
-          animationDuration: `${animation.remainingSeconds}s`
-        }}
       />
     </span>
   );
-};
+});
 
 interface ChatInterfaceProps {
   view: 'chat' | 'gallery' | 'archives';
@@ -112,16 +158,24 @@ interface ChatInterfaceProps {
   currentSessionId: string | null;
   input: string;
   setInput: (val: string) => void;
-  handleSend: (overrideInput?: string, isRegeneration?: boolean, skipEnhancement?: boolean) => void;
-  createLuckyGeneration: () => Promise<void>;
+  handleSend: (
+    overrideInput?: string,
+    isRegeneration?: boolean,
+    skipEnhancement?: boolean,
+    forceEnhancement?: boolean
+  ) => void | Promise<void>;
+  createLuckyGeneration: (keywords?: string) => Promise<void>;
   isCreatingLuckyPrompt: boolean;
+  isLoadingLuckyReferences: boolean;
   regenerationCounts: Record<string, number>;
   recordRegeneration: (messageId: string) => void;
   retryMessage: (messageId: string) => Promise<unknown>;
   retryAllIncomplete: () => Promise<{ queued: number }>;
+  updatePendingPrompt: (messageId: string, prompt: string, localUserMessageId?: string) => Promise<unknown>;
   interruptGeneration: () => void;
   handleEdit: (text: string) => void;
   goToImage: (sessionId: string, messageId: string) => void;
+  openComparison: (messageId: string) => void;
   setActiveInfoId: (id: string | null) => void;
   activeInfoId: string | null;
   setMessageToDelete: (id: string | null) => void;
@@ -130,6 +184,7 @@ interface ChatInterfaceProps {
   handleImageClick: (item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, source: 'chat' | 'gallery' }) => void;
   favoritedId: string | null;
   galleryItems: GalleryItem[];
+  galleryTotal: number;
   isFetchingGallery: boolean;
   favoritesOnly: boolean;
   setFavoritesOnly: (val: boolean) => void;
@@ -169,13 +224,16 @@ export const ChatInterface = ({
   handleSend,
   createLuckyGeneration,
   isCreatingLuckyPrompt,
+  isLoadingLuckyReferences,
   regenerationCounts,
   recordRegeneration,
   retryMessage,
   retryAllIncomplete,
+  updatePendingPrompt,
   interruptGeneration,
   handleEdit,
   goToImage,
+  openComparison,
   setActiveInfoId,
   activeInfoId,
   setMessageToDelete,
@@ -184,6 +242,7 @@ export const ChatInterface = ({
   handleImageClick,
   favoritedId,
   galleryItems,
+  galleryTotal,
   isFetchingGallery,
   favoritesOnly,
   setFavoritesOnly,
@@ -214,7 +273,19 @@ export const ChatInterface = ({
   const [showRetryAllConfirm, setShowRetryAllConfirm] = useState(false);
   const [luckyPhraseIndex, setLuckyPhraseIndex] = useState(0);
   const [showLuckyInfo, setShowLuckyInfo] = useState(false);
+  const [slashCommandIndex, setSlashCommandIndex] = useState(0);
+  const [isResolvingSlashCommand, setIsResolvingSlashCommand] = useState(false);
+  const [isPromptFocused, setIsPromptFocused] = useState(false);
+  const [isAnalyzingImage, setIsAnalyzingImage] = useState(false);
+  const [analysisPreview, setAnalysisPreview] = useState<{ url: string } | null>(null);
   const [isGallerySearchFocused, setIsGallerySearchFocused] = useState(false);
+  const [pendingPromptEditor, setPendingPromptEditor] = useState<{
+    displayMessageId: string;
+    targetMessageId: string;
+    localUserMessageId?: string;
+  } | null>(null);
+  const [pendingPromptDraft, setPendingPromptDraft] = useState('');
+  const [isSavingPendingPrompt, setIsSavingPendingPrompt] = useState(false);
   const [galleryColumns, setGalleryColumns] = useState(() => {
     const savedColumns = Number.parseInt(localStorage.getItem('galleryColumns') || '', 10);
     if (savedColumns >= MIN_GALLERY_COLUMNS && savedColumns <= MAX_GALLERY_COLUMNS) return savedColumns;
@@ -222,6 +293,7 @@ export const ChatInterface = ({
   });
   const [isPinchingGallery, setIsPinchingGallery] = useState(false);
   const promptHighlightRef = useRef<HTMLDivElement>(null);
+  const imageImportRef = useRef<HTMLInputElement>(null);
   const optionsDrawerRef = useRef<HTMLDivElement>(null);
   const optionsToggleRef = useRef<HTMLButtonElement>(null);
   const wasCreatingLuckyPromptRef = useRef(false);
@@ -242,6 +314,63 @@ export const ChatInterface = ({
       window.clearTimeout(suppressGalleryClickTimerRef.current);
     }
   }, []);
+
+  useEffect(() => () => {
+    if (analysisPreview?.url) URL.revokeObjectURL(analysisPreview.url);
+  }, [analysisPreview]);
+
+  const analyzeImportedImage = async (file: File) => {
+    if (!params.visionProviderId || !params.visionModel) {
+      toast.error(t.visionSetupRequired || 'Choose a vision provider and model in LLM settings first.');
+      return;
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(file.type)) {
+      toast.error(t.visionUnsupportedFormat || 'Use a JPEG, PNG, WebP, or AVIF image.');
+      return;
+    }
+    if (file.size > 15_000_000) {
+      toast.error(t.visionFileTooLarge || 'The image must be smaller than 15 MB.');
+      return;
+    }
+
+    const previewUrl = await createSafeImagePreview(file).catch(() => null);
+    setAnalysisPreview(previewUrl ? { url: previewUrl } : null);
+    setIsAnalyzingImage(true);
+    setShowOptions(false);
+    window.setTimeout(() => smoothScrollTo('vision-analysis-post'), 60);
+
+    try {
+      const image = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+        reader.onerror = () => reject(reader.error || new Error('Unable to read image'));
+        reader.readAsDataURL(file);
+      });
+      const response = await fetch(`${API_BASE}/api/llm/analyze-image`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          providerId: params.visionProviderId,
+          model: params.visionModel,
+          systemMessage: params.visionSystemMessage,
+          ttlSeconds: (params.visionModelTtlMinutes || 30) * 60,
+          mimeType: file.type,
+          image,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.prompt) throw new Error(data.error || 'Image analysis failed');
+      toast.success(t.visionAnalysisReady || 'Detailed prompt ready');
+      await Promise.resolve(handleSend(data.prompt, false, true));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsAnalyzingImage(false);
+      setAnalysisPreview(null);
+      if (imageImportRef.current) imageImportRef.current.value = '';
+    }
+  };
 
   const handleGalleryTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     if (event.touches.length !== 2) return;
@@ -320,6 +449,150 @@ export const ChatInterface = ({
     && part.endsWith(']')
     && enabledRandomSlugs.has(part.slice(1, -1).toLowerCase())
   ));
+  const slashCommands: Array<{
+    name: SlashCommandName;
+    usage: string;
+    description: string;
+  }> = [
+    { name: 'ai', usage: '/ai prompt', description: t.slashAiDescription },
+    { name: 'luck', usage: '/luck bikini beach', description: t.slashLuckDescription },
+    { name: 'seed', usage: '/seed 12345 | random', description: t.slashSeedDescription },
+    { name: 'steps', usage: '/steps 12', description: t.slashStepsDescription },
+    { name: 'cfg', usage: '/cfg 1.5', description: t.slashCfgDescription },
+    { name: 'random', usage: '/random', description: t.slashRandomDescription },
+    { name: 'favorite', usage: '/favorite', description: t.slashFavoriteDescription },
+  ];
+  const slashCommandQuery = getSlashCommandQuery(input);
+  const matchingSlashCommands = slashCommandQuery === undefined
+    ? []
+    : slashCommands.filter(command => command.name.startsWith(slashCommandQuery));
+  const showSlashCommandMenu = isPromptFocused && matchingSlashCommands.length > 0;
+
+  useEffect(() => {
+    setSlashCommandIndex(0);
+  }, [slashCommandQuery]);
+
+  const insertSlashCommand = (command: SlashCommandName) => {
+    setInput(`/${command} `);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const loadSavedPrompt = async (source: 'liked' | 'favorite') => {
+    setIsResolvingSlashCommand(true);
+    try {
+      const query = new URLSearchParams({ source });
+      const response = await fetch(`${API_BASE}/api/gallery/random-prompt?${query.toString()}`, {
+        credentials: 'include'
+      });
+      const data = await response.json();
+      if (!response.ok || !data.prompt?.trim()) {
+        throw new Error(source === 'favorite' ? t.slashNoFavoritePrompts : t.slashNoLikedPrompts);
+      }
+      setInput(data.prompt.trim());
+      toast.success(t.slashPromptLoaded);
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.slashNoLikedPrompts);
+    } finally {
+      setIsResolvingSlashCommand(false);
+    }
+  };
+
+  const executePromptInput = async () => {
+    const trimmedInput = input.trim();
+    if (!trimmedInput) return;
+
+    const command = parseSlashCommand(trimmedInput);
+    if (!command) {
+      if (trimmedInput.startsWith('/')) {
+        toast.error(t.slashUnknownCommand);
+        return;
+      }
+      handleSend();
+      return;
+    }
+
+    if (command.name === 'ai') {
+      if (!command.argument) {
+        toast.error(t.slashPromptRequired);
+        return;
+      }
+      if (!params.llmProviderId) {
+        toast.error(t.oneShotAiUnavailable);
+        return;
+      }
+      setInput('');
+      handleSend(command.argument, false, false, true);
+      return;
+    }
+
+    if (command.name === 'luck') {
+      setInput('');
+      await createLuckyGeneration(command.argument);
+      return;
+    }
+
+    if (command.name === 'random' || command.name === 'favorite') {
+      await loadSavedPrompt(command.name === 'favorite' ? 'favorite' : 'liked');
+      return;
+    }
+
+    if (command.name === 'seed') {
+      const seed = parseSeedCommand(command.argument);
+      if (!seed) {
+        toast.error(`${t.slashInvalidValue}: /seed 12345 | random`);
+        return;
+      }
+      setParams(current => ({ ...current, ...seed }));
+    } else if (command.name === 'steps') {
+      const steps = parseBoundedNumberCommand(command.argument, 1, 50, true);
+      if (steps === undefined) {
+        toast.error(`${t.slashInvalidValue}: /steps 1-50`);
+        return;
+      }
+      setParams(current => ({ ...current, steps }));
+    } else if (command.name === 'cfg') {
+      const cfg = parseBoundedNumberCommand(command.argument, 0, 20);
+      if (cfg === undefined) {
+        toast.error(`${t.slashInvalidValue}: /cfg 0-20`);
+        return;
+      }
+      setParams(current => ({ ...current, cfg }));
+    }
+
+    setInput('');
+    toast.success(t.slashSettingApplied);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const handlePromptKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showSlashCommandMenu) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        setSlashCommandIndex(current => (
+          current + direction + matchingSlashCommands.length
+        ) % matchingSlashCommands.length);
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        const selected = matchingSlashCommands[slashCommandIndex];
+        if (selected) insertSlashCommand(selected.name);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setInput('');
+        return;
+      }
+    }
+
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void executePromptInput();
+    }
+  };
   const firstFailedMessageId = messages.find(message => message.role === 'bot' && message.status === 'failed')?.id;
   const normalizedGallerySearch = normalizeSearchValue(gallerySearch.trim());
   const matchingPromptTags = normalizedGallerySearch
@@ -352,6 +625,26 @@ export const ChatInterface = ({
       toast.error(error instanceof Error ? error.message : t.retryFailed);
     } finally {
       setIsRetryingAll(false);
+    }
+  };
+
+  const savePendingPrompt = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!pendingPromptEditor || !pendingPromptDraft.trim() || isSavingPendingPrompt) return;
+    setIsSavingPendingPrompt(true);
+    try {
+      await updatePendingPrompt(
+        pendingPromptEditor.targetMessageId,
+        pendingPromptDraft.trim(),
+        pendingPromptEditor.localUserMessageId
+      );
+      setPendingPromptEditor(null);
+      setPendingPromptDraft('');
+      toast.success(t.pendingPromptUpdated);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.pendingPromptUpdateFailed);
+    } finally {
+      setIsSavingPendingPrompt(false);
     }
   };
 
@@ -453,7 +746,7 @@ export const ChatInterface = ({
 
   return (
     <>
-      <div className="messages-container" ref={containerRef} onScroll={() => handleScroll(true)}>
+      <div className={`messages-container view-${view}`} ref={containerRef} onScroll={() => handleScroll(true)}>
         {view === 'chat' || view === 'archives' ? (
           <>
             {messages.length === 0 && (
@@ -461,6 +754,22 @@ export const ChatInterface = ({
             )}
             {messages.map((msg, index) => {
               const messageText = msg.text || msg.prompt;
+              const nextMessage = messages[index + 1];
+              const linkedPendingMessage = msg.role === 'user'
+                && nextMessage?.role === 'bot'
+                && nextMessage.status === 'pending'
+                && !nextMessage.imageUrl
+                && !nextMessage.id.startsWith('temp-')
+                && nextMessage.prompt === msg.text
+                ? nextMessage
+                : null;
+              const directlyEditablePendingMessage = msg.role === 'bot'
+                && msg.status === 'pending'
+                && !msg.imageUrl
+                && !msg.id.startsWith('temp-')
+                ? msg
+                : null;
+              const editablePendingMessage = linkedPendingMessage || directlyEditablePendingMessage;
               const dynamicPrompt = msg.role === 'user' ? (msg.text || '') : '';
               const canRegenerateDynamicPrompt = hasResolvableRandomPrompt(dynamicPrompt, params.randomPromptLists);
               const prevMsg = index > 0 ? messages[index - 1] : null;
@@ -477,7 +786,33 @@ export const ChatInterface = ({
                   <div className="message-content">
                     {shouldShowText && (
                       <div className="message-text-wrapper">
-                        <MessageText text={messageText} lang={lang} />
+                        {pendingPromptEditor?.displayMessageId === msg.id ? (
+                          <form className="pending-prompt-editor" onSubmit={savePendingPrompt}>
+                            <textarea
+                              value={pendingPromptDraft}
+                              onChange={(event) => setPendingPromptDraft(event.target.value)}
+                              maxLength={20_000}
+                              rows={4}
+                              autoFocus
+                              disabled={isSavingPendingPrompt}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Escape' && !isSavingPendingPrompt) {
+                                  event.preventDefault();
+                                  setPendingPromptEditor(null);
+                                  setPendingPromptDraft('');
+                                }
+                              }}
+                            />
+                            <div className="pending-prompt-editor-actions">
+                              <button type="button" onClick={() => setPendingPromptEditor(null)} disabled={isSavingPendingPrompt}>{t.cancel}</button>
+                              <button type="submit" className="save" disabled={!pendingPromptDraft.trim() || isSavingPendingPrompt}>
+                                {isSavingPendingPrompt ? t.loading : t.savePrompt}
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <MessageText text={messageText} lang={lang} />
+                        )}
                       </div>
                     )}
                   {msg.role === 'bot' && !!msg.randomSelections?.length && (
@@ -583,13 +918,30 @@ export const ChatInterface = ({
                         {msg.isFavorite ? '❤️' : '🤍'}
                       </button>
                       {favoritedId === msg.id && <div className="image-overlay-heart">❤️</div>}
+                      {msg.comparisonMessageId && (
+                        <button
+                          className="image-comparison-badge"
+                          onClick={(event) => { event.stopPropagation(); openComparison(msg.id); }}
+                          title={lang === 'fr' ? 'Voir la comparaison' : 'View comparison'}
+                          aria-label={lang === 'fr' ? 'Voir la comparaison' : 'View comparison'}
+                        >A/B</button>
+                      )}
                     </div>
                   )}
                   <div className={`message-actions ${msg.imageUrl ? 'has-image' : ''} ${(regenerationCounts[msg.id] || 0) >= 2 ? 'has-regeneration-count' : ''}`}>
-                    <button className="action-btn-icon edit" onClick={() => { 
+                    <button className="action-btn-icon edit" onClick={() => {
                       const textToEdit = msg.role === 'user' ? (msg.text || '') : (msg.generationPrompt || msg.prompt || msg.text || '');
-                      handleEdit(textToEdit); 
-                    }} title={msg.role === 'bot' ? t.reusePrompt : t.edit}>✎</button>
+                      if (editablePendingMessage) {
+                        setPendingPromptEditor({
+                          displayMessageId: msg.id,
+                          targetMessageId: editablePendingMessage.id,
+                          localUserMessageId: msg.role === 'user' ? msg.id : undefined,
+                        });
+                        setPendingPromptDraft(textToEdit);
+                      } else {
+                        handleEdit(textToEdit);
+                      }
+                    }} title={editablePendingMessage ? t.editPendingPrompt : (msg.role === 'bot' ? t.reusePrompt : t.edit)}>✎</button>
                     {canRegenerateDynamicPrompt && (
                       <button
                         className="action-btn-icon regenerate"
@@ -689,6 +1041,34 @@ export const ChatInterface = ({
               </div>
               );
             })}
+            {isAnalyzingImage && (
+              <div id="vision-analysis-post" className="message-row bot vision-analysis-row" aria-live="polite">
+                <div className="avatar vision-avatar"><CameraIcon size={18} /></div>
+                <div className="message-content loading">
+                  <div className="vision-analysis-stage">
+                    <div className={`vision-scan-frame ${analysisPreview ? '' : 'without-preview'}`}>
+                      {analysisPreview && <img src={analysisPreview.url} alt="Imported preview" />}
+                      <span className="vision-scan-line" aria-hidden="true" />
+                      <span className="vision-scan-grid" aria-hidden="true" />
+                      <span className="vision-pixel-cloud vision-pixel-cloud-a" aria-hidden="true" />
+                      <span className="vision-pixel-cloud vision-pixel-cloud-b" aria-hidden="true" />
+                      <span className="vision-frame-corner corner-tl" aria-hidden="true" />
+                      <span className="vision-frame-corner corner-tr" aria-hidden="true" />
+                      <span className="vision-frame-corner corner-bl" aria-hidden="true" />
+                      <span className="vision-frame-corner corner-br" aria-hidden="true" />
+                    </div>
+                    <div className="vision-analysis-copy">
+                      <SeedyCompanion state="magic" settings={params.companionSettings} />
+                      <div>
+                        <strong>{t.visionAnalysisInProgress || 'Analyse visuelle en cours'}</strong>
+                        <span>{t.visionAnalysisDetail || 'Composition · lumière · textures · optique'}</span>
+                      </div>
+                      <i className="vision-live-dot" aria-hidden="true" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             {isCreatingLuckyPrompt && (
               <div id="lucky-generation-post" className="message-row bot lucky-generation-row" aria-live="polite">
                 <div className="avatar" aria-label={t.luckyPromptAction}>
@@ -727,7 +1107,12 @@ export const ChatInterface = ({
         ) : (
           <div className="gallery-view">
             <div className="gallery-header">
-              <h2>{t.myContent}</h2>
+              <div className="gallery-title-row">
+                <h2>{t.myContent}</h2>
+                <span className="gallery-result-count">
+                  {galleryTotal} {galleryTotal === 1 ? t.result : t.results}
+                </span>
+              </div>
               <div className="gallery-filters">
                 <div className="gallery-search">
                   <div className={`gallery-search-box ${isGallerySearchFocused ? 'focused' : ''}`}>
@@ -838,31 +1223,40 @@ export const ChatInterface = ({
                     loading="lazy" 
                     style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                   />
-                  <div className="gallery-item-actions">
-                    <button
-                      className="gallery-action-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleEdit(item.generationPrompt || item.prompt || item.text || '');
-                      }}
-                      title={t.reusePrompt}
-                      aria-label={t.reusePrompt}
-                    >
-                      <ComposeIcon size={18} />
-                    </button>
-                    <button 
-                      className="gallery-action-btn"
-                      onClick={(e) => { e.stopPropagation(); goToImage(item.sessionId, item.messageId); }}
-                      title={t.viewInChat}
-                    >
-                      <ChatIcon size={18} />
-                    </button>
-                  </div>
+                  {galleryColumns < 3 && (
+                    <div className="gallery-item-actions">
+                      <button
+                        className="gallery-action-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEdit(item.generationPrompt || item.prompt || item.text || '');
+                        }}
+                        title={t.reusePrompt}
+                        aria-label={t.reusePrompt}
+                      >
+                        <ComposeIcon size={18} />
+                      </button>
+                      <button
+                        className="gallery-action-btn"
+                        onClick={(e) => { e.stopPropagation(); goToImage(item.sessionId, item.messageId); }}
+                        title={t.viewInChat}
+                      >
+                        <ChatIcon size={18} />
+                      </button>
+                    </div>
+                  )}
                   {item.isFavorite === 1 && <div className="gallery-item-favorite">❤️</div>}
                   {item.isPromptFavorite === 1 && (
                     <div className="gallery-item-prompt-favorite" title={t.likePrompt}>
                       <ThumbUpIcon size={18} />
                     </div>
+                  )}
+                  {item.comparisonMessageId && (
+                    <button
+                      className="gallery-item-comparison"
+                      onClick={(event) => { event.stopPropagation(); openComparison(item.messageId); }}
+                      title={lang === 'fr' ? 'Voir la comparaison' : 'View comparison'}
+                    >A/B</button>
                   )}
                 </div>
               ))}
@@ -878,32 +1272,60 @@ export const ChatInterface = ({
           {showOptions && (
             <div ref={optionsDrawerRef} className="generation-options-drawer fadeIn">
               <div className="options-group lucky-prompt-group">
+                <input
+                  ref={imageImportRef}
+                  className="vision-file-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/avif"
+                  onChange={event => {
+                    const file = event.target.files?.[0];
+                    event.currentTarget.value = '';
+                    if (file) void analyzeImportedImage(file);
+                  }}
+                />
                 <div className="lucky-prompt-actions">
                   <button
                     type="button"
-                    className="lucky-prompt-btn"
+                    className="image-import-btn"
                     onClick={() => {
-                      setShowOptions(false);
-                      void createLuckyGeneration();
+                      if (!params.visionProviderId || !params.visionModel) {
+                        toast.error(t.visionSetupRequired || 'Choose a vision provider and model in LLM settings first.');
+                        return;
+                      }
+                      imageImportRef.current?.click();
                     }}
-                    disabled={isCreatingLuckyPrompt}
+                    disabled={isAnalyzingImage}
+                    title={t.importImageHelp || 'Analyze a photo and recreate it from a detailed prompt'}
                   >
-                    <MagicWandIcon size={17} className="lucky-prompt-icon" />
-                    <span>{isCreatingLuckyPrompt ? t.luckyPromptCreating : t.luckyPromptAction}</span>
+                    <CameraIcon size={17} />
+                    <span>{isAnalyzingImage ? (t.visionScanning || 'Scanning…') : (t.importImage || 'Import photo')}</span>
                   </button>
-                  <button
-                    type="button"
-                    className={`lucky-info-btn ${showLuckyInfo ? 'active' : ''}`}
-                    onClick={() => setShowLuckyInfo(current => !current)}
-                    aria-label={t.luckyInfoLabel}
-                    aria-expanded={showLuckyInfo}
-                    aria-controls="lucky-prompt-explanation"
-                    title={t.luckyInfoLabel}
-                  >
-                    <InfoIcon size={16} />
-                  </button>
+                  <div className="lucky-prompt-action-with-info">
+                    <button
+                      type="button"
+                      className="lucky-prompt-btn"
+                      onClick={() => {
+                        setShowOptions(false);
+                        void createLuckyGeneration();
+                      }}
+                      disabled={isCreatingLuckyPrompt || isLoadingLuckyReferences}
+                    >
+                      <MagicWandIcon size={17} className="lucky-prompt-icon" />
+                      <span>{isLoadingLuckyReferences ? t.luckyReferencesLoading : (isCreatingLuckyPrompt ? t.luckyPromptCreating : t.luckyPromptAction)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`lucky-info-btn ${showLuckyInfo ? 'active' : ''}`}
+                      onClick={() => setShowLuckyInfo(current => !current)}
+                      aria-label={t.luckyInfoLabel}
+                      aria-expanded={showLuckyInfo}
+                      aria-controls="lucky-prompt-explanation"
+                      title={t.luckyInfoLabel}
+                    >
+                      <InfoIcon size={14} />
+                    </button>
+                  </div>
                 </div>
-                <p className="lucky-prompt-help">{t.luckyPromptHelp}</p>
                 {showLuckyInfo && (
                   <p id="lucky-prompt-explanation" className="lucky-prompt-explanation">
                     {t.luckyInfoText}
@@ -967,6 +1389,27 @@ export const ChatInterface = ({
                 <ChevronDownIcon size={24} />
               </button>
             )}
+            {showSlashCommandMenu && (
+              <div id="slash-command-menu" className="slash-command-menu" role="listbox" aria-label={t.slashCommands}>
+                {matchingSlashCommands.map((command, index) => (
+                  <button
+                    key={command.name}
+                    type="button"
+                    className={`slash-command-option ${index === slashCommandIndex ? 'active' : ''}`}
+                    role="option"
+                    aria-selected={index === slashCommandIndex}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => insertSlashCommand(command.name)}
+                  >
+                    <span className="slash-command-name">/{command.name}</span>
+                    <span className="slash-command-details">
+                      <strong>{command.usage}</strong>
+                      <small>{command.description}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             <div className={`input-box ${params.llmEnabled ? 'ai-active' : ''} ${input ? 'has-text' : ''} ${hasRandomCodes ? 'has-random-code' : ''}`}>
               {!input && (
                 <button
@@ -999,8 +1442,13 @@ export const ChatInterface = ({
                   ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
+                  onFocus={() => setIsPromptFocused(true)}
+                  onBlur={() => setIsPromptFocused(false)}
                   onScroll={(e) => syncPromptHighlightScroll(e.currentTarget)}
-                  onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
+                  onKeyDown={handlePromptKeyDown}
+                  aria-autocomplete="list"
+                  aria-controls={showSlashCommandMenu ? 'slash-command-menu' : undefined}
+                  aria-expanded={showSlashCommandMenu}
                   placeholder={params.llmEnabled ? t.aiPlaceholder : t.placeholder}
                   rows={1}
                 />
@@ -1026,7 +1474,23 @@ export const ChatInterface = ({
                       <XIcon size={18} />
                     </button>
                   )}
-                  <button className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`} onClick={() => isGenerating && !input.trim() ? interruptGeneration() : handleSend()} disabled={!input.trim() && !isGenerating}>
+                  {input && (
+                    <button
+                      type="button"
+                      className="one-shot-ai-btn"
+                      onClick={() => handleSend(undefined, false, false, true)}
+                      disabled={!input.trim() || !params.llmProviderId}
+                      title={params.llmProviderId ? t.oneShotAi : t.oneShotAiUnavailable}
+                      aria-label={params.llmProviderId ? t.oneShotAi : t.oneShotAiUnavailable}
+                    >
+                      AI
+                    </button>
+                  )}
+                  <button
+                    className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`}
+                    onClick={() => isGenerating && !input.trim() ? interruptGeneration() : void executePromptInput()}
+                    disabled={(!input.trim() && !isGenerating) || isResolvingSlashCommand}
+                  >
                     {isGenerating && !input.trim() ? (
                       <div className="stop-icon"></div>
                     ) : (

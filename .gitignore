@@ -16,3 +16,5 @@ backend/node_modules/
 backend/.test-runtime/
 .DS_Store
 .gemini/agents/
+.codex-remote-attachments/
+.visual-runtime/

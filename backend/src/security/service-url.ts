@@ -45,6 +45,8 @@ export const getAllowedServiceOrigins = () => {
     'http://localhost:8188',
     'http://127.0.0.1:11434',
     'http://localhost:11434',
+    'http://127.0.0.1:1234',
+    'http://localhost:1234',
     ...configured,
   ];
 
