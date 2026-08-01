@@ -5,7 +5,7 @@ import fs from 'fs';
 import sharp from 'sharp';
 import { WebSocket, WebSocketServer } from 'ws';
 import db from './database';
-import { getTargetComfyUrl, getWorkflow, parseComfyError } from './comfy';
+import { getTargetComfyUrl, getWorkflow, parseComfyError, releaseComfyMemory } from './comfy';
 import { imagesDir, thumbnailsDir } from './image';
 import { QueueTask, GenerationParams, ComfyHistoryEntry } from '../types';
 import { writeAuditLog } from './audit-log';
@@ -66,14 +66,33 @@ export const processQueue = async () => {
     }
     
     console.log(`[Queue] Starting task for message ${task.messageId}...`);
+    const generationStartedAt = Date.now();
     db.prepare('UPDATE queue SET status = ? WHERE id = ?').run('processing', task.id);
-    db.prepare('UPDATE messages SET status = ? WHERE id = ?').run('processing', task.messageId);
-    broadcastToSession(task.sessionId, { messageId: task.messageId, status: 'processing' });
+    db.prepare('UPDATE messages SET status = ?, generationStartedAt = ? WHERE id = ?')
+      .run('processing', generationStartedAt, task.messageId);
+    broadcastToSession(task.sessionId, {
+      messageId: task.messageId,
+      status: 'processing',
+      generationStartedAt
+    });
     const sessionOwner = db.prepare('SELECT userId FROM sessions WHERE id = ?').get(task.sessionId) as { userId: string } | undefined;
 
     const params: GenerationParams = JSON.parse(task.params);
-    const workflow = getWorkflow(task.prompt, params);
     const targetComfyUrl = getTargetComfyUrl(params.comfyUrl);
+
+    // Comparisons must start from a clean ComfyUI model state. Doing this in
+    // the queue (instead of the HTTP route) keeps the unload directly adjacent
+    // to workflow submission and avoids a race with another queued render.
+    if (params.unloadBeforeRun) {
+      console.log(`[Queue] Releasing ComfyUI memory before comparison ${task.messageId}...`);
+      try {
+        await releaseComfyMemory(targetComfyUrl);
+      } catch (err: unknown) {
+        throw new Error(`Unable to release ComfyUI memory: ${parseComfyError(err)}`);
+      }
+    }
+
+    const workflow = getWorkflow(task.prompt, params);
     
     console.log(`[Queue] Submitting to ComfyUI at ${targetComfyUrl}...`);
 
@@ -134,14 +153,19 @@ export const processQueue = async () => {
     }
 
     let completedImage: ResolvedComfyHistoryImage | undefined;
-    const startTime = Date.now();
+    const startTime = generationStartedAt;
     const POLLING_TIMEOUT = 5 * 60 * 1000; 
 
     while (!completedImage) {
       if (Date.now() - startTime > POLLING_TIMEOUT) throw new Error('Generation timed out after 5 minutes.');
       
       const currentDuration = Math.floor((Date.now() - startTime) / 1000);
-      broadcastToSession(task.sessionId, { messageId: task.messageId, status: 'processing', duration: currentDuration });
+      broadcastToSession(task.sessionId, {
+        messageId: task.messageId,
+        status: 'processing',
+        duration: currentDuration,
+        generationStartedAt
+      });
 
       let hResp;
       try { 
@@ -240,6 +264,7 @@ export const processQueue = async () => {
       imageUrl, 
       thumbnailUrl, 
       duration: finalDuration,
+      generationStartedAt,
       model: params.comfyModel, 
       width: params.width, 
       height: params.height, 
@@ -280,7 +305,7 @@ export const processQueue = async () => {
 export const initQueue = (wsServer: WebSocketServer) => {
   setWss(wsServer);
   db.prepare("UPDATE queue SET status = 'pending' WHERE status = 'processing'").run();
-  db.prepare("UPDATE messages SET status = 'pending' WHERE status = 'processing' AND id IN (SELECT messageId FROM queue)").run();
+  db.prepare("UPDATE messages SET status = 'pending', generationStartedAt = NULL WHERE status = 'processing' AND id IN (SELECT messageId FROM queue)").run();
   processQueue();
   setInterval(processQueue, 2000);
 };

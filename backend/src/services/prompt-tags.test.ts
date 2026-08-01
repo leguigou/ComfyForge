@@ -22,4 +22,51 @@ describe('classifyPrompt', () => {
     expect(tags).toContain('two-people');
     expect(tags).not.toContain('group');
   });
+
+  it('infers nudity and sexual activity from explicit stimulation', () => {
+    const tags = slugsFor(
+      'A voyeur photo of an 18 year old blonde woman standing in a shower, taking a shower. '
+      + 'The woman has an electric toothbrush against her clitoris, between her thighs and '
+      + 'is moaning in pleasure as she holds the toothbrush.'
+    );
+
+    expect(tags).toEqual(expect.arrayContaining([
+      'women',
+      'blonde',
+      'bathroom',
+      'voyeur',
+      'genitals',
+      'explicit',
+      'sexual-activity',
+      'nudity',
+    ]));
+  });
+
+  it.each([
+    ['large breasts and deep cleavage', 'large-breasts'],
+    ['medium sized breasts', 'medium-breasts'],
+    ['small breasts', 'small-breasts'],
+  ])('adds the generic breast tag and its size for %s', (prompt, sizeTag) => {
+    const tags = slugsFor(`A woman with ${prompt}.`);
+
+    expect(tags).toContain('breasts');
+    expect(tags).toContain(sizeTag);
+  });
+
+  it('does not add breast or nudity tags when they are explicitly negated', () => {
+    const tags = slugsFor('A woman without visible breasts, no nudity, wearing a winter coat.');
+
+    expect(tags).not.toContain('breasts');
+    expect(tags).not.toContain('nudity');
+  });
+
+  it('recognizes terse Stable Diffusion syntax and recurring French prompts', () => {
+    expect(slugsFor('1girl, orange hair, post-apocalypse')).toContain('women');
+    expect(slugsFor('Un jeune couple en train de faire du sexe dans un lit')).toEqual(
+      expect.arrayContaining(['two-people', 'sexual-activity', 'nudity', 'bedroom'])
+    );
+    expect(slugsFor('Superbe paysage à la montagne')).toEqual(
+      expect.arrayContaining(['landscape', 'mountain'])
+    );
+  });
 });

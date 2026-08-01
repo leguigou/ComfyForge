@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react';
 import { API_BASE } from '../services/api';
 import type { Message, GenParameters } from '../types';
 import { resolveRandomPromptsWithSelections } from '../utils/randomPrompts';
+import { shouldEnhancePrompt } from '../utils/promptEnhancement';
 
 const readApiResponse = async (response: Response) => {
   const contentType = response.headers.get('content-type') || '';
@@ -68,21 +69,60 @@ export const useGeneration = (
     return data as { queued: number; messageIds: string[] };
   }, [params, setMessages, fetchSessions]);
 
+  const updatePendingPrompt = useCallback(async (messageId: string, prompt: string, localUserMessageId?: string) => {
+    const res = await fetch(`${API_BASE}/api/generate/pending/${encodeURIComponent(messageId)}/prompt`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+      credentials: 'include'
+    });
+    const data = await readApiResponse(res);
+    if (!res.ok || !data.success) throw new Error(data.error || 'Prompt update failed');
+
+    setMessages(previous => previous.map(message => {
+      if (message.id === data.messageId) {
+        return {
+          ...message,
+          text: data.text,
+          prompt: data.prompt,
+          generationPrompt: data.generationPrompt,
+          tags: data.tags || [],
+        };
+      }
+      if (typeof data.linkedUserText === 'string' && ((data.linkedUserMessageId && message.id === data.linkedUserMessageId)
+        || (localUserMessageId && message.id === localUserMessageId))) {
+        return { ...message, text: data.linkedUserText };
+      }
+      return message;
+    }));
+    return data;
+  }, [setMessages]);
+
   const handleSend = useCallback(async (
     textToSend: string,
     isRegeneration = false,
     targetSessionId?: string,
     skipEnhancement = false,
-    runInBackground = false
+    runInBackground = false,
+    forceEnhancement = false,
+    parameterOverrides?: Partial<GenParameters>
   ) => {
     const activeSessionId = targetSessionId || currentSessionId;
     if (!textToSend.trim() || !activeSessionId) return;
     const shouldUpdateVisibleMessages = !runInBackground || activeSessionId === currentSessionId;
+    const generationParams = parameterOverrides ? { ...params, ...parameterOverrides } : params;
 
     const templatePrompt = textToSend;
-    const randomResult = resolveRandomPromptsWithSelections(templatePrompt, params.randomPromptLists);
+    const randomResult = resolveRandomPromptsWithSelections(templatePrompt, generationParams.randomPromptLists);
     const resolvedPrompt = randomResult.prompt;
     const botMsgId = `temp-${Math.random().toString(36).substring(7)}`;
+    const shouldEnhance = shouldEnhancePrompt({
+      llmEnabled: generationParams.llmEnabled,
+      hasProvider: Boolean(generationParams.llmProviderId),
+      isRegeneration,
+      skipEnhancement,
+      forceEnhancement
+    });
     let recoveryMessageId: string | undefined;
     let recoveredPrompt = resolvedPrompt;
 
@@ -93,7 +133,7 @@ export const useGeneration = (
     
     try {
       let finalPrompt = resolvedPrompt;
-      let finalNegativePrompt = params.negativePrompt;
+      let finalNegativePrompt = generationParams.negativePrompt;
 
       // 1. Ajouter la bulle bot en chargement (texte vide au début pour éviter la card inutile)
       const initialBotMsg: Message = { 
@@ -104,14 +144,14 @@ export const useGeneration = (
         text: resolvedPrompt !== templatePrompt ? resolvedPrompt : '',
         randomSelections: randomResult.selections,
         status: 'pending',
-        isEnhancing: params.llmEnabled && !!params.llmProviderId && !isRegeneration && !skipEnhancement,
+        isEnhancing: shouldEnhance,
         timestamp: Date.now(),
-        model: params.comfyModel,
-        workflow: params.workflowFile,
-        width: params.width,
-        height: params.height,
-        steps: params.steps,
-        cfg: params.cfg
+        model: generationParams.comfyModel,
+        workflow: generationParams.workflowFile,
+        width: generationParams.width,
+        height: generationParams.height,
+        steps: generationParams.steps,
+        cfg: generationParams.cfg
       };
       if (shouldUpdateVisibleMessages) {
         setMessages(prev => [...prev, initialBotMsg]);
@@ -121,7 +161,7 @@ export const useGeneration = (
       }
       
       // 2. Interprétation IA
-      if (params.llmEnabled && params.llmProviderId && !isRegeneration && !skipEnhancement) {
+      if (shouldEnhance) {
         enhancingCount.current++;
         setIsEnhancing(true);
         try {
@@ -132,16 +172,16 @@ export const useGeneration = (
               prompt: resolvedPrompt,
               originalPrompt: templatePrompt,
               sessionId: activeSessionId,
-              providerId: params.llmProviderId,
-              systemMessage: params.llmSystemMessage,
+              providerId: generationParams.llmProviderId,
+              systemMessage: generationParams.llmSystemMessage,
               randomSelections: randomResult.selections,
               params: {
-                ...params,
+                ...generationParams,
                 negativePrompt: finalNegativePrompt,
-                workflowFile: params.workflowFile,
-                nodeMapping: params.nodeMapping,
-                seed: params.seedMode === 'fixed' && params.forcedSeed
-                  ? parseInt(params.forcedSeed, 10)
+                workflowFile: generationParams.workflowFile,
+                nodeMapping: generationParams.nodeMapping,
+                seed: generationParams.seedMode === 'fixed' && generationParams.forcedSeed
+                  ? parseInt(generationParams.forcedSeed, 10)
                   : -1
               }
             }),
@@ -195,12 +235,12 @@ export const useGeneration = (
           clientId: clientIdRef.current,
           isRegeneration: isRegeneration,
           params: { 
-            ...params, 
+            ...generationParams,
             negativePrompt: finalNegativePrompt,
-            workflowFile: params.workflowFile,
-            nodeMapping: params.nodeMapping,
+            workflowFile: generationParams.workflowFile,
+            nodeMapping: generationParams.nodeMapping,
             // Gestion de la seed
-            seed: params.seedMode === 'fixed' && params.forcedSeed ? parseInt(params.forcedSeed, 10) : -1
+            seed: generationParams.seedMode === 'fixed' && generationParams.forcedSeed ? parseInt(generationParams.forcedSeed, 10) : -1
           }
         }),
         credentials: 'include'
@@ -236,5 +276,5 @@ export const useGeneration = (
     }
   }, [currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions]);
 
-  return { handleSend, retryMessage, retryAllIncomplete, interruptGeneration, isEnhancing };
+  return { handleSend, retryMessage, retryAllIncomplete, updatePendingPrompt, interruptGeneration, isEnhancing };
 };

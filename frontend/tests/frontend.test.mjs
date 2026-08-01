@@ -12,6 +12,8 @@ let MessageText;
 let randomPrompts;
 let companions;
 let generationTimer;
+let promptEnhancement;
+let slashCommands;
 let config;
 
 before(async () => {
@@ -26,6 +28,8 @@ before(async () => {
   randomPrompts = await vite.ssrLoadModule('/src/utils/randomPrompts.ts');
   companions = await vite.ssrLoadModule('/src/utils/companions.ts');
   generationTimer = await vite.ssrLoadModule('/src/utils/generationTimer.ts');
+  promptEnhancement = await vite.ssrLoadModule('/src/utils/promptEnhancement.ts');
+  slashCommands = await vite.ssrLoadModule('/src/utils/slashCommands.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
   ({ MessageText } = await vite.ssrLoadModule('/src/components/chat/MessageText.tsx'));
 });
@@ -140,8 +144,12 @@ test('keeps generation timers independent from time spent waiting in the queue',
   assert.equal(generationTimer.getGenerationElapsedSeconds(0, 97_000, now), 3);
   assert.equal(generationTimer.getGenerationElapsedSeconds(0, 99_000, now), 1);
   assert.equal(generationTimer.getGenerationElapsedSeconds(4, undefined, now), 4);
+  assert.equal(generationTimer.getPreciseGenerationElapsedSeconds(0, 97_500, now), 2.5);
+  assert.equal(generationTimer.getTrackedGenerationElapsedSeconds(0, undefined, 98_000, 1, now), 3);
+  assert.equal(generationTimer.getTrackedGenerationElapsedSeconds(0, 97_500, 98_000, 1, now), 2.5);
   assert.equal(generationTimer.resolveGenerationStartedAt('processing', undefined, undefined, now), now);
   assert.equal(generationTimer.resolveGenerationStartedAt('processing', undefined, 98_000, now), 98_000);
+  assert.equal(generationTimer.resolveGenerationStartedAt('processing', 95_000, 98_000, now), 95_000);
   assert.equal(generationTimer.resolveGenerationStartedAt('pending', undefined, undefined, now), undefined);
 });
 
@@ -151,4 +159,32 @@ test('estimates generation progress without reaching completion early', () => {
   assert.equal(generationTimer.getEstimatedGenerationProgress(1, 100), 2);
   assert.equal(generationTimer.getEstimatedGenerationProgress(50, 100), 50);
   assert.equal(generationTimer.getEstimatedGenerationProgress(120, 100), 96);
+});
+
+test('allows one-shot AI enhancement without enabling the global toggle', () => {
+  const base = {
+    llmEnabled: false,
+    hasProvider: true,
+    isRegeneration: false,
+    skipEnhancement: false,
+  };
+
+  assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, forceEnhancement: false }), false);
+  assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, forceEnhancement: true }), true);
+  assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, hasProvider: false, forceEnhancement: true }), false);
+  assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, skipEnhancement: true, forceEnhancement: true }), false);
+});
+
+test('parses slash commands and their numeric values', () => {
+  assert.equal(slashCommands.getSlashCommandQuery('/lu'), 'lu');
+  assert.equal(slashCommands.getSlashCommandQuery('/luck beach'), undefined);
+  assert.deepEqual(slashCommands.parseSlashCommand('/luck bikini beach'), {
+    name: 'luck',
+    argument: 'bikini beach',
+  });
+  assert.deepEqual(slashCommands.parseSeedCommand('42'), { seedMode: 'fixed', forcedSeed: '42' });
+  assert.deepEqual(slashCommands.parseSeedCommand('random'), { seedMode: 'random', forcedSeed: '' });
+  assert.equal(slashCommands.parseBoundedNumberCommand('12', 1, 50, true), 12);
+  assert.equal(slashCommands.parseBoundedNumberCommand('12.5', 1, 50, true), undefined);
+  assert.equal(slashCommands.parseBoundedNumberCommand('21', 0, 20), undefined);
 });

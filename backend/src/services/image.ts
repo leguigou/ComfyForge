@@ -11,12 +11,14 @@ export const imagesDir = process.env.IMAGES_DIR
   ? path.resolve(process.env.IMAGES_DIR)
   : path.join(rootDir, 'images');
 export const thumbnailsDir = path.join(imagesDir, 'thumbnails');
+export const importsDir = path.join(imagesDir, 'imports');
 
 console.log(`[ImageService] Images directory: ${imagesDir}`);
 console.log(`[ImageService] Thumbnails directory: ${thumbnailsDir}`);
 
 if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
 if (!fs.existsSync(thumbnailsDir)) fs.mkdirSync(thumbnailsDir, { recursive: true });
+if (!fs.existsSync(importsDir)) fs.mkdirSync(importsDir, { recursive: true });
 
 export const generateThumbnail = async (originalPath: string, thumbPath: string) => {
   const dir = path.dirname(thumbPath);

@@ -49,7 +49,7 @@ router.get('/:id', authenticate, (req, res) => {
   const user = (req as any).user;
   const session = db.prepare('SELECT * FROM sessions WHERE id = ? AND userId = ?').get(req.params.id, user.id) as any;
   if (!session) return res.json({ error: 'Not found' });
-  const messages = db.prepare('SELECT id, role, text, prompt, generationPrompt, imageUrl, thumbnailUrl, model, width, height, steps, cfg, workflow, status, timestamp, seed, isFavorite, isPromptFavorite, duration, sampler, scheduler, randomSelections FROM messages WHERE sessionId = ? ORDER BY timestamp ASC').all(req.params.id) as Record<string, unknown>[];
+  const messages = db.prepare('SELECT id, role, text, prompt, generationPrompt, imageUrl, thumbnailUrl, model, width, height, steps, cfg, workflow, status, timestamp, seed, isFavorite, isPromptFavorite, duration, generationStartedAt, sampler, scheduler, randomSelections, comparisonMessageId FROM messages WHERE sessionId = ? ORDER BY timestamp ASC').all(req.params.id) as Record<string, unknown>[];
   const enrichedMessages = attachPromptTags(db, messages.map(withParsedRandomSelections), 'id');
   res.json({ ...session, messages: enrichedMessages });
 });
@@ -152,11 +152,45 @@ router.delete('/:sessionId/message/:messageId', authenticate, (req, res) => {
   const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND userId = ?').get(req.params.sessionId, user.id);
   if (!session) return res.status(403).json({ error: 'Unauthorized' });
 
-  const message = db.prepare('SELECT imageUrl, thumbnailUrl FROM messages WHERE id = ? AND sessionId = ?').get(req.params.messageId, req.params.sessionId) as any;
+  const message = db.prepare(`
+    SELECT id, imageUrl, thumbnailUrl, isFavorite, isPromptFavorite, comparisonSourceId
+    FROM messages WHERE id = ? AND sessionId = ?
+  `).get(req.params.messageId, req.params.sessionId) as any;
   if (message) deleteFiles([message]);
 
-  db.prepare('DELETE FROM messages WHERE id = ? AND sessionId = ?').run(req.params.messageId, req.params.sessionId);
-  db.prepare('DELETE FROM queue WHERE messageId = ?').run(req.params.messageId);
+  db.transaction(() => {
+    db.prepare(`
+      DELETE FROM comparison_preferences
+      WHERE userId = ? AND (
+        sourceMessageId = ? OR firstMessageId = ? OR secondMessageId = ? OR preferredMessageId = ?
+      )
+    `).run(user.id, req.params.messageId, req.params.messageId, req.params.messageId, req.params.messageId);
+    if (message?.comparisonSourceId) {
+      const nextComparison = db.prepare(`
+        SELECT id FROM messages
+        WHERE comparisonSourceId = ? AND id <> ?
+        ORDER BY timestamp DESC LIMIT 1
+      `).get(message.comparisonSourceId, message.id) as { id: string } | undefined;
+      db.prepare(`
+        UPDATE messages SET
+          isFavorite = CASE WHEN ? = 1 THEN 1 ELSE isFavorite END,
+          isPromptFavorite = CASE WHEN ? = 1 THEN 1 ELSE isPromptFavorite END,
+          comparisonMessageId = ?
+        WHERE id = ? AND sessionId = ?
+      `).run(
+        message.isFavorite === 1 ? 1 : 0,
+        message.isPromptFavorite === 1 ? 1 : 0,
+        nextComparison?.id || null,
+        message.comparisonSourceId,
+        req.params.sessionId
+      );
+    } else {
+      db.prepare('UPDATE messages SET comparisonMessageId = NULL, comparisonSourceId = NULL WHERE comparisonMessageId = ? OR comparisonSourceId = ?')
+        .run(req.params.messageId, req.params.messageId);
+    }
+    db.prepare('DELETE FROM messages WHERE id = ? AND sessionId = ?').run(req.params.messageId, req.params.sessionId);
+    db.prepare('DELETE FROM queue WHERE messageId = ?').run(req.params.messageId);
+  })();
   res.json({ success: true });
 });
 

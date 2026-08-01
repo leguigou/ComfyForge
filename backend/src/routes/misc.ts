@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { authenticate, requireAdmin } from '../middleware/auth';
-import { imagesDir, thumbnailsDir, generateThumbnail } from '../services/image';
+import { imagesDir, importsDir, thumbnailsDir, generateThumbnail } from '../services/image';
 import { analyzeWorkflow } from '../services/workflow-import';
 
 const router = express.Router();
@@ -150,6 +150,14 @@ router.get('/thumbnails/:filename', authenticate, async (req, res) => {
     console.error('[Thumbnails Legacy] On-the-fly generation failed:', err.message); 
   }
   res.status(404).send('Not found');
+});
+
+router.get('/imports/:userId/:filename', authenticate, (req, res) => {
+  const userId = getRouteParam(req.params.userId);
+  const filename = path.basename(getRouteParam(req.params.filename));
+  if (!canAccessUserFiles(req, userId)) return res.status(403).send('Forbidden');
+  const userImportsDir = path.join(importsDir, userId);
+  return sendFileIfInside(res, userImportsDir, path.join(userImportsDir, filename));
 });
 
 router.get('/workflows', authenticate, (req, res) => {

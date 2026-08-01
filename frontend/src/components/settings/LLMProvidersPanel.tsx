@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import toast from 'react-hot-toast';
 import type { GenParameters, LLMProvider } from '../../types';
 import { API_BASE } from '../../services/api';
+import { DEFAULT_VISION_SYSTEM_MESSAGE } from '../../config';
 import { RefreshIcon } from '../ui/Icons';
 
 interface ProviderPreset {
@@ -15,9 +16,12 @@ interface ProviderPreset {
 
 interface Props {
   params: GenParameters;
-  setParams: (params: GenParameters) => void;
+  setParams: Dispatch<SetStateAction<GenParameters>>;
   t: Record<string, string>;
+  beforeVision?: ReactNode;
 }
+
+const VISION_TTL_OPTIONS = [15, 30, 60, 120] as const;
 
 const request = async (path: string, init?: RequestInit) => {
   const response = await fetch(`${API_BASE}/api/llm${path}`, {
@@ -36,7 +40,7 @@ const request = async (path: string, init?: RequestInit) => {
   return data;
 };
 
-export const LLMProvidersPanel = ({ params, setParams, t }: Props) => {
+export const LLMProvidersPanel = ({ params, setParams, t, beforeVision }: Props) => {
   const [providers, setProviders] = useState<LLMProvider[]>([]);
   const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [selectedPreset, setSelectedPreset] = useState('openai');
@@ -46,6 +50,10 @@ export const LLMProvidersPanel = ({ params, setParams, t }: Props) => {
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const visionTtlMinutes = VISION_TTL_OPTIONS.includes(params.visionModelTtlMinutes as typeof VISION_TTL_OPTIONS[number])
+    ? params.visionModelTtlMinutes
+    : 30;
+  const visionTtlIndex = VISION_TTL_OPTIONS.indexOf(visionTtlMinutes as typeof VISION_TTL_OPTIONS[number]);
 
   const loadProviders = useCallback(async () => {
     const data = await request('/providers');
@@ -135,6 +143,48 @@ export const LLMProvidersPanel = ({ params, setParams, t }: Props) => {
     finally { setBusy(null); }
   };
 
+  const selectVisionProvider = async (providerId: string) => {
+    const provider = providers.find(item => item.id === providerId);
+    setParams(current => ({
+      ...current,
+      visionProviderId: providerId,
+      visionModel: provider ? provider.model : '',
+    }));
+    if (!provider || models[provider.id]?.length) return;
+    setBusy(`vision-models-${provider.id}`);
+    try {
+      const data = await request(`/providers/${provider.id}/models`, { method: 'POST' });
+      const availableModels = Array.isArray(data.models) ? data.models : [];
+      setModels(value => ({ ...value, [provider.id]: availableModels }));
+      const preferredModel = availableModels.includes(provider.model) ? provider.model : availableModels[0] || provider.model;
+      setParams(current => ({ ...current, visionProviderId: provider.id, visionModel: preferredModel }));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const refreshVisionModels = async () => {
+    const provider = providers.find(item => item.id === params.visionProviderId);
+    if (!provider) return;
+    setBusy(`vision-models-${provider.id}`);
+    try {
+      const data = await request(`/providers/${provider.id}/models`, { method: 'POST' });
+      const availableModels = Array.isArray(data.models) ? data.models : [];
+      setModels(value => ({ ...value, [provider.id]: availableModels }));
+      const preferredModel = availableModels.includes(params.visionModel || '')
+        ? params.visionModel!
+        : availableModels.includes(provider.model) ? provider.model : availableModels[0] || '';
+      setParams(current => ({ ...current, visionProviderId: provider.id, visionModel: preferredModel }));
+      toast.success(`${availableModels.length} ${t.modelsFound}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const updateModel = async (provider: LLMProvider, model: string) => {
     setProviders(value => value.map(item => item.id === provider.id ? { ...item, model } : item));
     try {
@@ -217,7 +267,10 @@ export const LLMProvidersPanel = ({ params, setParams, t }: Props) => {
         {providers.length === 0 && !showAdd && <div className="provider-empty">{t.noProviders || 'No provider installed yet.'}</div>}
         {providers.map(provider => <div key={provider.id} className={`provider-card ${provider.isActive ? 'active' : ''}`}>
           <div className="provider-card-head">
-            <div><strong>{provider.name}</strong><span>{provider.type} · {provider.hasApiKey ? '••••••••' : t.noKeyRequired || 'no key'}</span></div>
+            <div>
+              <strong>{provider.name}</strong>
+              <span>{provider.type} · {provider.apiKeyPreview || (provider.hasApiKey ? '••••••••' : t.noKeyRequired || 'no key')}</span>
+            </div>
             {provider.isActive ? <span className="provider-active-badge">{t.active || 'Active'}</span> : <button className="action-btn-small" onClick={() => activate(provider)} disabled={busy === provider.id}>{t.activate || 'Activate'}</button>}
           </div>
           <div className="provider-url-editor">
@@ -253,6 +306,112 @@ export const LLMProvidersPanel = ({ params, setParams, t }: Props) => {
           </div>
         </div>)}
       </div>
+
+      {beforeVision}
+
+      <section className="vision-provider-card">
+        <div className="vision-provider-heading">
+          <div className="vision-provider-orb" aria-hidden="true"><span /></div>
+          <div>
+            <h3>{t.visionSetupTitle || 'Image analysis'}</h3>
+            <p>{t.visionSetupHelp || 'Choose an installed provider and a model capable of reading images.'}</p>
+          </div>
+          <span className="vision-auto-save">{t.autoSaved || 'Auto-saved'}</span>
+        </div>
+        <div className="vision-provider-controls">
+          <label>
+            <span>{t.visionProvider || 'Vision provider'}</span>
+            <select
+              value={params.visionProviderId || ''}
+              onChange={event => void selectVisionProvider(event.target.value)}
+            >
+              <option value="">{t.selectProvider || 'Select a provider'}</option>
+              {providers.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>{t.visionModel || 'Vision model'}</span>
+            <div className="vision-model-control">
+              {params.visionProviderId && models[params.visionProviderId]?.length ? (
+                <select
+                  value={params.visionModel || ''}
+                  onChange={event => setParams(current => ({ ...current, visionModel: event.target.value }))}
+                >
+                  {!models[params.visionProviderId].includes(params.visionModel || '') && params.visionModel && (
+                    <option value={params.visionModel}>{params.visionModel}</option>
+                  )}
+                  {models[params.visionProviderId].map(model => <option key={model} value={model}>{model}</option>)}
+                </select>
+              ) : (
+                <input
+                  value={params.visionModel || ''}
+                  onChange={event => setParams(current => ({ ...current, visionModel: event.target.value }))}
+                  placeholder={t.visionModelPlaceholder || 'e.g. gpt-4.1-mini'}
+                  disabled={!params.visionProviderId}
+                />
+              )}
+              <button
+                type="button"
+                className="refresh-models-btn"
+                onClick={() => void refreshVisionModels()}
+                disabled={!params.visionProviderId || busy === `vision-models-${params.visionProviderId}`}
+                title={t.refreshModels}
+              >
+                {busy === `vision-models-${params.visionProviderId}` ? '…' : <RefreshIcon size={16} />}
+              </button>
+            </div>
+          </label>
+        </div>
+        <p className="vision-provider-note">{t.visionModelNote || 'Only choose a multimodal model with image input support.'}</p>
+        <div className="vision-ttl-control">
+          <div className="vision-ttl-heading">
+            <div>
+              <strong>{t.visionTtlTitle || 'Automatic memory release'}</strong>
+              <small>{t.visionTtlHelp || 'Unload the local vision model after this idle period.'}</small>
+            </div>
+            <output>{visionTtlMinutes < 60 ? `${visionTtlMinutes} min` : `${visionTtlMinutes / 60} h`}</output>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max={VISION_TTL_OPTIONS.length - 1}
+            step="1"
+            value={visionTtlIndex}
+            onChange={event => {
+              const value = VISION_TTL_OPTIONS[Number(event.target.value)] || 30;
+              setParams(current => ({ ...current, visionModelTtlMinutes: value }));
+            }}
+            aria-label={t.visionTtlTitle || 'Automatic memory release'}
+          />
+          <div className="vision-ttl-ticks" aria-hidden="true">
+            <span>15 min</span><span>30 min</span><span>1 h</span><span>2 h</span>
+          </div>
+        </div>
+        <div className="vision-prompt-editor">
+          <div className="vision-prompt-label">
+            <span>{t.visionSystemMessage || 'Image analysis prompt'}</span>
+            <small>{t.visionSystemMessageHelp || 'Controls how the model observes and describes the imported image.'}</small>
+          </div>
+          <div className="textarea-with-reset vision-textarea-with-reset">
+            <textarea
+              value={params.visionSystemMessage ?? DEFAULT_VISION_SYSTEM_MESSAGE}
+              onChange={event => setParams(current => ({ ...current, visionSystemMessage: event.target.value }))}
+              rows={8}
+              maxLength={20000}
+              spellCheck={false}
+            />
+            <button
+              type="button"
+              onClick={() => setParams(current => ({ ...current, visionSystemMessage: DEFAULT_VISION_SYSTEM_MESSAGE }))}
+              disabled={(params.visionSystemMessage ?? DEFAULT_VISION_SYSTEM_MESSAGE) === DEFAULT_VISION_SYSTEM_MESSAGE}
+              title={t.resetVisionSystemMessage || 'Reset the image analysis prompt'}
+              aria-label={t.resetVisionSystemMessage || 'Reset the image analysis prompt'}
+            >
+              ↺
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 };

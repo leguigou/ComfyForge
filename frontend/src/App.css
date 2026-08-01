@@ -444,7 +444,12 @@ div:focus:not(:focus-visible) {
   height: 100dvh;
   background-color: var(--lightbox-bg); display: flex; align-items: center; justify-content: center;
   z-index: 3000; cursor: zoom-out;
+  touch-action: none;
+  overscroll-behavior: contain;
 }
+
+.lightbox.zoomed { cursor: grab; }
+.lightbox.zoomed:active { cursor: grabbing; }
 
 .app-toaster {
   z-index: 10000 !important;
@@ -469,7 +474,8 @@ div:focus:not(:focus-visible) {
   height: 95vh;
   display: flex; 
   align-items: center; 
-  justify-content: center; 
+  justify-content: center;
+  touch-action: none;
 }
 
 .lightbox-thumb, .lightbox-hd {
@@ -562,6 +568,186 @@ div:focus:not(:focus-visible) {
   white-space: pre-wrap;
 }
 
+.lightbox-modify-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 31;
+  width: min(520px, calc(100vw - 32px));
+  padding: 1.2rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 1.1rem;
+  background: rgba(24, 24, 28, 0.96);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.62);
+  color: #f4f4f5;
+  cursor: default;
+  backdrop-filter: blur(18px);
+  transform: translate(-50%, -50%);
+  animation: lightbox-prompt-in 0.16s ease-out;
+}
+
+.lightbox-modify-help {
+  margin: -0.15rem 0 0.9rem;
+  color: rgba(244, 244, 245, 0.64);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.lightbox-modify-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  padding: 0.78rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.75rem;
+  outline: none;
+  background: rgba(255, 255, 255, 0.07);
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.lightbox-modify-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.lightbox-modify-input::placeholder {
+  color: rgba(244, 244, 245, 0.4);
+}
+
+.lightbox-seed-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 0.82rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.8rem;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.lightbox-seed-toggle > span {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.lightbox-seed-toggle strong { font-size: 0.84rem; }
+.lightbox-seed-toggle small { color: rgba(244, 244, 245, 0.52); font-size: 0.7rem; line-height: 1.35; }
+.lightbox-seed-toggle.disabled { opacity: 0.45; }
+
+.modify-toggle {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.modify-toggle span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s ease;
+}
+
+.modify-toggle.on { background: var(--accent); }
+.modify-toggle.on span { transform: translateX(18px); }
+
+.lightbox-modify-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 1.15rem;
+}
+
+.lightbox-modify-actions button {
+  min-height: 40px;
+  padding: 0.55rem 0.95rem;
+  border-radius: 0.68rem;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.modify-cancel {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: inherit;
+}
+
+.modify-submit {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.lightbox-modify-actions button:disabled,
+.modify-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.light .lightbox-modify-panel {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.2);
+  color: #18181b;
+}
+
+.light .lightbox-modify-help,
+.light .lightbox-seed-toggle small { color: rgba(24, 24, 27, 0.58); }
+.light .lightbox-modify-input { border-color: rgba(0, 0, 0, 0.12); background: rgba(0, 0, 0, 0.04); }
+.light .lightbox-modify-input::placeholder { color: rgba(24, 24, 27, 0.38); }
+.light .lightbox-seed-toggle { border-color: rgba(0, 0, 0, 0.09); background: rgba(0, 0, 0, 0.025); }
+.light .modify-toggle { background: rgba(0, 0, 0, 0.16); }
+.light .modify-toggle.on { background: var(--accent); }
+.light .modify-cancel { border-color: rgba(0, 0, 0, 0.12); color: #18181b; }
+
+.lightbox-prompt-tags {
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.11);
+}
+
+.lightbox-prompt-tags-title {
+  display: block;
+  margin-bottom: 0.55rem;
+  color: rgba(244, 244, 245, 0.58);
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lightbox-prompt-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.38rem;
+}
+
+.lightbox-prompt-tags-list span {
+  padding: 0.3rem 0.55rem;
+  border: 1px solid rgba(183, 135, 255, 0.18);
+  border-radius: 999px;
+  color: #d9c4ff;
+  background: rgba(139, 92, 246, 0.14);
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
+
 .light .lightbox-prompt-panel {
   border-color: rgba(0, 0, 0, 0.12);
   background: rgba(255, 255, 255, 0.94);
@@ -571,6 +757,20 @@ div:focus:not(:focus-visible) {
 
 .light .lightbox-prompt-text {
   color: rgba(24, 24, 27, 0.86);
+}
+
+.light .lightbox-prompt-tags {
+  border-top-color: rgba(0, 0, 0, 0.09);
+}
+
+.light .lightbox-prompt-tags-title {
+  color: rgba(24, 24, 27, 0.56);
+}
+
+.light .lightbox-prompt-tags-list span {
+  border-color: rgba(109, 40, 217, 0.14);
+  color: #6d28d9;
+  background: rgba(139, 92, 246, 0.1);
 }
 
 .light .lightbox-prompt-close {

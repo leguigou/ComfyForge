@@ -72,6 +72,7 @@ export const initDatabase = () => {
       status TEXT DEFAULT 'completed',
       seed INTEGER,
       duration INTEGER,
+      generationStartedAt INTEGER,
       isFavorite INTEGER DEFAULT 0,
       isPromptFavorite INTEGER DEFAULT 0,
       sampler TEXT,
@@ -79,7 +80,24 @@ export const initDatabase = () => {
       randomSelections TEXT,
       generationPrompt TEXT,
       generationParams TEXT,
+      comparisonMessageId TEXT,
+      comparisonSourceId TEXT,
       FOREIGN KEY (sessionId) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS comparison_preferences (
+      userId TEXT NOT NULL,
+      sourceMessageId TEXT NOT NULL,
+      firstMessageId TEXT NOT NULL,
+      secondMessageId TEXT NOT NULL,
+      preferredMessageId TEXT,
+      updatedAt INTEGER NOT NULL,
+      PRIMARY KEY (userId, firstMessageId, secondMessageId),
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (sourceMessageId) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (firstMessageId) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (secondMessageId) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (preferredMessageId) REFERENCES messages(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS queue (
@@ -156,6 +174,7 @@ export const initDatabase = () => {
     CREATE INDEX IF NOT EXISTS idx_sessions_userId ON sessions(userId);
     CREATE INDEX IF NOT EXISTS idx_messages_sessionId ON messages(sessionId);
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_comparison_preferences_source ON comparison_preferences(userId, sourceMessageId);
     CREATE INDEX IF NOT EXISTS idx_queue_sessionId ON queue(sessionId);
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
     CREATE INDEX IF NOT EXISTS idx_llm_providers_userId ON llm_providers(userId);
@@ -174,18 +193,28 @@ export const initDatabase = () => {
   }
 
   // Migrations
-  const columnsToCheck = ['model', 'width', 'height', 'steps', 'cfg', 'workflow', 'status', 'thumbnailUrl', 'seed', 'duration', 'isFavorite', 'isPromptFavorite', 'sampler', 'scheduler', 'randomSelections', 'generationPrompt', 'generationParams'];
+  const columnsToCheck = ['model', 'width', 'height', 'steps', 'cfg', 'workflow', 'status', 'thumbnailUrl', 'seed', 'duration', 'generationStartedAt', 'isFavorite', 'isPromptFavorite', 'sampler', 'scheduler', 'randomSelections', 'generationPrompt', 'generationParams', 'comparisonMessageId', 'comparisonSourceId'];
   columnsToCheck.forEach(col => {
     try {
       db.prepare(`SELECT ${col} FROM messages LIMIT 1`).get();
     } catch (e) {
       let type = 'TEXT';
       if (col === 'cfg') type = 'REAL';
-      else if (['width', 'height', 'steps', 'seed', 'duration', 'isFavorite', 'isPromptFavorite'].includes(col)) type = 'INTEGER';
+      else if (['width', 'height', 'steps', 'seed', 'duration', 'generationStartedAt', 'isFavorite', 'isPromptFavorite'].includes(col)) type = 'INTEGER';
       db.exec(`ALTER TABLE messages ADD COLUMN ${col} ${type}`);
       console.log(`[Migration] Added column ${col} to messages table`);
     }
   });
+
+  // Direction was added after bidirectional comparison links. Recover older
+  // generated comparison rows from their internal queue parameter.
+  db.prepare(`
+    UPDATE messages
+    SET comparisonSourceId = comparisonMessageId
+    WHERE comparisonSourceId IS NULL
+      AND comparisonMessageId IS NOT NULL
+      AND generationParams LIKE '%"unloadBeforeRun":%'
+  `).run();
 
   try {
     db.prepare('SELECT userId FROM sessions LIMIT 1').get();

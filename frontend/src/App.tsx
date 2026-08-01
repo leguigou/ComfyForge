@@ -7,15 +7,20 @@ import type {
   Theme, 
   Language,
   User,
-  PromptTag
+  PromptTag,
+  LuckyReference
 } from './types';
+import type { AppView } from './types';
 import { API_BASE, getFullImageUrl } from './services/api';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsModal } from './components/settings/SettingsModal';
 import { DEFAULT_RANDOM_PROMPT_LISTS, migrateRandomPromptLists, RANDOM_PROMPT_LISTS_VERSION } from './utils/randomPrompts';
 import { DEFAULT_COMPANION_SETTINGS, normalizeCompanionSettings } from './utils/companions';
 import { ChatInterface } from './components/chat/ChatInterface';
-import { APP_CONFIG, DEFAULT_LLM_SYSTEM_MESSAGE } from './config';
+import { LuckyReferencesModal } from './components/chat/LuckyReferencesModal';
+import { StatisticsDashboard } from './components/statistics/StatisticsDashboard';
+import { ComparisonView } from './components/comparison/ComparisonView';
+import { APP_CONFIG, DEFAULT_LLM_SYSTEM_MESSAGE, DEFAULT_VISION_SYSTEM_MESSAGE, PREVIOUS_DEFAULT_VISION_SYSTEM_MESSAGE } from './config';
 import { useAuth } from './hooks/useAuth';
 import { useSessions } from './hooks/useSessions';
 import { useGeneration } from './hooks/useGeneration';
@@ -25,6 +30,35 @@ import { ComposeIcon, InfoIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon, XIco
 import toast, { Toaster } from 'react-hot-toast';
 import NoSleep from 'nosleep.js';
 import comfyForgeLogo from './assets/comfyforge-logo-v2.png';
+
+const createDefaultGenParameters = (): GenParameters => ({
+  width: 896,
+  height: 1152,
+  steps: 8,
+  cfg: 1.1,
+  comfyUrl: 'http://127.0.0.1:8188',
+  comfyModel: 'dirtyRealism_DMDSAT.safetensors',
+  comfyModelType: 'checkpoint',
+  llmUrl: '',
+  llmModel: 'llama3:latest',
+  llmSystemMessage: DEFAULT_LLM_SYSTEM_MESSAGE,
+  negativePrompt: "low quality, bad anatomy, malformed, extra limbs, extra fingers, fused fingers, bad hands, poorly drawn hands, missing fingers, fused face, poorly drawn face, asymmetrical, cartoon, anime, 3d, render, watermark, text, logo, swept hair, portrait",
+  llmEnabled: false,
+  visionProviderId: '',
+  visionModel: '',
+  visionSystemMessage: DEFAULT_VISION_SYSTEM_MESSAGE,
+  visionModelTtlMinutes: 30,
+  luckyTemperature: 0.95,
+  luckyFavoriteCount: 6,
+  workflowFile: 'workflow_lcm.json',
+  nodeMapping: { checkpoint: "1", positive: "3", negative: "4", ksampler: "10", latent: "6", save: "99" },
+  seedMode: 'random',
+  forcedSeed: '',
+  favoriteModels: [],
+  randomPromptLists: DEFAULT_RANDOM_PROMPT_LISTS,
+  randomPromptListsVersion: RANDOM_PROMPT_LISTS_VERSION,
+  companionSettings: DEFAULT_COMPANION_SETTINGS
+});
 
 function App() {
   const [lang, setLang] = useState<Language>(() => {
@@ -45,8 +79,8 @@ function App() {
     updateProfile
   } = useAuth();
 
-  const [view, setView] = useState<'chat' | 'gallery' | 'archives'>(() => {
-    return (localStorage.getItem('currentView') as 'chat' | 'gallery' | 'archives') || 'chat';
+  const [view, setView] = useState<AppView>(() => {
+    return (localStorage.getItem('currentView') as AppView) || 'chat';
   });
 
   const [keepAwake, setKeepAwakeState] = useState<boolean>(() => {
@@ -142,43 +176,29 @@ function App() {
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [comparisonMessageId, setComparisonMessageId] = useState<string | null>(null);
   const [queueRemaining, setQueueRemaining] = useState<number | null>(null);
   const [showQueueIndicator, setShowQueueIndicator] = useState(
     () => sessionStorage.getItem('comfyforge.queueIndicatorLatched') === 'true'
   );
   const [isCreatingLuckyPrompt, setIsCreatingLuckyPrompt] = useState(false);
+  const [isLoadingLuckyReferences, setIsLoadingLuckyReferences] = useState(false);
+  const [luckyRerollingId, setLuckyRerollingId] = useState<string | null>(null);
+  const [luckyReferencePreview, setLuckyReferencePreview] = useState<{
+    keywords: string;
+    references: LuckyReference[];
+    totalCandidates: number;
+    guidance: string;
+    activeTagSlug: string;
+  } | null>(null);
   const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs'>('images');
   
   const [input, setInput] = useState('');
   const [openOptionsRequest, setOpenOptionsRequest] = useState(0);
   
-  const [params, setParams] = useState<GenParameters>(() => {
-    return { 
-      width: 896, 
-      height: 1152, 
-      steps: 8, 
-      cfg: 1.1,
-      comfyUrl: 'http://127.0.0.1:8188',
-      comfyModel: 'dirtyRealism_DMDSAT.safetensors',
-      comfyModelType: 'checkpoint',
-      llmUrl: '',
-      llmModel: 'llama3:latest',
-      llmSystemMessage: DEFAULT_LLM_SYSTEM_MESSAGE,
-      negativePrompt: "low quality, bad anatomy, malformed, extra limbs, extra fingers, fused fingers, bad hands, poorly drawn hands, missing fingers, fused face, poorly drawn face, asymmetrical, cartoon, anime, 3d, render, watermark, text, logo, swept hair, portrait",
-      llmEnabled: false,
-      luckyTemperature: 0.95,
-      luckyFavoriteCount: 6,
-      workflowFile: 'workflow_lcm.json',
-      nodeMapping: { checkpoint: "1", positive: "3", negative: "4", ksampler: "10", latent: "6", save: "99" },
-      seedMode: 'random',
-      forcedSeed: '',
-      favoriteModels: [],
-      randomPromptLists: DEFAULT_RANDOM_PROMPT_LISTS,
-      randomPromptListsVersion: RANDOM_PROMPT_LISTS_VERSION,
-      companionSettings: DEFAULT_COMPANION_SETTINGS
-    };
-  });
+  const [params, setParams] = useState<GenParameters>(createDefaultGenParameters);
   const lastSavedParamsRef = useRef<string>('');
+  const settingsRequestIdRef = useRef(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -322,7 +342,7 @@ function App() {
     handleGenerationStatus,
     setQueueRemaining
   );
-  const { handleSend, retryMessage, retryAllIncomplete, interruptGeneration, isEnhancing } = useGeneration(currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions);
+  const { handleSend, retryMessage, retryAllIncomplete, updatePendingPrompt, interruptGeneration, isEnhancing } = useGeneration(currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions);
 
   const isGenerating = isEnhancing || messages.some(m => m.role === 'bot' && (m.status === 'pending' || m.status === 'processing'));
 
@@ -346,6 +366,10 @@ function App() {
   } | null>(null);
   const [showLightboxMenu, setShowLightboxMenu] = useState(false);
   const [showLightboxPrompt, setShowLightboxPrompt] = useState(false);
+  const [showLightboxModify, setShowLightboxModify] = useState(false);
+  const [modifyDirection, setModifyDirection] = useState('');
+  const [keepModifySeed, setKeepModifySeed] = useState(true);
+  const [isModifyingImage, setIsModifyingImage] = useState(false);
   const lightboxChatWasNavigatedRef = useRef(false);
 
   const closeLightbox = useCallback(() => {
@@ -410,8 +434,31 @@ function App() {
   // Pinch-to-zoom states
   const [zoomScale, setZoomScale] = useState(1);
   const [zoomOffset, setZoomOffset] = useState({ x: 0, y: 0 });
+  const lightboxImageRef = useRef<HTMLImageElement>(null);
   const touchStartDist = useRef<number | null>(null);
   const lastTouchPos = useRef<{ x: number, y: number } | null>(null);
+  const lastPinchMidpoint = useRef<{ x: number, y: number } | null>(null);
+  const lightboxTapGesture = useRef<{ x: number; y: number; startedAt: number; moved: boolean } | null>(null);
+  const suppressLightboxClickRef = useRef(false);
+
+  const clampLightboxOffset = useCallback((offset: { x: number; y: number }, scale: number) => {
+    if (scale <= 1) return { x: 0, y: 0 };
+    const image = lightboxImageRef.current;
+    const container = image?.parentElement;
+    if (!image || !container) return offset;
+    const maxX = Math.max(0, (image.offsetWidth * scale - container.clientWidth) / 2);
+    const maxY = Math.max(0, (image.offsetHeight * scale - container.clientHeight) / 2);
+    return {
+      x: Math.max(-maxX, Math.min(maxX, offset.x)),
+      y: Math.max(-maxY, Math.min(maxY, offset.y))
+    };
+  }, []);
+
+  useEffect(() => {
+    if (zoomScale > 1) return;
+    setZoomOffset(current => current.x === 0 && current.y === 0 ? current : { x: 0, y: 0 });
+    lastTouchPos.current = null;
+  }, [zoomScale]);
 
   // Clear HD state and zoom when lightbox closes
   useEffect(() => {
@@ -419,22 +466,39 @@ function App() {
       if (hdLoaded !== null) setHdLoaded(null);
       setZoomScale(1);
       setZoomOffset({ x: 0, y: 0 });
+      touchStartDist.current = null;
+      lastTouchPos.current = null;
+      lastPinchMidpoint.current = null;
+      lightboxTapGesture.current = null;
+      suppressLightboxClickRef.current = false;
     }
     setShowLightboxMenu(false);
     setShowLightboxPrompt(false);
+    setShowLightboxModify(false);
+    setModifyDirection('');
   }, [activeLightbox, hdLoaded]);
 
   const handleLightboxTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 2) {
+      lightboxTapGesture.current = null;
       // Start pinching
       const dist = Math.hypot(
-        e.touches[0].pageX - e.touches[1].clientX,
-        e.touches[0].pageY - e.touches[1].clientY
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
       );
       touchStartDist.current = dist;
+      lastPinchMidpoint.current = {
+        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        y: (e.touches[0].clientY + e.touches[1].clientY) / 2
+      };
+      lastTouchPos.current = null;
     } else if (e.touches.length === 1 && zoomScale > 1) {
       // Start panning (only if zoomed in)
-      lastTouchPos.current = { x: e.touches[0].pageX, y: e.touches[0].pageY };
+      lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      const target = e.target as HTMLElement;
+      lightboxTapGesture.current = target.closest('.lightbox-toolbar, .lightbox-top-actions, .lightbox-prompt-panel, .lightbox-menu')
+        ? null
+        : { x: e.touches[0].clientX, y: e.touches[0].clientY, startedAt: e.timeStamp, moved: false };
     } else {
       // Swipe logic fallback
       handleTouchStart(e);
@@ -443,30 +507,72 @@ function App() {
 
   const handleLightboxTouchMove = (e: React.TouchEvent) => {
     if (e.touches.length === 2 && touchStartDist.current !== null) {
+      e.preventDefault();
       // Pinching
       const dist = Math.hypot(
-        e.touches[0].pageX - e.touches[1].clientX,
-        e.touches[0].pageY - e.touches[1].clientY
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
       );
+      const midpoint = {
+        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        y: (e.touches[0].clientY + e.touches[1].clientY) / 2
+      };
       const scaleChange = dist / touchStartDist.current;
-      const newScale = Math.min(Math.max(1, zoomScale * scaleChange), 4);
+      const boundedScale = Math.min(Math.max(1, zoomScale * scaleChange), 4);
+      const newScale = boundedScale < 1.01 ? 1 : boundedScale;
       setZoomScale(newScale);
+      const previousMidpoint = lastPinchMidpoint.current;
+      if (newScale === 1) {
+        setZoomOffset({ x: 0, y: 0 });
+      } else if (previousMidpoint) {
+        setZoomOffset(previous => clampLightboxOffset({
+          x: previous.x + midpoint.x - previousMidpoint.x,
+          y: previous.y + midpoint.y - previousMidpoint.y
+        }, newScale));
+      }
       touchStartDist.current = dist;
+      lastPinchMidpoint.current = midpoint;
     } else if (e.touches.length === 1 && lastTouchPos.current && zoomScale > 1) {
+      e.preventDefault();
       // Panning
-      const deltaX = e.touches[0].pageX - lastTouchPos.current.x;
-      const deltaY = e.touches[0].pageY - lastTouchPos.current.y;
-      setZoomOffset(prev => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
-      lastTouchPos.current = { x: e.touches[0].pageX, y: e.touches[0].pageY };
+      const deltaX = e.touches[0].clientX - lastTouchPos.current.x;
+      const deltaY = e.touches[0].clientY - lastTouchPos.current.y;
+      if (lightboxTapGesture.current && Math.hypot(
+        e.touches[0].clientX - lightboxTapGesture.current.x,
+        e.touches[0].clientY - lightboxTapGesture.current.y
+      ) > 8) {
+        lightboxTapGesture.current.moved = true;
+      }
+      setZoomOffset(prev => clampLightboxOffset({ x: prev.x + deltaX, y: prev.y + deltaY }, zoomScale));
+      lastTouchPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     } else if (e.touches.length === 1 && zoomScale === 1) {
       // Swipe logic fallback
       handleTouchMove(e);
     }
   };
 
-  const handleLightboxTouchEnd = () => {
+  const handleLightboxTouchEnd = (e: React.TouchEvent) => {
+    const tap = lightboxTapGesture.current;
+    if (
+      e.touches.length === 0
+      && zoomScale > 1
+      && tap
+      && !tap.moved
+      && e.timeStamp - tap.startedAt < 350
+    ) {
+      setZoomScale(1);
+      setZoomOffset({ x: 0, y: 0 });
+      suppressLightboxClickRef.current = true;
+      window.setTimeout(() => {
+        suppressLightboxClickRef.current = false;
+      }, 500);
+    }
+    lightboxTapGesture.current = null;
     touchStartDist.current = null;
-    lastTouchPos.current = null;
+    lastPinchMidpoint.current = null;
+    lastTouchPos.current = e.touches.length === 1 && zoomScale > 1
+      ? { x: e.touches[0].clientX, y: e.touches[0].clientY }
+      : null;
     if (zoomScale === 1) {
       handleTouchEnd();
     }
@@ -543,6 +649,7 @@ function App() {
   }, [activeTab, fetchAdminUsers]);
 
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
+  const [galleryTotal, setGalleryTotal] = useState(0);
   const galleryItemsRef = useRef<GalleryItem[]>([]);
   const [hasMoreGallery, setHasMoreGallery] = useState(true);
   const hasMoreGalleryRef = useRef(true);
@@ -556,6 +663,7 @@ function App() {
   const [gallerySearch, setGallerySearch] = useState('');
   const [debouncedGallerySearch, setDebouncedGallerySearch] = useState('');
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
+  const [isSettingsResolved, setIsSettingsResolved] = useState(false);
   const [favoritedId, setFavoritedId] = useState<string | null>(null);
   const clickTimeoutRef = useRef<number | null>(null);
 
@@ -628,7 +736,23 @@ function App() {
     }
   }, [toggleFavorite]);
 
+  const handleLightboxBackdropClick = useCallback((e: React.MouseEvent) => {
+    if (suppressLightboxClickRef.current) {
+      suppressLightboxClickRef.current = false;
+      e.stopPropagation();
+      return;
+    }
+
+    closeLightbox();
+  }, [closeLightbox]);
+
   const handleLightboxImageClick = useCallback((e: React.MouseEvent) => {
+    if (suppressLightboxClickRef.current) {
+      suppressLightboxClickRef.current = false;
+      e.stopPropagation();
+      return;
+    }
+
     if (e.target === e.currentTarget) {
       closeLightbox();
       return;
@@ -794,10 +918,13 @@ function App() {
   }, []);
 
   const fetchSettings = useCallback(async () => {
+    const requestId = ++settingsRequestIdRef.current;
+    setIsSettingsResolved(false);
     try {
       const res = await fetch(`${API_BASE}/api/settings`, { credentials: 'include' });
       if (!res.ok) throw new Error(`Failed to fetch settings: ${res.status}`);
       const data = await res.json();
+      if (settingsRequestIdRef.current !== requestId) return;
       if (data && data.width) {
         setParams(prev => {
           const storedParams = {
@@ -811,7 +938,15 @@ function App() {
               : prev.luckyFavoriteCount,
             favoriteModels: data.favoriteModels || prev.favoriteModels,
             randomPromptLists: data.randomPromptLists || prev.randomPromptLists,
-            companionSettings: normalizeCompanionSettings(data.companionSettings || prev.companionSettings)
+            companionSettings: normalizeCompanionSettings(data.companionSettings || prev.companionSettings),
+            visionSystemMessage: typeof data.visionSystemMessage !== 'string'
+              || !data.visionSystemMessage.trim()
+              || data.visionSystemMessage === PREVIOUS_DEFAULT_VISION_SYSTEM_MESSAGE
+              ? DEFAULT_VISION_SYSTEM_MESSAGE
+              : data.visionSystemMessage,
+            visionModelTtlMinutes: [15, 30, 60, 120].includes(data.visionModelTtlMinutes)
+              ? data.visionModelTtlMinutes
+              : 30
           };
           lastSavedParamsRef.current = JSON.stringify(storedParams);
           return {
@@ -824,8 +959,25 @@ function App() {
       // Never enable autosave before the server settings were read successfully.
       // Otherwise a transient loading error can overwrite custom companions with defaults.
       setIsSettingsLoaded(true);
-    } catch (err) { console.error('Error fetching settings:', err); }
+    } catch (err) {
+      if (settingsRequestIdRef.current === requestId) {
+        console.error('Error fetching settings:', err);
+      }
+    } finally {
+      if (settingsRequestIdRef.current === requestId) {
+        setIsSettingsResolved(true);
+      }
+    }
   }, []);
+
+  useEffect(() => {
+    if (isAuthenticated === true) return;
+    settingsRequestIdRef.current += 1;
+    lastSavedParamsRef.current = '';
+    setIsSettingsLoaded(false);
+    setIsSettingsResolved(false);
+    setParams(createDefaultGenParameters());
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -1037,6 +1189,7 @@ function App() {
         offset: String(currentOffset),
         includeArchived: String(showArchivedInGallery),
         favoritesOnly: String(favoritesOnly),
+        includeTotal: 'true',
       });
       selectedPromptTags.forEach(tag => query.append('tag', tag));
       if (debouncedGallerySearch) query.set('search', debouncedGallerySearch);
@@ -1044,14 +1197,16 @@ function App() {
       if (!res.ok) {
         throw new Error(`Failed to fetch gallery: ${res.status} ${res.statusText}`);
       }
-      const data = await res.json();
+      const responseData = await res.json();
+      const data = Array.isArray(responseData) ? responseData : responseData.items;
 
       if (!Array.isArray(data)) {
-        console.error('Gallery API did not return an array:', data);
+        console.error('Gallery API did not return a valid item list:', responseData);
         return [];
       }
 
       if (requestId !== galleryRequestRef.current) return [];
+      if (typeof responseData?.total === 'number') setGalleryTotal(responseData.total);
 
       if (isInitial) {
         loadedItems = data;
@@ -1118,6 +1273,28 @@ function App() {
     setActiveInfoId(null);
     setView('gallery');
   }, [setActiveInfoId]);
+
+  const openComparison = useCallback((messageId: string) => {
+    setComparisonMessageId(messageId);
+    setActiveLightbox(null);
+    setShowLightboxMenu(false);
+    setView('comparison');
+  }, []);
+
+  const openComparisonHome = useCallback(() => {
+    setComparisonMessageId(null);
+    setView('comparison');
+  }, []);
+
+  const activateComparedModel = useCallback((favorite: GenParameters['favoriteModels'][number]) => {
+    setParams(current => ({
+      ...current,
+      comfyModel: favorite.model,
+      comfyModelType: favorite.modelType || 'checkpoint',
+      workflowFile: favorite.workflowFile || current.workflowFile,
+      ...(favorite.generationDefaults || {})
+    }));
+  }, []);
 
   useEffect(() => {
     if (view === 'gallery') {
@@ -1326,7 +1503,12 @@ function App() {
     link.click();
   }, []);
 
-  const onHandleSend = useCallback(async (override?: string, regen?: boolean, skipEnhancement?: boolean) => {
+  const onHandleSend = useCallback(async (
+    override?: string,
+    regen?: boolean,
+    skipEnhancement?: boolean,
+    forceEnhancement?: boolean
+  ) => {
     const text = override !== undefined ? override : input;
     if (!text.trim()) return;
 
@@ -1335,15 +1517,78 @@ function App() {
       targetSessionId = await createNewSession();
     }
 
-    handleSend(text, regen, targetSessionId, skipEnhancement);
+    handleSend(text, regen, targetSessionId, skipEnhancement, false, forceEnhancement);
     if (override === undefined) setInput('');
   }, [handleSend, input, currentSessionId, createNewSession]);
 
-  const createLuckyGeneration = useCallback(async () => {
-    if (isCreatingLuckyPrompt) return;
-    setIsCreatingLuckyPrompt(true);
-    setView('chat');
+  const normalizeLuckyReferences = useCallback((references: LuckyReference[]) => references.map((reference) => ({
+    ...reference,
+    matchingTags: (reference.tags || []).filter((tag) => (
+      tag.category !== 'subject'
+      && tag.category !== 'count'
+      && references.some((other) => other.messageId !== reference.messageId && (other.tags || []).some((otherTag) => otherTag.slug === tag.slug))
+    )),
+  })), []);
 
+  const readLuckyError = useCallback((data: { code?: string; error?: string }) => {
+    if (data.code === 'NO_LIKED_PROMPTS') return t.luckyNeedsFavorites;
+    if (data.code === 'NO_MATCHING_PROMPTS') return t.luckyNoMatches;
+    if (data.code === 'NO_COHERENT_REFERENCES') return t.luckyNoCoherentReferences;
+    if (data.code === 'NO_LLM_PROVIDER') return t.luckyNeedsProvider;
+    return data.error || t.luckyPromptFailed;
+  }, [t.luckyNeedsFavorites, t.luckyNeedsProvider, t.luckyNoCoherentReferences, t.luckyNoMatches, t.luckyPromptFailed]);
+
+  const requestLuckyReferences = useCallback(async (
+    keywords: string,
+    options: { count?: number; excludeIds?: string[]; anchorIds?: string[]; requiredTag?: string } = {}
+  ) => {
+    const response = await fetch(`${API_BASE}/api/llm/lucky-references`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keywords,
+        count: options.count ?? params.luckyFavoriteCount,
+        excludeIds: options.excludeIds || [],
+        anchorIds: options.anchorIds || [],
+        requiredTag: options.requiredTag || '',
+      }),
+      credentials: 'include',
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(readLuckyError(data));
+    return {
+      keywords: typeof data.keywords === 'string' ? data.keywords : keywords,
+      references: normalizeLuckyReferences(Array.isArray(data.references) ? data.references : []),
+      totalCandidates: Number(data.totalCandidates) || 0,
+    };
+  }, [normalizeLuckyReferences, params.luckyFavoriteCount, readLuckyError]);
+
+  const createLuckyGeneration = useCallback(async (keywords = '') => {
+    if (isCreatingLuckyPrompt || isLoadingLuckyReferences) return;
+    if (!params.llmProviderId) {
+      toast.error(t.luckyNeedsProvider);
+      return;
+    }
+    setView('chat');
+    setIsLoadingLuckyReferences(true);
+    try {
+      setLuckyReferencePreview({
+        ...await requestLuckyReferences(keywords),
+        guidance: '',
+        activeTagSlug: '',
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
+    } finally {
+      setIsLoadingLuckyReferences(false);
+    }
+  }, [isCreatingLuckyPrompt, isLoadingLuckyReferences, params.llmProviderId, requestLuckyReferences, t.luckyNeedsProvider, t.luckyPromptFailed]);
+
+  const confirmLuckyGeneration = useCallback(async () => {
+    if (!luckyReferencePreview || isCreatingLuckyPrompt) return;
+    setIsCreatingLuckyPrompt(true);
+    const preview = luckyReferencePreview;
+    setLuckyReferencePreview(null);
     try {
       let targetSessionId: string | undefined = currentSessionId ?? undefined;
       if (!targetSessionId) targetSessionId = await createNewSession();
@@ -1355,47 +1600,142 @@ function App() {
           providerId: params.llmProviderId,
           temperature: params.luckyTemperature,
           favoriteCount: params.luckyFavoriteCount,
+          keywords: preview.keywords,
+          referenceIds: preview.references.map((reference) => reference.messageId),
+          guidance: preview.guidance,
         }),
         credentials: 'include',
       });
       const data = await response.json();
-      if (!response.ok) {
-        if (data.code === 'NO_LIKED_PROMPTS') throw new Error(t.luckyNeedsFavorites);
-        if (data.code === 'NO_LLM_PROVIDER') throw new Error(t.luckyNeedsProvider);
-        throw new Error(data.error || t.luckyPromptFailed);
-      }
+      if (!response.ok) throw new Error(readLuckyError(data));
       if (!data.prompt?.trim()) throw new Error(t.luckyPromptFailed);
 
+      // The lucky prompt is complete. Remove its dedicated loading card before
+      // handleSend adds the pending generation card, so both states never overlap.
+      setIsCreatingLuckyPrompt(false);
       await handleSend(data.prompt.trim(), false, targetSessionId, true);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
     } finally {
       setIsCreatingLuckyPrompt(false);
     }
-  }, [createNewSession, currentSessionId, handleSend, isCreatingLuckyPrompt, params.llmProviderId, params.luckyFavoriteCount, params.luckyTemperature, t.luckyNeedsFavorites, t.luckyNeedsProvider, t.luckyPromptFailed]);
+  }, [createNewSession, currentSessionId, handleSend, isCreatingLuckyPrompt, luckyReferencePreview, params.llmProviderId, params.luckyFavoriteCount, params.luckyTemperature, readLuckyError, t.luckyPromptFailed]);
+
+  const rerollAllLuckyReferences = useCallback(async () => {
+    if (!luckyReferencePreview || luckyRerollingId !== null) return;
+    setLuckyRerollingId('all');
+    try {
+      setLuckyReferencePreview({
+        ...await requestLuckyReferences(luckyReferencePreview.keywords, {
+          excludeIds: luckyReferencePreview.references.map((reference) => reference.messageId),
+          requiredTag: luckyReferencePreview.activeTagSlug || undefined,
+        }),
+        guidance: luckyReferencePreview.guidance,
+        activeTagSlug: luckyReferencePreview.activeTagSlug,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
+    } finally {
+      setLuckyRerollingId(null);
+    }
+  }, [luckyReferencePreview, luckyRerollingId, requestLuckyReferences, t.luckyPromptFailed]);
+
+  const rerollOneLuckyReference = useCallback(async (messageId: string) => {
+    if (!luckyReferencePreview || luckyRerollingId !== null) return;
+    setLuckyRerollingId(messageId);
+    try {
+      const replacement = await requestLuckyReferences(luckyReferencePreview.keywords, {
+        count: 1,
+        excludeIds: luckyReferencePreview.references.map((reference) => reference.messageId),
+        anchorIds: luckyReferencePreview.references.filter((reference) => reference.messageId !== messageId).map((reference) => reference.messageId),
+        requiredTag: luckyReferencePreview.activeTagSlug || undefined,
+      });
+      if (!replacement.references[0]) throw new Error(t.luckyNoCoherentReferences);
+      const references = luckyReferencePreview.references.map((reference) => (
+        reference.messageId === messageId ? replacement.references[0] : reference
+      ));
+      setLuckyReferencePreview({
+        ...luckyReferencePreview,
+        references: normalizeLuckyReferences(references),
+        totalCandidates: replacement.totalCandidates,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
+    } finally {
+      setLuckyRerollingId(null);
+    }
+  }, [luckyReferencePreview, luckyRerollingId, normalizeLuckyReferences, requestLuckyReferences, t.luckyNoCoherentReferences, t.luckyPromptFailed]);
+
+  const filterLuckyReferencesByTag = useCallback(async (tagSlug: string) => {
+    if (!luckyReferencePreview || luckyRerollingId !== null) return;
+    const preserved = luckyReferencePreview.references.filter((reference) => (
+      reference.tags.some((tag) => tag.slug === tagSlug)
+    ));
+    const replacementCount = luckyReferencePreview.references.length - preserved.length;
+    if (replacementCount === 0) {
+      setLuckyReferencePreview({ ...luckyReferencePreview, activeTagSlug: tagSlug });
+      return;
+    }
+
+    setLuckyRerollingId(`tag:${tagSlug}`);
+    try {
+      const replacements = await requestLuckyReferences(luckyReferencePreview.keywords, {
+        count: replacementCount,
+        excludeIds: luckyReferencePreview.references.map((reference) => reference.messageId),
+        anchorIds: preserved.map((reference) => reference.messageId),
+        requiredTag: tagSlug,
+      });
+      if (replacements.references.length < replacementCount) {
+        throw new Error(t.luckyTagNotEnoughReferences);
+      }
+      let replacementIndex = 0;
+      const references = luckyReferencePreview.references.map((reference) => {
+        if (reference.tags.some((tag) => tag.slug === tagSlug)) return reference;
+        return replacements.references[replacementIndex++];
+      });
+      setLuckyReferencePreview({
+        ...luckyReferencePreview,
+        references: normalizeLuckyReferences(references),
+        totalCandidates: replacements.totalCandidates,
+        activeTagSlug: tagSlug,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
+    } finally {
+      setLuckyRerollingId(null);
+    }
+  }, [luckyReferencePreview, luckyRerollingId, normalizeLuckyReferences, requestLuckyReferences, t.luckyPromptFailed, t.luckyTagNotEnoughReferences]);
 
   const onInputChange = useCallback((val: string) => setInput(val), []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (showLightboxPrompt) {
+        if (showLightboxModify) {
+          if (!isModifyingImage) setShowLightboxModify(false);
+        } else if (showLightboxPrompt) {
           setShowLightboxPrompt(false);
         } else {
           closeLightbox();
         }
       }
-      if (activeLightbox && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      if (activeLightbox && !showLightboxModify && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         e.preventDefault();
         void navigateLightbox(e.key === 'ArrowRight' ? 1 : -1);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeLightbox, closeLightbox, navigateLightbox, showLightboxPrompt]);
+  }, [activeLightbox, closeLightbox, isModifyingImage, navigateLightbox, showLightboxModify, showLightboxPrompt]);
 
   const [showSessionMenu, setShowSessionMenu] = useState(false);
   const sessionMenuRef = useRef<HTMLDivElement>(null);
+  const startNewChat = useCallback(() => {
+    setView('chat');
+    setActiveInfoId(null);
+    setShowSessionMenu(false);
+    return createNewSession();
+  }, [createNewSession, setActiveInfoId]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent | TouchEvent) => {
@@ -1561,6 +1901,13 @@ function App() {
     </div>
   );
 
+  if (!isSettingsResolved) return (
+    <div className="app-loader">
+      <div className="bounced-loader"><div className="bounce1"></div><div className="bounce2"></div><div className="bounce3"></div></div>
+      <div>Chargement...</div>
+    </div>
+  );
+
   const currentLightboxItem = activeLightbox ? (
     activeLightbox.source === 'chat' 
       ? messages.find(m => m.id === activeLightbox.messageId)
@@ -1571,6 +1918,7 @@ function App() {
   const currentLightboxPrompt = currentLightboxItem
     ? currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || ''
     : '';
+  const currentLightboxTags = currentLightboxItem?.tags || [];
 
   const regenerateLightboxImage = async () => {
     if (!activeLightbox || !currentLightboxItem) return;
@@ -1589,17 +1937,58 @@ function App() {
     }
   };
 
+  const modifyLightboxImage = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!activeLightbox || !currentLightboxItem || !modifyDirection.trim() || isModifyingImage) return;
+    const prompt = currentLightboxPrompt.trim();
+    if (!prompt) return;
+
+    const { messageId, sessionId } = activeLightbox;
+    setIsModifyingImage(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/llm/rewrite-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          prompt,
+          direction: modifyDirection.trim(),
+          providerId: params.llmProviderId,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || typeof data.rewrittenPrompt !== 'string' || !data.rewrittenPrompt.trim()) {
+        throw new Error(data.error || t.modificationFailed);
+      }
+
+      const seed = currentLightboxItem.seed;
+      const seedOverrides: Partial<GenParameters> = keepModifySeed && seed !== undefined && seed !== null
+        ? { seedMode: 'fixed', forcedSeed: String(seed) }
+        : { seedMode: 'random', forcedSeed: '' };
+      recordRegeneration(messageId);
+      await handleSend(data.rewrittenPrompt.trim(), true, sessionId, true, true, false, seedOverrides);
+      setShowLightboxModify(false);
+      setModifyDirection('');
+      toast.success(t.modificationStarted);
+    } catch (error) {
+      console.error('Image modification failed:', error);
+      toast.error(error instanceof Error ? error.message : t.modificationFailed);
+    } finally {
+      setIsModifyingImage(false);
+    }
+  };
+
   return (
     <ErrorBoundary name="ComfyForge App">
       <div className={`app-layout ${theme} ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
         <Toaster position="top-right" containerClassName="app-toaster" />
         {activeLightbox && (
-        <div className="lightbox" onClick={closeLightbox} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd}>
+        <div className={`lightbox ${zoomScale > 1 ? 'zoomed' : ''}`} onClick={handleLightboxBackdropClick} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd} onTouchCancel={handleLightboxTouchEnd}>
           <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick}>
             {activeLightbox.thumbnailUrl && !isAlreadyLoaded && (
               <img src={getFullImageUrl(activeLightbox.thumbnailUrl)} alt="Loading..." className="lightbox-thumb" style={{ filter: 'blur(10px)', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: hdLoaded === activeLightbox.messageId ? 0 : 1, transition: 'opacity 0.3s ease-out' }} />
             )}
-            <img src={getFullImageUrl(activeLightbox.url)} alt="Fullscreen" className="lightbox-hd" style={{ position: 'relative', zIndex: 2, opacity: (hdLoaded === activeLightbox.messageId || isAlreadyLoaded) ? 1 : 0, transition: isAlreadyLoaded ? 'none' : 'opacity 0.4s ease-in', transform: `translate(${zoomOffset.x}px, ${zoomOffset.y}px) scale(${zoomScale})` }} onLoad={() => { setHdLoaded(activeLightbox.messageId); setLoadedHdImages(prev => new Set(prev).add(activeLightbox.messageId)); }} />
+            <img ref={lightboxImageRef} src={getFullImageUrl(activeLightbox.url)} alt="Fullscreen" className="lightbox-hd" style={{ position: 'relative', zIndex: 2, opacity: (hdLoaded === activeLightbox.messageId || isAlreadyLoaded) ? 1 : 0, transition: isAlreadyLoaded ? 'none' : 'opacity 0.4s ease-in', transform: `translate(${zoomOffset.x}px, ${zoomOffset.y}px) scale(${zoomScale})` }} onLoad={() => { setHdLoaded(activeLightbox.messageId); setLoadedHdImages(prev => new Set(prev).add(activeLightbox.messageId)); }} />
             {favoritedId === activeLightbox.messageId && <div className="image-overlay-heart" style={{ fontSize: '8rem' }}>❤️</div>}
           </div>
           {showLightboxPrompt && (
@@ -1623,7 +2012,76 @@ function App() {
                 </button>
               </div>
               <p className="lightbox-prompt-text">{currentLightboxPrompt}</p>
+              {currentLightboxTags.length > 0 && (
+                <div className="lightbox-prompt-tags">
+                  <span className="lightbox-prompt-tags-title">{t.promptTags}</span>
+                  <div className="lightbox-prompt-tags-list" role="list">
+                    {currentLightboxTags.map((tag) => (
+                      <span key={tag.slug} role="listitem">
+                        {lang === 'fr' ? tag.labelFr : tag.labelEn}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </section>
+          )}
+          {showLightboxModify && (
+            <form
+              className="lightbox-modify-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="lightbox-modify-title"
+              onClick={(event) => event.stopPropagation()}
+              onSubmit={modifyLightboxImage}
+            >
+              <div className="lightbox-prompt-header">
+                <h2 id="lightbox-modify-title">{t.modifyImageTitle}</h2>
+                <button
+                  type="button"
+                  className="lightbox-prompt-close"
+                  onClick={() => setShowLightboxModify(false)}
+                  disabled={isModifyingImage}
+                  title={t.close}
+                  aria-label={t.close}
+                >
+                  <XIcon size={18} />
+                </button>
+              </div>
+              <p className="lightbox-modify-help">{t.modifyImageHelp}</p>
+              <input
+                type="text"
+                className="lightbox-modify-input"
+                value={modifyDirection}
+                onChange={(event) => setModifyDirection(event.target.value)}
+                placeholder={t.modifyImagePlaceholder}
+                maxLength={1000}
+                autoFocus
+                disabled={isModifyingImage}
+              />
+              <div className={`lightbox-seed-toggle ${currentLightboxItem?.seed === undefined || currentLightboxItem?.seed === null ? 'disabled' : ''}`}>
+                <span>
+                  <strong>{t.keepSeed}</strong>
+                  <small>{t.keepSeedHelp}</small>
+                </span>
+                <button
+                  type="button"
+                  className={`modify-toggle ${keepModifySeed ? 'on' : ''}`}
+                  role="switch"
+                  aria-checked={keepModifySeed}
+                  onClick={() => setKeepModifySeed(value => !value)}
+                  disabled={isModifyingImage || currentLightboxItem?.seed === undefined || currentLightboxItem?.seed === null}
+                >
+                  <span />
+                </button>
+              </div>
+              <div className="lightbox-modify-actions">
+                <button type="button" className="modify-cancel" onClick={() => setShowLightboxModify(false)} disabled={isModifyingImage}>{t.cancel}</button>
+                <button type="submit" className="modify-submit" disabled={!modifyDirection.trim() || isModifyingImage}>
+                  {isModifyingImage ? t.rewritingPrompt : t.generateVariation}
+                </button>
+              </div>
+            </form>
           )}
           <div className="lightbox-actions" onClick={(e) => e.stopPropagation()}>
             <div className="lightbox-toolbar">
@@ -1685,6 +2143,22 @@ function App() {
                       type="button"
                       className="lightbox-menu-item"
                       role="menuitem"
+                      disabled={!currentLightboxPrompt.trim()}
+                      onClick={() => {
+                        setModifyDirection('');
+                        setKeepModifySeed(currentLightboxItem?.seed !== undefined && currentLightboxItem?.seed !== null);
+                        setShowLightboxMenu(false);
+                        setShowLightboxPrompt(false);
+                        setShowLightboxModify(true);
+                      }}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true"><ComposeIcon size={18} /></span>
+                      <span>{t.modifyImage}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="lightbox-menu-item"
+                      role="menuitem"
                       onClick={() => {
                         setShowLightboxMenu(false);
                         void regenerateLightboxImage();
@@ -1716,6 +2190,24 @@ function App() {
                     >
                       <span className="lightbox-menu-icon" aria-hidden="true">🎲</span>
                       <span>{t.reuseSeed}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="lightbox-menu-item"
+                      role="menuitem"
+                      onClick={() => openComparison(activeLightbox.messageId)}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="4" width="7" height="16" rx="2" />
+                          <rect x="14" y="4" width="7" height="16" rx="2" />
+                          <path d="M12 7v10" />
+                          <path d="m10.5 9 1.5-2 1.5 2M10.5 15l1.5 2 1.5-2" />
+                        </svg>
+                      </span>
+                      <span>{currentLightboxItem?.comparisonMessageId
+                        ? (lang === 'fr' ? 'Voir la comparaison' : 'View comparison')
+                        : (lang === 'fr' ? 'Comparer' : 'Compare')}</span>
                     </button>
                   </div>
                 )}
@@ -1815,7 +2307,7 @@ function App() {
 
       <Sidebar
         sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} backendError={backendError} t={t}
-        createNewSession={createNewSession} view={view} setView={setView} fetchGallery={fetchGallery}
+        createNewSession={startNewChat} view={view} setView={setView} openComparisonHome={openComparisonHome} fetchGallery={fetchGallery}
         sessions={sessions} onSessionViewed={(id) => { void markSessionAsViewed(id); }}
         currentSessionId={currentSessionId} setCurrentSessionId={setCurrentSessionId}
         setMessages={setMessages}
@@ -1833,13 +2325,13 @@ function App() {
             <button className="header-btn" onClick={() => setSidebarOpen(!sidebarOpen)}>
               <div className={`hamburger-icon ${sidebarOpen ? 'open' : ''}`}><span></span><span></span></div>
             </button>
-            <div className={`header-ai-toggle ${params.llmEnabled ? 'active' : ''}`} onClick={() => setParams({ ...params, llmEnabled: !params.llmEnabled })} title={t.llmEnabled}>
+            {view !== 'statistics' && view !== 'comparison' && <div className={`header-ai-toggle ${params.llmEnabled ? 'active' : ''}`} onClick={() => setParams({ ...params, llmEnabled: !params.llmEnabled })} title={t.llmEnabled}>
               <span className="ai-text">AI</span>
               <div className={`mini-toggle ${params.llmEnabled ? 'on' : ''}`}><div className="mini-toggle-thumb"></div></div>
-            </div>
+            </div>}
           </div>
 
-          <div className="header-right">
+          {view !== 'statistics' && view !== 'comparison' && <div className="header-right">
             {showQueueIndicator && (queueRemaining ?? 0) >= 2 && (
               <button
                 type="button"
@@ -1856,7 +2348,7 @@ function App() {
               </button>
             )}
             <div className="header-actions-pill">
-              <button className="action-pill-btn" onClick={() => createNewSession()} title="Nouveau message">
+              <button className="action-pill-btn" onClick={() => { void startNewChat(); }} title="Nouveau message">
                 <ComposeIcon size={18} />
               </button>
               <div className="session-menu-container" ref={sessionMenuRef}>
@@ -1881,18 +2373,29 @@ function App() {
                 )}
               </div>
             </div>
-          </div>
+          </div>}
         </header>
 
-        <ChatInterface
+        {view === 'statistics' ? <StatisticsDashboard lang={lang} /> : view === 'comparison' ? (
+          <ComparisonView
+            lang={lang}
+            favoriteModels={params.favoriteModels || []}
+            currentModel={params.comfyModel}
+            currentModelType={params.comfyModelType}
+            initialMessageId={comparisonMessageId}
+            queueRemaining={queueRemaining}
+            companionSettings={params.companionSettings}
+            onModelActivated={activateComparedModel}
+          />
+        ) : <ChatInterface
           view={view} messages={messages} lang={lang} t={t} isGenerating={isGenerating} isEnhancing={isEnhancing}
           currentSessionId={currentSessionId} input={input} setInput={onInputChange} handleSend={onHandleSend}
-          createLuckyGeneration={createLuckyGeneration} isCreatingLuckyPrompt={isCreatingLuckyPrompt}
+          createLuckyGeneration={createLuckyGeneration} isCreatingLuckyPrompt={isCreatingLuckyPrompt} isLoadingLuckyReferences={isLoadingLuckyReferences}
           regenerationCounts={regenerationCounts} recordRegeneration={recordRegeneration}
-          retryMessage={retryMessage} retryAllIncomplete={retryAllIncomplete}
-          interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
+          retryMessage={retryMessage} retryAllIncomplete={retryAllIncomplete} updatePendingPrompt={updatePendingPrompt}
+          interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} openComparison={openComparison} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
           setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} favoritedId={favoritedId}
-          galleryItems={galleryItems} isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
+          galleryItems={galleryItems} galleryTotal={galleryTotal} isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
           availablePromptTags={availablePromptTags} selectedPromptTags={selectedPromptTags} setSelectedPromptTags={setSelectedPromptTags}
           gallerySearch={gallerySearch} setGallerySearch={setGallerySearch} openPromptTag={openPromptTag}
           showArchivedInGallery={showArchivedInGallery} setShowArchivedInGallery={setShowArchivedInGallery}
@@ -1900,8 +2403,27 @@ function App() {
           messagesEndRef={messagesEndRef} params={params} setParams={setParams} smoothScrollTo={smoothScrollTo} handleScroll={handleScroll} downloadImage={downloadImage}
           showScrollBottom={showScrollBottom} onScrollToBottom={onScrollToBottom}
           openOptionsRequest={openOptionsRequest}
-        />
+        />}
       </main>
+      {luckyReferencePreview && (
+        <LuckyReferencesModal
+          keywords={luckyReferencePreview.keywords}
+          references={luckyReferencePreview.references}
+          totalCandidates={luckyReferencePreview.totalCandidates}
+          lang={lang}
+          t={t}
+          busy={isCreatingLuckyPrompt || luckyRerollingId !== null}
+          rerollingId={luckyRerollingId}
+          guidance={luckyReferencePreview.guidance}
+          activeTagSlug={luckyReferencePreview.activeTagSlug}
+          onGuidanceChange={(guidance) => setLuckyReferencePreview((current) => current ? { ...current, guidance } : current)}
+          onTagSelect={(tagSlug) => { void filterLuckyReferencesByTag(tagSlug); }}
+          onClose={() => setLuckyReferencePreview(null)}
+          onRerollAll={() => { void rerollAllLuckyReferences(); }}
+          onRerollOne={(messageId) => { void rerollOneLuckyReference(messageId); }}
+          onCreate={() => { void confirmLuckyGeneration(); }}
+        />
+      )}
       </div>
     </ErrorBoundary>
   );

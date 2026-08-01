@@ -1,5 +1,20 @@
-import { describe, it, expect } from 'vitest';
-import { parseComfyError } from './comfy';
+import axios from 'axios';
+import { describe, it, expect, vi } from 'vitest';
+import { parseComfyError, releaseComfyMemory } from './comfy';
+
+describe('releaseComfyMemory', () => {
+  it('requests model unloading and cache release from ComfyUI', async () => {
+    const postSpy = vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: {} });
+
+    await releaseComfyMemory('http://127.0.0.1:8188');
+
+    expect(postSpy).toHaveBeenCalledWith('http://127.0.0.1:8188/free', {
+      unload_models: true,
+      free_memory: true,
+    }, { timeout: 30000 });
+    postSpy.mockRestore();
+  });
+});
 
 describe('parseComfyError', () => {
   it('returns a user-friendly message for ECONNREFUSED', () => {

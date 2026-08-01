@@ -78,7 +78,14 @@ export const useWebSocket = (
                   ...m, 
                   id: data.messageId, // Ensure we sync with real backend ID
                   status: data.status, 
-                  text: data.status === 'failed' && data.error ? data.error : m.text,
+                  text: Object.prototype.hasOwnProperty.call(data, 'text')
+                    ? data.text
+                    : (data.status === 'failed' && data.error ? data.error : m.text),
+                  prompt: Object.prototype.hasOwnProperty.call(data, 'prompt') ? data.prompt : m.prompt,
+                  generationPrompt: Object.prototype.hasOwnProperty.call(data, 'generationPrompt')
+                    ? data.generationPrompt
+                    : m.generationPrompt,
+                  tags: Array.isArray(data.tags) ? data.tags : m.tags,
                   imageUrl: data.imageUrl ? `${API_BASE}${data.imageUrl}` : m.imageUrl,
                   thumbnailUrl: data.thumbnailUrl ? `${API_BASE}${data.thumbnailUrl}` : m.thumbnailUrl,
                   model: data.model || m.model,
@@ -90,9 +97,16 @@ export const useWebSocket = (
                   workflow: data.workflow || m.workflow,
                   duration: (data.duration !== undefined && data.duration !== null) ? data.duration : m.duration,
                   generationStartedAt: data.status === 'processing'
-                    ? (m.status === 'processing' ? (m.generationStartedAt || Date.now()) : Date.now())
+                    ? (
+                        typeof data.generationStartedAt === 'number'
+                          ? data.generationStartedAt
+                          : (m.status === 'processing' ? (m.generationStartedAt || Date.now()) : Date.now())
+                      )
                     : (data.status === 'pending' ? undefined : m.generationStartedAt)
                 };
+              }
+              if (data.linkedUserMessageId && m.id === data.linkedUserMessageId) {
+                return { ...m, text: data.linkedUserText };
               }
               return m;
             }));

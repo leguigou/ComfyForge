@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
 import db from './database';
 import { GenerationParams, WorkflowNodeMapping } from '../types';
 import { validateServiceUrl } from '../security/service-url';
@@ -35,6 +36,13 @@ export const getTargetComfyUrl = (requestedUrl?: string) => {
     ? configured.url
     : requestedUrl || configured.url;
   return validateServiceUrl(target, 'ComfyUI');
+};
+
+export const releaseComfyMemory = async (targetUrl: string) => {
+  await axios.post(`${targetUrl}/free`, {
+    unload_models: true,
+    free_memory: true,
+  }, { timeout: 30000 });
 };
 
 export const getWorkflow = (prompt: string, params?: Partial<GenerationParams>) => {

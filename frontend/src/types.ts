@@ -24,6 +24,7 @@ export interface Message {
   isPromptFavorite?: number;
   tags?: PromptTag[];
   randomSelections?: RandomPromptSelection[];
+  comparisonMessageId?: string;
 }
 
 export interface GalleryItem {
@@ -49,6 +50,7 @@ export interface GalleryItem {
   isPromptFavorite?: number;
   tags?: PromptTag[];
   randomSelections?: RandomPromptSelection[];
+  comparisonMessageId?: string;
 }
 
 export interface PromptTag {
@@ -129,6 +131,10 @@ export interface GenParameters {
   negativePrompt: string;
   llmEnabled: boolean;
   llmProviderId?: string;
+  visionProviderId?: string;
+  visionModel?: string;
+  visionSystemMessage: string;
+  visionModelTtlMinutes: number;
   luckyTemperature: number;
   luckyFavoriteCount: number;
   workflowFile: string;
@@ -149,6 +155,17 @@ export interface LLMProvider {
   model: string;
   isActive: boolean;
   hasApiKey: boolean;
+  apiKeyPreview?: string | null;
+}
+
+export interface LuckyReference {
+  messageId: string;
+  prompt: string;
+  imageUrl: string;
+  thumbnailUrl?: string | null;
+  isFavorite?: number;
+  tags: PromptTag[];
+  matchingTags: PromptTag[];
 }
 
 export interface Session {
@@ -161,6 +178,7 @@ export interface Session {
 
 export type Theme = 'light' | 'dark';
 export type Language = 'fr' | 'en';
+export type AppView = 'chat' | 'gallery' | 'archives' | 'statistics' | 'comparison';
 
 export interface User {
   id: string;

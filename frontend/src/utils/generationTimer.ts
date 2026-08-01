@@ -10,6 +10,35 @@ export const getGenerationElapsedSeconds = (
   return Math.max(1, serverDuration ?? 0, liveDuration);
 };
 
+export const getPreciseGenerationElapsedSeconds = (
+  serverDuration: number | undefined,
+  generationStartedAt: number | undefined,
+  now: number
+) => {
+  const liveDuration = generationStartedAt === undefined
+    ? 0
+    : Math.max(0, (now - generationStartedAt) / 1000);
+
+  return Math.max(1, serverDuration ?? 0, liveDuration);
+};
+
+export const getTrackedGenerationElapsedSeconds = (
+  serverDuration: number | undefined,
+  generationStartedAt: number | undefined,
+  trackingStartedAt: number,
+  elapsedAtTrackingStart: number,
+  now: number
+) => {
+  if (generationStartedAt !== undefined) {
+    return getPreciseGenerationElapsedSeconds(serverDuration, generationStartedAt, now);
+  }
+
+  const locallyTrackedDuration = elapsedAtTrackingStart
+    + Math.max(0, (now - trackingStartedAt) / 1000);
+
+  return Math.max(1, serverDuration ?? 0, locallyTrackedDuration);
+};
+
 export const resolveGenerationStartedAt = (
   status: 'pending' | 'processing' | 'completed' | 'failed' | undefined,
   loadedStartedAt: number | undefined,

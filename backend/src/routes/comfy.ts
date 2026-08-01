@@ -1,10 +1,21 @@
 import express from 'express';
 import axios from 'axios';
 import { authenticate } from '../middleware/auth';
-import { getTargetComfyUrl, parseComfyError } from '../services/comfy';
+import { getTargetComfyUrl, parseComfyError, releaseComfyMemory } from '../services/comfy';
 import { ServiceUrlError } from '../security/service-url';
 
 const router = express.Router();
+
+router.post('/free', authenticate, async (req, res) => {
+  try {
+    const targetUrl = getTargetComfyUrl(req.body.comfyUrl);
+    await releaseComfyMemory(targetUrl);
+    res.json({ success: true });
+  } catch (error: unknown) {
+    if (error instanceof ServiceUrlError) return res.status(error.statusCode).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: 'Failed to release ComfyUI memory: ' + parseComfyError(error) });
+  }
+});
 
 router.post('/check', authenticate, async (req, res) => {
   try {
