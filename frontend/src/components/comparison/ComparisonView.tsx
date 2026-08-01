@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Touch, TouchEvent, WheelEvent } from 'react';
 import toast from 'react-hot-toast';
 import type { CompanionSettings, FavoriteModel, Language } from '../../types';
@@ -32,6 +32,9 @@ type ComparisonImage = {
   isPromptFavorite?: number;
   comparisonMessageId?: string;
   comparisonSourceId?: string;
+  comparisonPreferredMessageId?: string | null;
+  comparisonPreferenceUpdatedAt?: number | null;
+  comparisonVersionIndex?: number;
 };
 
 type ComparisonPreference = {
@@ -125,6 +128,7 @@ export const ComparisonView = ({
   const [isPinchingGrid, setIsPinchingGrid] = useState(false);
   const [expandedMetadata, setExpandedMetadata] = useState<Set<string>>(() => new Set());
   const gridPinchRef = useRef({ startDistance: 0, startColumns: comparisonColumns, changed: false });
+  const comparisonPageRef = useRef<HTMLElement | null>(null);
   const suppressGridClickRef = useRef(false);
   const suppressGridClickTimerRef = useRef<number | null>(null);
   const pinchRef = useRef<{
@@ -134,6 +138,12 @@ export const ComparisonView = ({
     midpoint: { x: number; y: number };
   } | null>(null);
   const fr = lang === 'fr';
+  const sourceMessageId = source?.messageId;
+
+  useLayoutEffect(() => {
+    if (!sourceMessageId) return;
+    comparisonPageRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, [sourceMessageId]);
 
   useEffect(() => {
     localStorage.setItem('comparisonColumns', String(comparisonColumns));
@@ -551,7 +561,7 @@ export const ComparisonView = ({
   if (loading) return <div className="comparison-empty">{fr ? 'Chargement…' : 'Loading…'}</div>;
 
   if (initialMessageId && sourceLoadError && !source) return (
-    <section className="comparison-page">
+    <section className="comparison-page" ref={comparisonPageRef}>
       <div className="comparison-source-error">
         <strong>{fr ? 'Impossible d’ouvrir cette image' : 'Unable to open this image'}</strong>
         <p>{sourceLoadError}</p>
@@ -567,7 +577,7 @@ export const ComparisonView = ({
   );
 
   if (!source) return (
-    <section className="comparison-page">
+    <section className="comparison-page" ref={comparisonPageRef}>
       <header className="comparison-heading">
         <div><h1>{fr ? 'Mes comparaisons' : 'My comparisons'}</h1></div>
         <p>{fr ? 'Retrouvez uniquement les images générées pour comparer vos modèles.' : 'Only images generated to compare your models are shown here.'}</p>
@@ -585,16 +595,34 @@ export const ComparisonView = ({
             {comparisonColumns} {fr ? (comparisonColumns === 1 ? 'colonne' : 'colonnes') : (comparisonColumns === 1 ? 'column' : 'columns')}
           </div>
         )}
-        {images.map(item => (
-          <button
-            key={item.messageId}
-            className="comparison-picker-item"
-            style={{ aspectRatio: item.width && item.height ? `${item.width}/${item.height}` : '1' }}
-            onClick={() => { if (!suppressGridClickRef.current) void loadPair(item.messageId); }}
-          >
-            <img src={getFullImageUrl(item.thumbnailUrl || item.imageUrl || '')} alt={item.prompt || ''} />
-          </button>
-        ))}
+        {images.map(item => {
+          const preferenceLabel = item.comparisonPreferenceUpdatedAt == null
+            ? null
+            : item.comparisonPreferredMessageId === null
+              ? '='
+              : item.comparisonPreferredMessageId === item.comparisonSourceId
+                ? 'A'
+                : item.comparisonPreferredMessageId === item.messageId
+                  ? getVersionLetter(item.comparisonVersionIndex || 1)
+                  : null;
+          return (
+            <button
+              key={item.messageId}
+              className="comparison-picker-item"
+              style={{ aspectRatio: item.width && item.height ? `${item.width}/${item.height}` : '1' }}
+              onClick={() => { if (!suppressGridClickRef.current) void loadPair(item.messageId); }}
+            >
+              <img src={getFullImageUrl(item.thumbnailUrl || item.imageUrl || '')} alt={item.prompt || ''} />
+              {preferenceLabel && (
+                <span
+                  className="comparison-picker-preference"
+                  title={fr ? `Appréciation : ${preferenceLabel}` : `Preference: ${preferenceLabel}`}
+                  aria-label={fr ? `Appréciation : ${preferenceLabel}` : `Preference: ${preferenceLabel}`}
+                >{preferenceLabel}</span>
+              )}
+            </button>
+          );
+        })}
       </div>
       {!images.length && <div className="comparison-empty">{fr ? 'Aucune comparaison générée pour le moment.' : 'No generated comparison yet.'}</div>}
     </section>
@@ -680,6 +708,20 @@ export const ComparisonView = ({
         ));
         return data.preference ? [...withoutPair, data.preference] : withoutPair;
       });
+      const ratedAgainstOriginal = leftVersion.messageId === source.messageId
+        ? rightVersion.messageId
+        : rightVersion.messageId === source.messageId
+          ? leftVersion.messageId
+          : null;
+      if (ratedAgainstOriginal) {
+        setImages(current => current.map(item => item.messageId !== ratedAgainstOriginal
+          ? item
+          : {
+              ...item,
+              comparisonPreferredMessageId: data.preference?.preferredMessageId,
+              comparisonPreferenceUpdatedAt: data.preference?.updatedAt
+            }));
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
@@ -739,7 +781,7 @@ export const ComparisonView = ({
   );
 
   return (
-    <section className="comparison-page comparison-detail">
+    <section className="comparison-page comparison-detail" ref={comparisonPageRef}>
       <header className="comparison-heading compact">
         <button className="comparison-back" onClick={() => { setSource(null); setComparisons([]); setSelectedFavorite(''); }}>
           <span className="comparison-back-icon" aria-hidden="true">

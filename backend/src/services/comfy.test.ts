@@ -19,6 +19,17 @@ describe('releaseComfyMemory', () => {
     });
     createSpy.mockRestore();
   });
+
+  it('rejects an unlisted origin before creating the HTTP client', async () => {
+    const createSpy = vi.spyOn(axios, 'create');
+
+    await expect(releaseComfyMemory('https://unlisted.example.test')).rejects.toThrow(
+      'ComfyUI origin is not allowed'
+    );
+
+    expect(createSpy).not.toHaveBeenCalled();
+    createSpy.mockRestore();
+  });
 });
 
 describe('parseComfyError', () => {

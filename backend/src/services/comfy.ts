@@ -39,6 +39,9 @@ export const getTargetComfyUrl = (requestedUrl?: string) => {
 };
 
 export const releaseComfyMemory = async (targetUrl: string) => {
+  // Revalidate at the network boundary even when the caller already resolved
+  // the URL. validateServiceUrl restricts the protocol, credentials, and
+  // origin to the configured allowlist (or an explicit private-network opt-in).
   const validatedBaseUrl = getTargetComfyUrl(targetUrl);
   const comfyClient = axios.create({
     baseURL: validatedBaseUrl,

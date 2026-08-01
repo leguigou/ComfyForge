@@ -80,8 +80,28 @@ const getUserSettings = (userId: string) => {
 router.get('/', authenticate, (req, res) => {
   const user = (req as any).user;
   const rows = db.prepare(`
-    SELECT ${imageProjection}
+    SELECT ${imageProjection},
+      cp.preferredMessageId AS comparisonPreferredMessageId,
+      cp.updatedAt AS comparisonPreferenceUpdatedAt,
+      (
+        SELECT COUNT(*)
+        FROM messages earlier
+        WHERE earlier.comparisonSourceId = m.comparisonSourceId
+          AND earlier.imageUrl IS NOT NULL
+          AND earlier.status = 'completed'
+          AND (
+            earlier.timestamp < m.timestamp
+            OR (earlier.timestamp = m.timestamp AND earlier.id <= m.id)
+          )
+      ) AS comparisonVersionIndex
     FROM messages m JOIN sessions s ON s.id = m.sessionId
+    LEFT JOIN comparison_preferences cp
+      ON cp.userId = s.userId
+      AND cp.sourceMessageId = m.comparisonSourceId
+      AND (
+        (cp.firstMessageId = m.comparisonSourceId AND cp.secondMessageId = m.id)
+        OR (cp.firstMessageId = m.id AND cp.secondMessageId = m.comparisonSourceId)
+      )
     WHERE s.userId = ? AND m.role = 'bot' AND m.imageUrl IS NOT NULL
       AND m.status = 'completed'
       AND m.comparisonSourceId IS NOT NULL
