@@ -120,6 +120,7 @@ export const ComparisonView = ({
   const [sliderPosition, setSliderPosition] = useState(50);
   const [sliderZoom, setSliderZoom] = useState(1);
   const [sliderPan, setSliderPan] = useState({ x: 0, y: 0 });
+  const [loadedSliderImageIds, setLoadedSliderImageIds] = useState<Set<string>>(() => new Set());
   const [comparisonColumns, setComparisonColumns] = useState(() => {
     const saved = Number.parseInt(localStorage.getItem('comparisonColumns') || '', 10);
     if (saved >= MIN_COMPARISON_COLUMNS && saved <= MAX_COMPARISON_COLUMNS) return saved;
@@ -308,11 +309,18 @@ export const ComparisonView = ({
     && (leftVersion.width !== rightVersion.width || leftVersion.height !== rightVersion.height)
   );
   const sliderEnabled = inspectionEnabled && canUseSlider;
+  const sliderImagesLoaded = Boolean(
+    leftVersion
+    && rightVersion
+    && loadedSliderImageIds.has(leftVersion.messageId)
+    && loadedSliderImageIds.has(rightVersion.messageId)
+  );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setSliderPosition(50);
     setSliderZoom(1);
     setSliderPan({ x: 0, y: 0 });
+    setLoadedSliderImageIds(new Set());
   }, [canUseSlider, leftVersion?.messageId, rightVersion?.messageId]);
 
   useEffect(() => {
@@ -396,6 +404,15 @@ export const ComparisonView = ({
   const resetSliderZoom = () => {
     setSliderZoom(1);
     setSliderPan({ x: 0, y: 0 });
+  };
+
+  const markSliderImageLoaded = (messageId: string) => {
+    setLoadedSliderImageIds(current => {
+      if (current.has(messageId)) return current;
+      const next = new Set(current);
+      next.add(messageId);
+      return next;
+    });
   };
 
   const handleGridTouchStart = (event: TouchEvent<HTMLDivElement>) => {
@@ -851,6 +868,7 @@ export const ComparisonView = ({
         <>
           <div
             className="comparison-slider"
+            aria-busy={!sliderImagesLoaded}
             style={{
               aspectRatio: `${leftVersion.width}/${leftVersion.height}`,
               width: `min(100%, 1440px, calc(75vh * ${leftVersion.width! / leftVersion.height!}))`
@@ -865,12 +883,14 @@ export const ComparisonView = ({
               style={{ transform: `translate(${sliderPan.x}px, ${sliderPan.y}px) scale(${sliderZoom})` }}
               src={getFullImageUrl(rightVersion.imageUrl)}
               alt={`${fr ? 'Version droite' : 'Right version'} ${rightVersion.model || ''}`}
+              onLoad={() => markSliderImageLoaded(rightVersion.messageId)}
             />
             <div className="comparison-slider-original" style={{ clipPath: `inset(0 ${100 - sliderPosition}% 0 0)` }}>
               <img
                 style={{ transform: `translate(${sliderPan.x}px, ${sliderPan.y}px) scale(${sliderZoom})` }}
                 src={getFullImageUrl(leftVersion.imageUrl)}
                 alt={`${fr ? 'Version gauche' : 'Left version'} ${leftVersion.model || ''}`}
+                onLoad={() => markSliderImageLoaded(leftVersion.messageId)}
               />
             </div>
             <span className={`comparison-slider-version-badge left ${usesNamedPair ? 'named' : ''}`} aria-hidden="true">
@@ -903,6 +923,12 @@ export const ComparisonView = ({
                 </button>
               )}
             </div>
+            {!sliderImagesLoaded && (
+              <div className="comparison-slider-loading" role="status" aria-live="polite">
+                <span aria-hidden="true" />
+                <strong>{fr ? 'Chargement des images…' : 'Loading images…'}</strong>
+              </div>
+            )}
           </div>
           {activeVersions.length > 0 && (
             <div className="comparison-active-generations">
@@ -912,7 +938,7 @@ export const ComparisonView = ({
               ))}
             </div>
           )}
-          {canRatePair && (
+          {canRatePair && sliderImagesLoaded && (
             <div
               className="comparison-preference"
               role="group"
