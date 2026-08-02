@@ -410,8 +410,8 @@ export const ChatInterface = ({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.prompt) throw new Error(data.error || 'Image analysis failed');
+      setInput(data.prompt.trim());
       toast.success(t.visionAnalysisReady || 'Detailed prompt ready');
-      await Promise.resolve(handleSend(data.prompt, false, true));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
