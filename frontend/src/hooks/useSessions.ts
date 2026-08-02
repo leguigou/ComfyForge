@@ -1,7 +1,47 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { API_BASE } from '../services/api';
 import type { Session, Message, AppView } from '../types';
 import { resolveGenerationStartedAt } from '../utils/generationTimer';
+
+const MESSAGE_PAGE_SIZE = 60;
+
+type HistoryCursor = { timestamp: number; id: string };
+type SessionFetchOptions = { reset?: boolean; all?: boolean };
+
+const mergeServerMessage = (incoming: Message, existing: Message | undefined) => {
+  const mergedDuration = incoming.duration ?? existing?.duration;
+  const generationStartedAt = resolveGenerationStartedAt(
+    incoming.status,
+    incoming.generationStartedAt,
+    existing?.generationStartedAt,
+    Date.now(),
+    mergedDuration ?? 0
+  );
+  if (!existing) {
+    return generationStartedAt === undefined
+      ? incoming
+      : { ...incoming, generationStartedAt };
+  }
+
+  const sameTags = JSON.stringify(incoming.tags || []) === JSON.stringify(existing.tags || []);
+  const sameRandomSelections = JSON.stringify(incoming.randomSelections || []) === JSON.stringify(existing.randomSelections || []);
+  const unchanged = existing.imageUrl === incoming.imageUrl
+    && existing.thumbnailUrl === incoming.thumbnailUrl
+    && existing.status === incoming.status
+    && existing.text === incoming.text
+    && existing.prompt === incoming.prompt
+    && existing.generationPrompt === incoming.generationPrompt
+    && existing.isFavorite === incoming.isFavorite
+    && existing.isPromptFavorite === incoming.isPromptFavorite
+    && existing.duration === mergedDuration
+    && existing.generationStartedAt === generationStartedAt
+    && sameTags
+    && sameRandomSelections;
+
+  return unchanged
+    ? existing
+    : { ...incoming, duration: mergedDuration, generationStartedAt };
+};
 
 export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -15,6 +55,12 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
   const [renameValue, setRenameValue] = useState('');
   const [activeInfoId, setActiveInfoId] = useState<string | null>(null);
   const [massActionType, setMassActionType] = useState<'archiveAll' | 'deleteAll' | null>(null);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
+  const historySessionRef = useRef<string | null>(null);
+  const historyCursorRef = useRef<HistoryCursor | null>(null);
+  const historyHasMoreRef = useRef(false);
+  const loadingOlderRef = useRef(false);
 
   const fetchSessions = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -45,75 +91,126 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
     return data.id;
   }, []);
 
-  const fetchSessionDetails = useCallback(async (id: string) => {
+  const fetchMessagePage = useCallback(async (
+    id: string,
+    mode: 'latest' | 'older',
+    options: SessionFetchOptions = {}
+  ) => {
+    const isNewSession = historySessionRef.current !== id;
+    const shouldReplace = options.reset === true || options.all === true || isNewSession;
+    if (mode === 'older' && (loadingOlderRef.current || !historyHasMoreRef.current || !historyCursorRef.current)) {
+      return 0;
+    }
+
+    if (isNewSession) {
+      historySessionRef.current = id;
+      historyCursorRef.current = null;
+      historyHasMoreRef.current = false;
+      setHasMoreMessages(false);
+      setMessages([]);
+    }
+
+    if (mode === 'older') {
+      loadingOlderRef.current = true;
+      setIsLoadingOlderMessages(true);
+    }
+
     try {
-      const res = await fetch(`${API_BASE}/api/history/${id}`, { credentials: 'include' });
+      const query = new URLSearchParams();
+      if (options.all) {
+        query.set('all', 'true');
+      } else {
+        query.set('limit', String(MESSAGE_PAGE_SIZE));
+        if (mode === 'older' && historyCursorRef.current) {
+          query.set('beforeTimestamp', String(historyCursorRef.current.timestamp));
+          query.set('beforeId', historyCursorRef.current.id);
+        }
+      }
+      const res = await fetch(`${API_BASE}/api/history/${id}?${query.toString()}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch session details');
       const data = await res.json();
-      if (data.messages) {
+      if (historySessionRef.current !== id) return 0;
+      if (Array.isArray(data.messages)) {
+        const incomingMessages = data.messages as Message[];
         setMessages(prev => {
-          const tempMessages = prev.filter(m => m.id.startsWith('temp-'));
-          
-          // Deep merge logic to prevent flickering
-          const updatedMessages = data.messages.map((newMsg: Message) => {
-            const existingMsg = prev.find(m => m.id === newMsg.id);
-            const generationStartedAt = resolveGenerationStartedAt(
-              newMsg.status,
-              newMsg.generationStartedAt,
-              existingMsg?.generationStartedAt,
-              Date.now()
-            );
+          const existingById = new Map(prev.map(message => [message.id, message]));
+          const mergedIncoming = incomingMessages.map(message => (
+            mergeServerMessage(message, existingById.get(message.id))
+          ));
 
-            if (!existingMsg) {
-              return generationStartedAt === undefined
-                ? newMsg
-                : { ...newMsg, generationStartedAt };
-            }
-            
-            // If data hasn't changed significantly, keep existing reference
-            const hasImageUrlChanged = existingMsg.imageUrl !== newMsg.imageUrl;
-            const hasStatusChanged = existingMsg.status !== newMsg.status;
-            const hasTextChanged = existingMsg.text !== newMsg.text;
-            const needsGenerationStart = newMsg.status === 'processing'
-              && existingMsg.generationStartedAt === undefined;
-
-            if (!hasImageUrlChanged && !hasStatusChanged && !hasTextChanged && !needsGenerationStart) {
-              return existingMsg;
-            }
-
-            // Merge duration if missing in new data but present in existing
-            const mergedDuration = (newMsg.duration === undefined || newMsg.duration === null) 
-              ? existingMsg.duration 
-              : newMsg.duration;
-
-            return { ...newMsg, duration: mergedDuration, generationStartedAt };
-          });
-
-          // Check if the overall messages list actually changed to avoid reference change
-          const isSameLength = updatedMessages.length === prev.filter(m => !m.id.startsWith('temp-')).length;
-          if (isSameLength && updatedMessages.every((m: Message, i: number) => m === prev[i])) {
-            return prev;
+          if (shouldReplace) {
+            const tempMessages = prev.filter(message => message.id.startsWith('temp-'));
+            return [
+              ...mergedIncoming,
+              ...tempMessages.filter(tm => (
+                tm.status === 'failed'
+                || !mergedIncoming.some((nm: Message) => (
+                  nm.role === tm.role && (nm.prompt === tm.text || nm.text === tm.text)
+                ))
+              ))
+            ];
           }
 
-          return [
-            ...updatedMessages,
-            ...tempMessages.filter(tm => (
-              tm.status === 'failed'
-              || !updatedMessages.some((nm: Message) => (
-                nm.role === tm.role && (nm.prompt === tm.text || nm.text === tm.text)
-              ))
-            ))
-          ];
+          if (mode === 'older') {
+            const existingIds = new Set(prev.map(message => message.id));
+            return [...mergedIncoming.filter(message => !existingIds.has(message.id)), ...prev];
+          }
+
+          const reconciledTempUserIds = new Set(prev
+            .filter(message => message.id.startsWith('temp-') && message.role === 'user')
+            .filter(message => mergedIncoming.some(incoming => (
+              incoming.role === 'user'
+              && incoming.text.trim() === message.text.trim()
+              && Math.abs(incoming.timestamp - message.timestamp) <= 5 * 60 * 1000
+            )))
+            .map(message => message.id));
+          const reconciledPrevious = prev.filter(message => !reconciledTempUserIds.has(message.id));
+          const incomingById = new Map(mergedIncoming.map(message => [message.id, message]));
+          const next = reconciledPrevious.map(message => incomingById.get(message.id) || message);
+          const existingIds = new Set(reconciledPrevious.map(message => message.id));
+          mergedIncoming.forEach(message => {
+            if (!existingIds.has(message.id)) next.push(message);
+          });
+          return next.sort((left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id));
         });
+
+        if (shouldReplace || mode === 'older') {
+          const nextCursor = data.nextCursor;
+          historyCursorRef.current = nextCursor
+            && Number.isFinite(Number(nextCursor.timestamp))
+            && typeof nextCursor.id === 'string'
+            ? { timestamp: Number(nextCursor.timestamp), id: nextCursor.id }
+            : null;
+          historyHasMoreRef.current = Boolean(data.hasMore && historyCursorRef.current);
+          setHasMoreMessages(historyHasMoreRef.current);
+        }
+        return incomingMessages.length;
       }
     } catch (err) {
       console.error('Error fetching session details:', err);
+    } finally {
+      if (mode === 'older') {
+        loadingOlderRef.current = false;
+        setIsLoadingOlderMessages(false);
+      }
     }
+    return 0;
   }, []);
+
+  const fetchSessionDetails = useCallback(async (id: string, options: SessionFetchOptions = {}) => {
+    await fetchMessagePage(id, 'latest', options);
+  }, [fetchMessagePage]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!currentSessionId) return 0;
+    return fetchMessagePage(currentSessionId, 'older');
+  }, [currentSessionId, fetchMessagePage]);
 
   useEffect(() => {
     if (isAuthenticated && currentSessionId && (view === 'chat' || view === 'archives')) {
-      fetchSessionDetails(currentSessionId);
+      fetchSessionDetails(currentSessionId, {
+        reset: historySessionRef.current !== currentSessionId
+      });
     }
   }, [currentSessionId, view, fetchSessionDetails, isAuthenticated]);
 
@@ -248,6 +345,9 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
     toggleArchive,
     archiveAllSessions,
     deleteSessions,
-    deleteMessage
+    deleteMessage,
+    hasMoreMessages,
+    isLoadingOlderMessages,
+    loadOlderMessages
   };
 };

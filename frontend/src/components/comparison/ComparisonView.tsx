@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { Touch, TouchEvent, WheelEvent } from 'react';
+import type { PointerEvent, Touch, TouchEvent, WheelEvent } from 'react';
 import toast from 'react-hot-toast';
 import type { CompanionSettings, FavoriteModel, Language } from '../../types';
 import { API_BASE, formatDuration, getFullImageUrl } from '../../services/api';
@@ -35,6 +35,7 @@ type ComparisonImage = {
   comparisonPreferredMessageId?: string | null;
   comparisonPreferenceUpdatedAt?: number | null;
   comparisonVersionIndex?: number;
+  comparisonVersionCount?: number;
 };
 
 type ComparisonPreference = {
@@ -47,6 +48,8 @@ type ComparisonPreference = {
 const MIN_COMPARISON_COLUMNS = 1;
 const MAX_COMPARISON_COLUMNS = 6;
 const COMPARISON_PINCH_STEP = 1.16;
+const COMPARISON_LONG_PRESS_MS = 1000;
+const COMPARISON_LONG_PRESS_MOVE_TOLERANCE = 12;
 
 const getTouchDistance = (touches: { item(index: number): Touch | null }) => {
   const first = touches.item(0);
@@ -111,6 +114,11 @@ export const ComparisonView = ({
   const [loading, setLoading] = useState(true);
   const [launching, setLaunching] = useState(false);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(() => new Set());
+  const [batchActionMenuOpen, setBatchActionMenuOpen] = useState(false);
+  const [batchModelPickerOpen, setBatchModelPickerOpen] = useState(false);
+  const [selectedBatchFavorite, setSelectedBatchFavorite] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false);
   const [serviceAvailable, setServiceAvailable] = useState(true);
   const [sourceLoadError, setSourceLoadError] = useState<string | null>(null);
   const [timerNow, setTimerNow] = useState(() => Date.now());
@@ -132,6 +140,14 @@ export const ComparisonView = ({
   const comparisonPageRef = useRef<HTMLElement | null>(null);
   const suppressGridClickRef = useRef(false);
   const suppressGridClickTimerRef = useRef<number | null>(null);
+  const selectionModeRef = useRef(false);
+  const longPressRef = useRef<{
+    timer: number;
+    messageId: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
   const pinchRef = useRef<{
     distance: number;
     zoom: number;
@@ -156,7 +172,16 @@ export const ComparisonView = ({
 
   useEffect(() => () => {
     if (suppressGridClickTimerRef.current !== null) window.clearTimeout(suppressGridClickTimerRef.current);
+    if (longPressRef.current) window.clearTimeout(longPressRef.current.timer);
   }, []);
+
+  useEffect(() => {
+    setSelectedImageIds(current => {
+      const visibleIds = new Set(images.map(item => item.messageId));
+      const next = new Set([...current].filter(id => visibleIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [images]);
 
   const favoriteOptions = useMemo(() => favoriteModels.filter(item => item.workflowFile), [favoriteModels]);
   const currentFavoriteIndex = useMemo(() => favoriteOptions.findIndex(item => (
@@ -320,7 +345,6 @@ export const ComparisonView = ({
     setSliderPosition(50);
     setSliderZoom(1);
     setSliderPan({ x: 0, y: 0 });
-    setLoadedSliderImageIds(new Set());
   }, [canUseSlider, leftVersion?.messageId, rightVersion?.messageId]);
 
   useEffect(() => {
@@ -417,6 +441,10 @@ export const ComparisonView = ({
 
   const handleGridTouchStart = (event: TouchEvent<HTMLDivElement>) => {
     if (event.touches.length !== 2) return;
+    if (longPressRef.current) {
+      window.clearTimeout(longPressRef.current.timer);
+      longPressRef.current = null;
+    }
     if (suppressGridClickTimerRef.current !== null) window.clearTimeout(suppressGridClickTimerRef.current);
     suppressGridClickRef.current = false;
     gridPinchRef.current = {
@@ -448,6 +476,124 @@ export const ComparisonView = ({
     suppressGridClickTimerRef.current = window.setTimeout(() => {
       suppressGridClickRef.current = false;
     }, 350);
+  };
+
+  const toggleImageSelection = (messageId: string) => {
+    setSelectedImageIds(current => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      if (next.size === 0) {
+        selectionModeRef.current = false;
+        setBatchActionMenuOpen(false);
+      }
+      return next;
+    });
+  };
+
+  const cancelLongPress = (pointerId?: number) => {
+    if (!longPressRef.current || (pointerId !== undefined && longPressRef.current.pointerId !== pointerId)) return;
+    window.clearTimeout(longPressRef.current.timer);
+    longPressRef.current = null;
+  };
+
+  const startLongPress = (event: PointerEvent<HTMLButtonElement>, messageId: string) => {
+    if (selectedImageIds.size > 0 || event.button !== 0) return;
+    cancelLongPress();
+    const { pointerId, clientX, clientY } = event;
+    const timer = window.setTimeout(() => {
+      longPressRef.current = null;
+      suppressGridClickRef.current = true;
+      selectionModeRef.current = true;
+      setSelectedImageIds(new Set([messageId]));
+      if ('vibrate' in navigator) navigator.vibrate(35);
+      suppressGridClickTimerRef.current = window.setTimeout(() => {
+        suppressGridClickRef.current = false;
+      }, 400);
+    }, COMPARISON_LONG_PRESS_MS);
+    longPressRef.current = { timer, messageId, pointerId, startX: clientX, startY: clientY };
+  };
+
+  const moveLongPress = (event: PointerEvent<HTMLButtonElement>) => {
+    const press = longPressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - press.startX, event.clientY - press.startY) > COMPARISON_LONG_PRESS_MOVE_TOLERANCE) {
+      cancelLongPress(event.pointerId);
+    }
+  };
+
+  const openBatchModelPicker = () => {
+    const firstAvailableIndex = favoriteOptions.findIndex(favorite => favorite.workflowFile);
+    setSelectedBatchFavorite(firstAvailableIndex >= 0 ? String(firstAvailableIndex) : '');
+    setBatchActionMenuOpen(false);
+    setBatchModelPickerOpen(true);
+  };
+
+  const launchBatch = async () => {
+    const favorite = favoriteOptions[Number(selectedBatchFavorite)];
+    if (!favorite || !selectedImageIds.size || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/comparisons/batch/generate`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messageIds: [...selectedImageIds],
+          model: favorite.model,
+          modelType: favorite.modelType || 'checkpoint',
+          activeModel: currentModel,
+          activeModelType: currentModelType
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || (fr ? 'Génération par lot impossible' : 'Unable to start batch generation'));
+      onModelActivated(favorite);
+      setBatchModelPickerOpen(false);
+      selectionModeRef.current = false;
+      setSelectedImageIds(new Set());
+      if (data.queued > 0) toast.success(fr
+        ? `${data.queued} ${data.queued > 1 ? 'comparaisons lancées' : 'comparaison lancée'}`
+        : `${data.queued} ${data.queued > 1 ? 'comparisons started' : 'comparison started'}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const deleteBatch = async () => {
+    if (!selectedImageIds.size || batchBusy) return;
+    const confirmed = window.confirm(fr
+      ? selectedImageIds.size === 1
+        ? 'Supprimer toutes les versions de cette comparaison ? La photo originale sera conservée.'
+        : `Supprimer toutes les versions des ${selectedImageIds.size} comparaisons sélectionnées ? Les photos originales seront conservées.`
+      : selectedImageIds.size === 1
+        ? 'Delete every version of this comparison? The original photo will be kept.'
+        : `Delete every version of the ${selectedImageIds.size} selected comparisons? The original photos will be kept.`);
+    if (!confirmed) return;
+    setBatchBusy(true);
+    setBatchActionMenuOpen(false);
+    try {
+      const response = await fetch(`${API_BASE}/api/comparisons/batch`, {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageIds: [...selectedImageIds] })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || (fr ? 'Suppression impossible' : 'Unable to delete'));
+      selectionModeRef.current = false;
+      setSelectedImageIds(new Set());
+      await loadImages();
+      toast.success(fr
+        ? `${data.deleted} image${data.deleted > 1 ? 's supprimées' : ' supprimée'}`
+        : `${data.deleted} image${data.deleted > 1 ? 's' : ''} deleted`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBatchBusy(false);
+    }
   };
 
   const launch = async () => {
@@ -594,10 +740,20 @@ export const ComparisonView = ({
   );
 
   if (!source) return (
-    <section className="comparison-page" ref={comparisonPageRef}>
+    <section className={`comparison-page ${selectedImageIds.size ? 'comparison-selection-mode' : ''}`} ref={comparisonPageRef}>
       <header className="comparison-heading">
-        <div><h1>{fr ? 'Mes comparaisons' : 'My comparisons'}</h1></div>
-        <p>{fr ? 'Retrouvez uniquement les images générées pour comparer vos modèles.' : 'Only images generated to compare your models are shown here.'}</p>
+        <div><h1>{selectedImageIds.size
+          ? (fr ? `${selectedImageIds.size} sélectionnée${selectedImageIds.size > 1 ? 's' : ''}` : `${selectedImageIds.size} selected`)
+          : (fr ? 'Mes comparaisons' : 'My comparisons')}</h1></div>
+        {selectedImageIds.size ? (
+          <button type="button" className="comparison-selection-cancel" onClick={() => {
+            selectionModeRef.current = false;
+            setSelectedImageIds(new Set());
+            setBatchActionMenuOpen(false);
+          }}>{fr ? 'Annuler' : 'Cancel'}</button>
+        ) : (
+          <p>{fr ? 'Une photo principale par comparaison. Maintenez 1 seconde pour sélectionner.' : 'One main photo per comparison. Hold for 1 second to select.'}</p>
+        )}
       </header>
       <div
         className={`comparison-picker-grid ${isPinchingGrid ? 'is-pinching' : ''}`}
@@ -624,12 +780,43 @@ export const ComparisonView = ({
                   : null;
           return (
             <button
+              type="button"
               key={item.messageId}
-              className="comparison-picker-item"
+              className={`comparison-picker-item ${selectedImageIds.has(item.messageId) ? 'selected' : ''}`}
               style={{ aspectRatio: item.width && item.height ? `${item.width}/${item.height}` : '1' }}
-              onClick={() => { if (!suppressGridClickRef.current) void loadPair(item.messageId); }}
+              aria-pressed={selectedImageIds.size ? selectedImageIds.has(item.messageId) : undefined}
+              onPointerDown={event => startLongPress(event, item.messageId)}
+              onPointerMove={moveLongPress}
+              onPointerUp={event => cancelLongPress(event.pointerId)}
+              onPointerCancel={event => cancelLongPress(event.pointerId)}
+              onPointerLeave={event => cancelLongPress(event.pointerId)}
+              onContextMenu={event => event.preventDefault()}
+              onClick={event => {
+                if (suppressGridClickRef.current) return;
+                if (event.shiftKey && !selectedImageIds.size) {
+                  selectionModeRef.current = true;
+                  setSelectedImageIds(new Set([item.messageId]));
+                  return;
+                }
+                if (selectionModeRef.current || selectedImageIds.size) toggleImageSelection(item.messageId);
+                else void loadPair(item.messageId);
+              }}
             >
-              <img src={getFullImageUrl(item.thumbnailUrl || item.imageUrl || '')} alt={item.prompt || ''} />
+              <img src={getFullImageUrl(item.thumbnailUrl || item.imageUrl || '')} alt={item.prompt || ''} draggable={false} />
+              {selectedImageIds.size > 0 && (
+                <span className="comparison-picker-checkbox" aria-hidden="true">
+                  {selectedImageIds.has(item.messageId) && (
+                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m4 10 4 4 8-9" /></svg>
+                  )}
+                </span>
+              )}
+              {(item.comparisonVersionCount || 0) >= 3 && (
+                <span
+                  className="comparison-picker-version-index"
+                  title={`${item.comparisonVersionCount} versions`}
+                  aria-label={`${item.comparisonVersionCount} versions`}
+                >{item.comparisonVersionCount}</span>
+              )}
               {preferenceLabel && (
                 <span
                   className="comparison-picker-preference"
@@ -642,6 +829,67 @@ export const ComparisonView = ({
         })}
       </div>
       {!images.length && <div className="comparison-empty">{fr ? 'Aucune comparaison générée pour le moment.' : 'No generated comparison yet.'}</div>}
+
+      {selectedImageIds.size > 0 && (
+        <div className="comparison-batch-bar">
+          <button
+            type="button"
+            className="comparison-batch-action"
+            aria-haspopup="menu"
+            aria-expanded={batchActionMenuOpen}
+            disabled={batchBusy}
+            onClick={() => setBatchActionMenuOpen(open => !open)}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></svg>
+            <span>{fr ? 'Actions' : 'Actions'}</span>
+            <b>{selectedImageIds.size}</b>
+          </button>
+          {batchActionMenuOpen && (
+            <div className="comparison-batch-menu" role="menu">
+              <button type="button" role="menuitem" onClick={openBatchModelPicker} disabled={!favoriteOptions.length || batchBusy}>
+                <span className="comparison-batch-menu-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v18M3 12h18" /><path d="m5 5 14 14M19 5 5 19" opacity=".35" /></svg>
+                </span>
+                <span><strong>{fr ? 'Générer par lot' : 'Generate as a batch'}</strong><small>{fr ? 'Comparer la sélection avec un modèle' : 'Compare the selection with one model'}</small></span>
+              </button>
+              <button type="button" role="menuitem" className="danger" onClick={() => void deleteBatch()} disabled={batchBusy}>
+                <span className="comparison-batch-menu-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3M8 10v8M12 10v8M16 10v8M6 7l1 14h10l1-14" /></svg>
+                </span>
+                <span><strong>{fr ? 'Supprimer' : 'Delete'}</strong><small>{fr ? 'Supprimer les images sélectionnées' : 'Delete selected images'}</small></span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {batchModelPickerOpen && (
+        <div className="comparison-batch-modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget && !batchBusy) setBatchModelPickerOpen(false);
+        }}>
+          <div className="comparison-batch-modal" role="dialog" aria-modal="true" aria-labelledby="comparison-batch-modal-title">
+            <button type="button" className="comparison-batch-modal-close" onClick={() => setBatchModelPickerOpen(false)} disabled={batchBusy} aria-label={fr ? 'Fermer' : 'Close'}>×</button>
+            <span className="comparison-batch-modal-kicker">{fr ? 'Génération par lot' : 'Batch generation'}</span>
+            <h2 id="comparison-batch-modal-title">{fr ? 'Choisir le modèle' : 'Choose the model'}</h2>
+            <p>{fr
+              ? `${selectedImageIds.size} image${selectedImageIds.size > 1 ? 's seront analysées' : ' sera analysée'}. Celles déjà traitées avec ce modèle seront simplement ignorées.`
+              : `${selectedImageIds.size} selected image${selectedImageIds.size > 1 ? 's' : ''} will be checked. Images already processed with this model will be skipped.`}</p>
+            <label htmlFor="comparison-batch-model">{fr ? 'Modèle favori' : 'Favorite model'}</label>
+            <select id="comparison-batch-model" value={selectedBatchFavorite} onChange={event => setSelectedBatchFavorite(event.target.value)} disabled={batchBusy}>
+              <option value="">{fr ? 'Sélectionner…' : 'Select…'}</option>
+              {favoriteOptions.map((favorite, index) => (
+                <option key={`${favorite.modelType}:${favorite.model}`} value={index}>{favorite.model}</option>
+              ))}
+            </select>
+            <div className="comparison-batch-modal-actions">
+              <button type="button" className="secondary" onClick={() => setBatchModelPickerOpen(false)} disabled={batchBusy}>{fr ? 'Annuler' : 'Cancel'}</button>
+              <button type="button" className="primary" onClick={() => void launchBatch()} disabled={!selectedBatchFavorite || batchBusy}>
+                {batchBusy ? (fr ? 'Préparation…' : 'Preparing…') : (fr ? 'Lancer le lot' : 'Start batch')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 

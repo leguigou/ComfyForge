@@ -25,6 +25,8 @@ const LUCKY_PHRASE_COUNT = 5;
 const MIN_GALLERY_COLUMNS = 1;
 const MAX_GALLERY_COLUMNS = 6;
 const GALLERY_PINCH_STEP = 1.16;
+const GALLERY_LONG_PRESS_MS = 1000;
+const GALLERY_LONG_PRESS_MOVE_TOLERANCE = 12;
 
 const createSafeImagePreview = async (file: File) => {
   const bitmap = await createImageBitmap(file);
@@ -170,6 +172,7 @@ interface ChatInterfaceProps {
   regenerationCounts: Record<string, number>;
   recordRegeneration: (messageId: string) => void;
   retryMessage: (messageId: string) => Promise<unknown>;
+  dismissFailedMessage: (messageId: string) => void;
   retryAllIncomplete: () => Promise<{ queued: number }>;
   updatePendingPrompt: (messageId: string, prompt: string, localUserMessageId?: string) => Promise<unknown>;
   interruptGeneration: () => void;
@@ -184,6 +187,11 @@ interface ChatInterfaceProps {
   handleImageClick: (item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, source: 'chat' | 'gallery' }) => void;
   favoritedId: string | null;
   galleryItems: GalleryItem[];
+  batchDeleteGalleryItems: (items: GalleryItem[]) => Promise<void>;
+  batchRegenerateGalleryItems: (items: GalleryItem[]) => Promise<void>;
+  batchLuckyGalleryItems: (items: GalleryItem[]) => Promise<void>;
+  batchSetGalleryFavorites: (items: GalleryItem[], value: number) => Promise<void>;
+  batchSetGalleryPromptFavorites: (items: GalleryItem[], value: number) => Promise<void>;
   galleryTotal: number;
   isFetchingGallery: boolean;
   favoritesOnly: boolean;
@@ -228,6 +236,7 @@ export const ChatInterface = ({
   regenerationCounts,
   recordRegeneration,
   retryMessage,
+  dismissFailedMessage,
   retryAllIncomplete,
   updatePendingPrompt,
   interruptGeneration,
@@ -242,6 +251,11 @@ export const ChatInterface = ({
   handleImageClick,
   favoritedId,
   galleryItems,
+  batchDeleteGalleryItems,
+  batchRegenerateGalleryItems,
+  batchLuckyGalleryItems,
+  batchSetGalleryFavorites,
+  batchSetGalleryPromptFavorites,
   galleryTotal,
   isFetchingGallery,
   favoritesOnly,
@@ -292,6 +306,9 @@ export const ChatInterface = ({
     return window.innerWidth <= 768 ? 3 : 6;
   });
   const [isPinchingGallery, setIsPinchingGallery] = useState(false);
+  const [selectedGalleryIds, setSelectedGalleryIds] = useState<Set<string>>(() => new Set());
+  const [galleryBatchMenuOpen, setGalleryBatchMenuOpen] = useState(false);
+  const [galleryBatchBusy, setGalleryBatchBusy] = useState(false);
   const promptHighlightRef = useRef<HTMLDivElement>(null);
   const imageImportRef = useRef<HTMLInputElement>(null);
   const optionsDrawerRef = useRef<HTMLDivElement>(null);
@@ -300,6 +317,13 @@ export const ChatInterface = ({
   const galleryPinchRef = useRef({ startDistance: 0, startColumns: galleryColumns, changed: false });
   const suppressGalleryClickRef = useRef(false);
   const suppressGalleryClickTimerRef = useRef<number | null>(null);
+  const gallerySelectionModeRef = useRef(false);
+  const galleryLongPressRef = useRef<{
+    timer: number;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
 
   useEffect(() => {
     localStorage.setItem('galleryColumns', String(galleryColumns));
@@ -310,10 +334,35 @@ export const ChatInterface = ({
   }, [openOptionsRequest]);
 
   useEffect(() => () => {
+    if (galleryLongPressRef.current) window.clearTimeout(galleryLongPressRef.current.timer);
     if (suppressGalleryClickTimerRef.current !== null) {
       window.clearTimeout(suppressGalleryClickTimerRef.current);
     }
   }, []);
+
+  useEffect(() => {
+    const visibleIds = new Set(galleryItems.map(item => item.messageId));
+    setSelectedGalleryIds(current => {
+      const next = new Set([...current].filter(id => visibleIds.has(id)));
+      if (next.size === current.size) return current;
+      if (next.size === 0) {
+        gallerySelectionModeRef.current = false;
+        setGalleryBatchMenuOpen(false);
+      }
+      return next;
+    });
+  }, [galleryItems]);
+
+  useEffect(() => {
+    if (view === 'gallery') return;
+    gallerySelectionModeRef.current = false;
+    setSelectedGalleryIds(new Set());
+    setGalleryBatchMenuOpen(false);
+    if (galleryLongPressRef.current) {
+      window.clearTimeout(galleryLongPressRef.current.timer);
+      galleryLongPressRef.current = null;
+    }
+  }, [view]);
 
   useEffect(() => () => {
     if (analysisPreview?.url) URL.revokeObjectURL(analysisPreview.url);
@@ -374,6 +423,10 @@ export const ChatInterface = ({
 
   const handleGalleryTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     if (event.touches.length !== 2) return;
+    if (galleryLongPressRef.current) {
+      window.clearTimeout(galleryLongPressRef.current.timer);
+      galleryLongPressRef.current = null;
+    }
     if (suppressGalleryClickTimerRef.current !== null) {
       window.clearTimeout(suppressGalleryClickTimerRef.current);
       suppressGalleryClickTimerRef.current = null;
@@ -418,6 +471,82 @@ export const ChatInterface = ({
       suppressGalleryClickTimerRef.current = window.setTimeout(() => {
         suppressGalleryClickRef.current = false;
       }, 350);
+    }
+  };
+
+  const cancelGalleryLongPress = (pointerId?: number) => {
+    const press = galleryLongPressRef.current;
+    if (!press || (pointerId !== undefined && press.pointerId !== pointerId)) return;
+    window.clearTimeout(press.timer);
+    galleryLongPressRef.current = null;
+  };
+
+  const startGalleryLongPress = (event: React.PointerEvent<HTMLDivElement>, messageId: string) => {
+    if (selectedGalleryIds.size > 0 || event.button !== 0) return;
+    if (event.target instanceof Element && event.target.closest('button')) return;
+    cancelGalleryLongPress();
+    const { pointerId, clientX, clientY } = event;
+    const timer = window.setTimeout(() => {
+      galleryLongPressRef.current = null;
+      suppressGalleryClickRef.current = true;
+      gallerySelectionModeRef.current = true;
+      setSelectedGalleryIds(new Set([messageId]));
+      if ('vibrate' in navigator) navigator.vibrate(35);
+      suppressGalleryClickTimerRef.current = window.setTimeout(() => {
+        suppressGalleryClickRef.current = false;
+      }, 400);
+    }, GALLERY_LONG_PRESS_MS);
+    galleryLongPressRef.current = { timer, pointerId, startX: clientX, startY: clientY };
+  };
+
+  const moveGalleryLongPress = (event: React.PointerEvent<HTMLDivElement>) => {
+    const press = galleryLongPressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - press.startX, event.clientY - press.startY) > GALLERY_LONG_PRESS_MOVE_TOLERANCE) {
+      cancelGalleryLongPress(event.pointerId);
+    }
+  };
+
+  const toggleGallerySelection = (messageId: string) => {
+    setSelectedGalleryIds(current => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      if (next.size === 0) {
+        gallerySelectionModeRef.current = false;
+        setGalleryBatchMenuOpen(false);
+      }
+      return next;
+    });
+  };
+
+  const clearGallerySelection = () => {
+    cancelGalleryLongPress();
+    if (suppressGalleryClickTimerRef.current !== null) {
+      window.clearTimeout(suppressGalleryClickTimerRef.current);
+      suppressGalleryClickTimerRef.current = null;
+    }
+    suppressGalleryClickRef.current = false;
+    gallerySelectionModeRef.current = false;
+    setSelectedGalleryIds(new Set());
+    setGalleryBatchMenuOpen(false);
+  };
+
+  const selectedGalleryItems = galleryItems.filter(item => selectedGalleryIds.has(item.messageId));
+  const selectedAreAllFavorites = selectedGalleryItems.length > 0 && selectedGalleryItems.every(item => item.isFavorite === 1);
+  const selectedAreAllPromptFavorites = selectedGalleryItems.length > 0 && selectedGalleryItems.every(item => item.isPromptFavorite === 1);
+
+  const runGalleryBatchAction = async (action: () => Promise<void>, successMessage?: string) => {
+    if (galleryBatchBusy || selectedGalleryItems.length === 0) return;
+    setGalleryBatchBusy(true);
+    clearGallerySelection();
+    try {
+      await action();
+      if (successMessage) toast.success(successMessage);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGalleryBatchBusy(false);
     }
   };
 
@@ -753,7 +882,7 @@ export const ChatInterface = ({
               view === 'chat' ? <WelcomeScreen lang={lang} /> : <div className="empty-state"><p>{t.noArchives}</p></div>
             )}
             {messages.map((msg, index) => {
-              const messageText = msg.text || msg.prompt;
+              const messageText = (msg.text || msg.prompt || '').trim();
               const nextMessage = messages[index + 1];
               const linkedPendingMessage = msg.role === 'user'
                 && nextMessage?.role === 'bot'
@@ -773,12 +902,18 @@ export const ChatInterface = ({
               const dynamicPrompt = msg.role === 'user' ? (msg.text || '') : '';
               const canRegenerateDynamicPrompt = hasResolvableRandomPrompt(dynamicPrompt, params.randomPromptLists);
               const prevMsg = index > 0 ? messages[index - 1] : null;
-              const prevText = prevMsg ? (prevMsg.text || prevMsg.prompt) : null;
+              const prevText = prevMsg ? (prevMsg.text || prevMsg.prompt || '').trim() : null;
               
               if (!messageText && !msg.imageUrl && msg.status !== 'pending' && msg.status !== 'processing') return null;
 
               const isRedundant = prevText === messageText;
               const shouldShowText = messageText && (!isRedundant || (msg.role === 'bot' && (msg.isEnhancing || msg.status === 'pending' || msg.status === 'processing')));
+              const hasNonTextContent = Boolean(
+                msg.imageUrl
+                || msg.randomSelections?.length
+                || (msg.role === 'bot' && (msg.status === 'pending' || msg.status === 'processing' || msg.status === 'failed'))
+              );
+              if (!shouldShowText && !hasNonTextContent) return null;
               
               return (
                 <div key={msg.id} id={`msg-${msg.id}`} className={`message-row ${msg.role}`}>
@@ -834,7 +969,13 @@ export const ChatInterface = ({
                         />
                         <p>
                           <span className={msg.isEnhancing || msg.status === 'processing' ? 'ai-text-shimmer' : ''}>
-                            {msg.isEnhancing ? t.enhancing : (msg.status === 'processing' ? t.generating : t.waiting)}
+                            {msg.isEnhancing
+                              ? t.enhancing
+                              : msg.status === 'processing'
+                                ? t.generating
+                                : msg.isStarting
+                                  ? t.startingGeneration
+                                  : t.waiting}
                           </span>
                           {!msg.isEnhancing && msg.status === 'processing' && (
                             <span className="generation-live-timer">
@@ -868,6 +1009,7 @@ export const ChatInterface = ({
                               if (msg.id.startsWith('temp-')) {
                                 const prompt = msg.generationPrompt || msg.prompt || '';
                                 if (!prompt.trim()) throw new Error(t.retryFailed);
+                                dismissFailedMessage(msg.id);
                                 await handleSend(prompt, true, true);
                               } else {
                                 await retryMessage(msg.id);
@@ -907,6 +1049,8 @@ export const ChatInterface = ({
                         src={getFullImageUrl(msg.thumbnailUrl || msg.imageUrl!)} 
                         alt="Generated" 
                         className="clickable-image" 
+                        loading="lazy"
+                        decoding="async"
                         style={{ width: '100%', height: 'auto', display: 'block' }}
                         // Removed onLoad scroll to prevent jumps during polling
                       />
@@ -1106,14 +1250,22 @@ export const ChatInterface = ({
           </>
         ) : (
           <div className="gallery-view">
-            <div className="gallery-header">
+            <div className={`gallery-header ${selectedGalleryIds.size ? 'gallery-selection-header' : ''}`}>
               <div className="gallery-title-row">
-                <h2>{t.myContent}</h2>
-                <span className="gallery-result-count">
-                  {galleryTotal} {galleryTotal === 1 ? t.result : t.results}
-                </span>
+                <h2>{selectedGalleryIds.size
+                  ? `${selectedGalleryIds.size} ${selectedGalleryIds.size === 1 ? t.selected : t.selectedPlural}`
+                  : t.myContent}</h2>
+                {selectedGalleryIds.size ? (
+                  <button type="button" className="gallery-selection-cancel" onClick={clearGallerySelection} disabled={galleryBatchBusy}>
+                    {t.cancel}
+                  </button>
+                ) : (
+                  <span className="gallery-result-count">
+                    {galleryTotal} {galleryTotal === 1 ? t.result : t.results}
+                  </span>
+                )}
               </div>
-              <div className="gallery-filters">
+              {!selectedGalleryIds.size && <div className="gallery-filters">
                 <div className="gallery-search">
                   <div className={`gallery-search-box ${isGallerySearchFocused ? 'focused' : ''}`}>
                     {selectedPromptTags.map(slug => {
@@ -1179,7 +1331,7 @@ export const ChatInterface = ({
                     {t.archived}
                   </button>
                 </div>
-              </div>
+              </div>}
             </div>
             <div
               className={`gallery-grid ${isPinchingGallery ? 'is-pinching' : ''}`}
@@ -1200,13 +1352,29 @@ export const ChatInterface = ({
                 <div 
                   ref={galleryItems.length === index + 1 ? lastImageElementRef : undefined}
                   key={item.messageId} 
-                  className="gallery-item" 
+                  className={`gallery-item ${selectedGalleryIds.has(item.messageId) ? 'selected' : ''}`}
                   style={{ 
                     aspectRatio: (item.width && item.height) ? `${item.width}/${item.height}` : 'auto',
                     backgroundColor: 'var(--social-bg)'
                   }}
-                  onClick={() => {
+                  aria-pressed={selectedGalleryIds.size ? selectedGalleryIds.has(item.messageId) : undefined}
+                  onPointerDown={event => startGalleryLongPress(event, item.messageId)}
+                  onPointerMove={moveGalleryLongPress}
+                  onPointerUp={event => cancelGalleryLongPress(event.pointerId)}
+                  onPointerCancel={event => cancelGalleryLongPress(event.pointerId)}
+                  onPointerLeave={event => cancelGalleryLongPress(event.pointerId)}
+                  onContextMenu={event => event.preventDefault()}
+                  onClick={(event) => {
                     if (suppressGalleryClickRef.current) return;
+                    if (event.shiftKey && !selectedGalleryIds.size) {
+                      gallerySelectionModeRef.current = true;
+                      setSelectedGalleryIds(new Set([item.messageId]));
+                      return;
+                    }
+                    if (gallerySelectionModeRef.current || selectedGalleryIds.size) {
+                      toggleGallerySelection(item.messageId);
+                      return;
+                    }
                     handleImageClick({
                       url: item.imageUrl,
                       thumbnailUrl: item.thumbnailUrl,
@@ -1220,10 +1388,11 @@ export const ChatInterface = ({
                   <img 
                     src={getFullImageUrl(item.thumbnailUrl || item.imageUrl)} 
                     alt={item.prompt} 
-                    loading="lazy" 
+                    loading="lazy"
+                    decoding="async"
                     style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                   />
-                  {galleryColumns < 3 && (
+                  {galleryColumns < 3 && selectedGalleryIds.size === 0 && (
                     <div className="gallery-item-actions">
                       <button
                         className="gallery-action-btn"
@@ -1251,18 +1420,84 @@ export const ChatInterface = ({
                       <ThumbUpIcon size={18} />
                     </div>
                   )}
-                  {item.comparisonMessageId && (
+                  {item.comparisonMessageId && selectedGalleryIds.size === 0 && (
                     <button
                       className="gallery-item-comparison"
                       onClick={(event) => { event.stopPropagation(); openComparison(item.messageId); }}
                       title={lang === 'fr' ? 'Voir la comparaison' : 'View comparison'}
                     >A/B</button>
                   )}
+                  {selectedGalleryIds.size > 0 && (
+                    <span className="gallery-selection-checkbox" aria-hidden="true">
+                      {selectedGalleryIds.has(item.messageId) && (
+                        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m4 10 4 4 8-9" /></svg>
+                      )}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
             {galleryItems.length === 0 && !isFetchingGallery && <p className="empty-gallery">Aucun contenu généré pour le moment.</p>}
             {isFetchingGallery && <div className="gallery-loader-container"><div className="typing-indicator"><span></span><span></span><span></span></div></div>}
+            {selectedGalleryIds.size > 0 && (
+              <div className="gallery-batch-bar">
+                <button
+                  type="button"
+                  className="gallery-batch-action"
+                  aria-haspopup="menu"
+                  aria-expanded={galleryBatchMenuOpen}
+                  disabled={galleryBatchBusy}
+                  onClick={() => setGalleryBatchMenuOpen(open => !open)}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></svg>
+                  <span>{t.actions}</span>
+                  <b>{selectedGalleryIds.size}</b>
+                </button>
+                {galleryBatchMenuOpen && (
+                  <div className="gallery-batch-menu" role="menu">
+                    <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
+                      () => batchRegenerateGalleryItems(selectedGalleryItems),
+                      `${selectedGalleryItems.length} ${t.batchQueued}`
+                    )} disabled={galleryBatchBusy}>
+                      <span className="gallery-batch-menu-icon"><RefreshIcon size={20} /></span>
+                      <span><strong>{t.batchRegenerate}</strong><small>{t.batchRegenerateHelp}</small></span>
+                    </button>
+                    <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
+                      () => batchLuckyGalleryItems(selectedGalleryItems)
+                    )} disabled={galleryBatchBusy || selectedGalleryItems.length > 8}>
+                      <span className="gallery-batch-menu-icon"><MagicWandIcon size={20} /></span>
+                      <span><strong>{t.batchLucky}</strong><small>{selectedGalleryItems.length > 8 ? t.batchLuckyLimit : t.batchLuckyHelp}</small></span>
+                    </button>
+                    <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
+                      () => batchSetGalleryFavorites(selectedGalleryItems, selectedAreAllFavorites ? 0 : 1),
+                      selectedAreAllFavorites ? t.batchFavoritesRemoved : t.batchFavoritesAdded
+                    )} disabled={galleryBatchBusy}>
+                      <span className="gallery-batch-menu-icon gallery-batch-heart" aria-hidden="true">{selectedAreAllFavorites ? '♡' : '♥'}</span>
+                      <span><strong>{selectedAreAllFavorites ? t.batchRemoveFavorites : t.batchAddFavorites}</strong><small>{t.batchFavoritesHelp}</small></span>
+                    </button>
+                    <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
+                      () => batchSetGalleryPromptFavorites(selectedGalleryItems, selectedAreAllPromptFavorites ? 0 : 1),
+                      selectedAreAllPromptFavorites ? t.batchPromptsUnliked : t.batchPromptsLiked
+                    )} disabled={galleryBatchBusy}>
+                      <span className="gallery-batch-menu-icon"><ThumbUpIcon size={20} /></span>
+                      <span><strong>{selectedAreAllPromptFavorites ? t.batchUnlikePrompts : t.batchLikePrompts}</strong><small>{t.batchPromptFavoritesHelp}</small></span>
+                    </button>
+                    <button type="button" role="menuitem" className="danger" onClick={() => {
+                      const confirmed = window.confirm(`${t.batchDeleteConfirm} (${selectedGalleryItems.length})`);
+                      if (confirmed) void runGalleryBatchAction(
+                        () => batchDeleteGalleryItems(selectedGalleryItems),
+                        `${selectedGalleryItems.length} ${t.batchDeleted}`
+                      );
+                    }} disabled={galleryBatchBusy}>
+                      <span className="gallery-batch-menu-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3M8 10v8M12 10v8M16 10v8M6 7l1 14h10l1-14" /></svg>
+                      </span>
+                      <span><strong>{t.delete}</strong><small>{t.batchDeleteHelp}</small></span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

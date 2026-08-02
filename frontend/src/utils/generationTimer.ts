@@ -43,9 +43,10 @@ export const resolveGenerationStartedAt = (
   status: 'pending' | 'processing' | 'completed' | 'failed' | undefined,
   loadedStartedAt: number | undefined,
   existingStartedAt: number | undefined,
-  now: number
+  now: number,
+  duration = 0
 ) => status === 'processing'
-  ? (loadedStartedAt ?? existingStartedAt ?? now)
+  ? (existingStartedAt ?? (now - Math.max(0, duration) * 1000))
   : loadedStartedAt;
 
 export const getEstimatedGenerationProgress = (

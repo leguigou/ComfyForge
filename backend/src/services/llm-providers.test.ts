@@ -30,6 +30,11 @@ describe('LLM provider configuration', () => {
       baseUrl: 'http://localhost:1234/v1',
     })).toBe('lmstudio');
     expect(detectLocalProviderEngine({
+      name: 'Ollama (local)',
+      type: 'openai',
+      baseUrl: 'http://192.168.0.40:1234',
+    })).toBe('lmstudio');
+    expect(detectLocalProviderEngine({
       name: 'OpenAI',
       type: 'openai',
       baseUrl: 'https://api.openai.com',

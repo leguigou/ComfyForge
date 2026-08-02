@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import './SettingsModal.css';
-import type { GenParameters, User, Language, GalleryItem, RandomPromptList } from '../../types';
+import type { GenParameters, User, Language, GalleryItem, RandomPromptList, ComfyModelDetails } from '../../types';
 import { normalizeRandomSlug } from '../../utils/randomPrompts';
 import { DEFAULT_COMPANION_ID, normalizeCompanionSettings } from '../../utils/companions';
 import { RefreshIcon, XIcon } from '../ui/Icons';
@@ -96,6 +96,8 @@ interface SettingsModalProps {
   currentUser: User | null;
   comfyModels: string[];
   diffusionModels: string[];
+  checkpointModelDetails: ComfyModelDetails[];
+  diffusionModelDetails: ComfyModelDetails[];
   isFetchingComfyModels: boolean;
   fetchComfyModels: () => void;
   comfyStatus: { type: 'success' | 'error', msg: string } | null;
@@ -129,10 +131,13 @@ export const SettingsModal = ({
   setActiveTab,
   params,
   setParams,
+  lang,
   t,
   currentUser,
   comfyModels,
   diffusionModels,
+  checkpointModelDetails,
+  diffusionModelDetails,
   isFetchingComfyModels,
   fetchComfyModels,
   comfyStatus,
@@ -292,6 +297,9 @@ export const SettingsModal = ({
   if (!showSettings) return null;
 
   const visibleModels = params.comfyModelType === 'diffusion' ? diffusionModels : comfyModels;
+  const checkpointDetailsByName = new Map(checkpointModelDetails.map(model => [model.name, model]));
+  const diffusionDetailsByName = new Map(diffusionModelDetails.map(model => [model.name, model]));
+  const modelDetailsByName = params.comfyModelType === 'diffusion' ? diffusionDetailsByName : checkpointDetailsByName;
   const filteredModels = visibleModels.filter(m =>
     m.toLowerCase().includes(modelSearch.toLowerCase())
   );
@@ -365,6 +373,12 @@ export const SettingsModal = ({
   const getModelDisplayName = (model: string) => (
     model.split(/[\\/]/).pop()?.replace(/\.(safetensors|ckpt|pt)$/i, '') || model
   );
+
+  const formatModelSize = (model?: ComfyModelDetails) => {
+    const sizeGb = model?.sizeGb ?? (model?.sizeBytes !== undefined ? model.sizeBytes / 1_000_000_000 : undefined);
+    if (sizeGb === undefined || !Number.isFinite(sizeGb)) return '';
+    return `${new Intl.NumberFormat(lang === 'fr' ? 'fr-FR' : 'en-US', { maximumFractionDigits: 2 }).format(sizeGb)} ${lang === 'fr' ? 'Go' : 'GB'}`;
+  };
 
   const handleImportWorkflow = async (file?: File) => {
     if (!file) return;
@@ -1229,7 +1243,11 @@ export const SettingsModal = ({
                           >
                             <span className="favorite-model-name">{getModelDisplayName(favorite.model)}</span>
                             <span className="favorite-model-path">
-                              {favorite.modelType === 'diffusion' ? t.diffusionModels : t.checkpoints} · {favorite.model}
+                              {[
+                                favorite.modelType === 'diffusion' ? t.diffusionModels : t.checkpoints,
+                                favorite.model,
+                                formatModelSize((favorite.modelType === 'diffusion' ? diffusionDetailsByName : checkpointDetailsByName).get(favorite.model))
+                              ].filter(Boolean).join(' · ')}
                             </span>
                           </button>
                           <div className="favorite-workflow-editor">
@@ -1333,7 +1351,7 @@ export const SettingsModal = ({
                             title={model}
                           >
                             <span>{getModelDisplayName(model)}</span>
-                            <small>{model}</small>
+                            <small>{[model, formatModelSize(modelDetailsByName.get(model))].filter(Boolean).join(' · ')}</small>
                           </button>
                           <button
                             type="button"

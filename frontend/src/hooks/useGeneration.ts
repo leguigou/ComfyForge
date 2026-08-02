@@ -19,7 +19,8 @@ export const useGeneration = (
   clientIdRef: React.MutableRefObject<string>,
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>,
   smoothScrollTo: (id: string) => void,
-  fetchSessions: () => void
+  fetchSessions: () => void,
+  acknowledgeQueueMessage: (messageId: string, temporaryMessageId: string) => void
 ) => {
   const [isEnhancing, setIsEnhancing] = useState(false);
   const enhancingCount = useRef(0);
@@ -38,18 +39,26 @@ export const useGeneration = (
   };
 
   const retryMessage = useCallback(async (messageId: string) => {
-    const res = await fetch(`${API_BASE}/api/generate/retry/${encodeURIComponent(messageId)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ params }),
-      credentials: 'include'
-    });
-    const data = await readApiResponse(res);
-    if (!res.ok || !data.success) throw new Error(data.error || 'Retry failed');
     setMessages(prev => prev.map(message => message.id === messageId
-      ? { ...message, text: '', status: 'pending', duration: 0, generationStartedAt: undefined }
+      ? { ...message, text: '', status: 'pending', isStarting: true, duration: 0, generationStartedAt: undefined }
       : message));
-    return data;
+    try {
+      const res = await fetch(`${API_BASE}/api/generate/retry/${encodeURIComponent(messageId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ params }),
+        credentials: 'include'
+      });
+      const data = await readApiResponse(res);
+      if (!res.ok || !data.success) throw new Error(data.error || 'Retry failed');
+      return data;
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Retry failed';
+      setMessages(prev => prev.map(message => message.id === messageId
+        ? { ...message, text: errorMessage, status: 'failed', isStarting: false }
+        : message));
+      throw error;
+    }
   }, [params, setMessages]);
 
   const retryAllIncomplete = useCallback(async () => {
@@ -63,7 +72,7 @@ export const useGeneration = (
     if (!res.ok || !data.success) throw new Error(data.error || 'Bulk retry failed');
     const retriedIds = new Set<string>(data.messageIds || []);
     setMessages(prev => prev.map(message => retriedIds.has(message.id)
-      ? { ...message, text: '', status: 'pending', duration: 0, generationStartedAt: undefined }
+      ? { ...message, text: '', status: 'pending', isStarting: true, duration: 0, generationStartedAt: undefined }
       : message));
     fetchSessions();
     return data as { queued: number; messageIds: string[] };
@@ -116,6 +125,7 @@ export const useGeneration = (
     const randomResult = resolveRandomPromptsWithSelections(templatePrompt, generationParams.randomPromptLists);
     const resolvedPrompt = randomResult.prompt;
     const botMsgId = `temp-${Math.random().toString(36).substring(7)}`;
+    let userMsgId: string | undefined;
     const shouldEnhance = shouldEnhancePrompt({
       llmEnabled: generationParams.llmEnabled,
       hasProvider: Boolean(generationParams.llmProviderId),
@@ -124,10 +134,12 @@ export const useGeneration = (
       forceEnhancement
     });
     let recoveryMessageId: string | undefined;
+    let recoveryUserMessageId: string | undefined;
     let recoveredPrompt = resolvedPrompt;
 
     if (!isRegeneration && shouldUpdateVisibleMessages) {
-      const userMsg: Message = { id: `temp-${Math.random().toString(36).substring(7)}`, role: 'user', text: templatePrompt, timestamp: Date.now() };
+      userMsgId = `temp-${Math.random().toString(36).substring(7)}`;
+      const userMsg: Message = { id: userMsgId, role: 'user', text: templatePrompt, timestamp: Date.now() };
       setMessages(prev => [...prev, userMsg]);
     }
     
@@ -145,6 +157,7 @@ export const useGeneration = (
         randomSelections: randomResult.selections,
         status: 'pending',
         isEnhancing: shouldEnhance,
+        isStarting: !shouldEnhance,
         timestamp: Date.now(),
         model: generationParams.comfyModel,
         workflow: generationParams.workflowFile,
@@ -191,6 +204,9 @@ export const useGeneration = (
           recoveryMessageId = typeof enhanceData.recoveryMessageId === 'string'
             ? enhanceData.recoveryMessageId
             : undefined;
+          recoveryUserMessageId = typeof enhanceData.recoveryUserMessageId === 'string'
+            ? enhanceData.recoveryUserMessageId
+            : undefined;
           if (enhanceData.enhancedPrompt) {
             finalPrompt = enhanceData.enhancedPrompt;
             recoveredPrompt = finalPrompt;
@@ -222,7 +238,13 @@ export const useGeneration = (
         }
       }
 
-      // 3. Lancer la génération
+      // 3. Lancer la génération. The card remains in a counter-free starting
+      // state until the processing event confirms that rendering has begun.
+      if (shouldUpdateVisibleMessages) {
+        setMessages(previous => previous.map(message => message.id === botMsgId
+          ? { ...message, status: 'pending', isStarting: true, generationStartedAt: undefined }
+          : message));
+      }
       const res = await fetch(`${API_BASE}/api/generate/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -249,9 +271,34 @@ export const useGeneration = (
 
       if (res.ok && data.success) {
         if (shouldUpdateVisibleMessages) {
-          setMessages(prev => prev.map(m => m.id === botMsgId
-            ? { ...m, id: data.messageId, generationPrompt: finalPrompt, tags: data.tags || [] }
-            : m));
+          acknowledgeQueueMessage(data.messageId, botMsgId);
+          setMessages(prev => {
+            const acknowledgedUserMessageId = typeof data.userMessageId === 'string'
+              ? data.userMessageId
+              : recoveryUserMessageId;
+            const acknowledged = prev.map(m => {
+              if (userMsgId && acknowledgedUserMessageId && m.id === userMsgId) {
+                return { ...m, id: acknowledgedUserMessageId };
+              }
+              if (m.id !== botMsgId && m.id !== data.messageId) return m;
+              const processingWasAlreadyConfirmed = m.status === 'processing';
+              return {
+                ...m,
+                id: data.messageId,
+                status: processingWasAlreadyConfirmed ? 'processing' as const : 'pending' as const,
+                isStarting: processingWasAlreadyConfirmed ? false : (m.isStarting ?? true),
+                generationStartedAt: processingWasAlreadyConfirmed ? m.generationStartedAt : undefined,
+                generationPrompt: finalPrompt,
+                tags: data.tags || []
+              };
+            });
+            const seenIds = new Set<string>();
+            return acknowledged.filter(message => {
+              if (seenIds.has(message.id)) return false;
+              seenIds.add(message.id);
+              return true;
+            });
+          });
         }
         fetchSessions(); 
         return data;
@@ -274,7 +321,7 @@ export const useGeneration = (
       }
       if (runInBackground) throw error;
     }
-  }, [currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions]);
+  }, [currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions, acknowledgeQueueMessage]);
 
   return { handleSend, retryMessage, retryAllIncomplete, updatePendingPrompt, interruptGeneration, isEnhancing };
 };

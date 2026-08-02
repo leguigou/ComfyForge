@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { describe, it, expect, vi } from 'vitest';
-import { parseComfyError, releaseComfyMemory } from './comfy';
+import { isComfyConnectionRefused, parseComfyError, releaseComfyMemory } from './comfy';
 
 describe('releaseComfyMemory', () => {
   it('requests model unloading and cache release from ComfyUI', async () => {
@@ -98,5 +98,20 @@ describe('parseComfyError', () => {
 
   it('returns fallback for empty error', () => {
     expect(parseComfyError({})).toBe('Unknown server error');
+  });
+});
+
+describe('isComfyConnectionRefused', () => {
+  it('detects connection refusal from the Axios error code', () => {
+    expect(isComfyConnectionRefused({ code: 'ECONNREFUSED' })).toBe(true);
+  });
+
+  it('detects a nested connection refusal', () => {
+    expect(isComfyConnectionRefused({ cause: new Error('connect ECONNREFUSED 127.0.0.1:8188') })).toBe(true);
+  });
+
+  it('does not classify timeouts or HTTP errors as connection refusal', () => {
+    expect(isComfyConnectionRefused({ code: 'ETIMEDOUT', message: 'timeout' })).toBe(false);
+    expect(isComfyConnectionRefused({ response: { status: 500 } })).toBe(false);
   });
 });

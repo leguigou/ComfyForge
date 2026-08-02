@@ -19,6 +19,7 @@ import statisticsRoutes from './routes/statistics';
 import comparisonRoutes from './routes/comparisons';
 import { configureProviderEncryption } from './services/llm-providers';
 import { startAuditLogRetention } from './services/audit-log';
+import { compressJsonResponses } from './middleware/response-compression';
 
 const corsOptions = (req: Request): CorsOptions => ({
   origin: isAllowedRequestOrigin(req),
@@ -53,6 +54,7 @@ export const createApp = (authSecret: string) => {
   app.use(apiRateLimiter);
   app.use(express.json({ limit: '160mb' }));
   app.use(cookieParser(authSecret));
+  app.use(compressJsonResponses);
 
   const apiRouter = express.Router();
   apiRouter.use('/auth', authRoutes);

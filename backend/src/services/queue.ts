@@ -5,7 +5,7 @@ import fs from 'fs';
 import sharp from 'sharp';
 import { WebSocket, WebSocketServer } from 'ws';
 import db from './database';
-import { getTargetComfyUrl, getWorkflow, parseComfyError, releaseComfyMemory } from './comfy';
+import { getTargetComfyUrl, getWorkflow, isComfyConnectionRefused, parseComfyError, releaseComfyMemory } from './comfy';
 import { imagesDir, thumbnailsDir } from './image';
 import { QueueTask, GenerationParams, ComfyHistoryEntry } from '../types';
 import { writeAuditLog } from './audit-log';
@@ -14,6 +14,14 @@ import { resolveComfyHistoryImage, ResolvedComfyHistoryImage } from './comfy-his
 let isProcessingQueue = false;
 let wss: WebSocketServer | null = null;
 const websocketUsers = new WeakMap<WebSocket, string>();
+const COMFY_UNAVAILABLE_MESSAGE = 'ComfyUI est inaccessible. Toutes les générations ont été arrêtées. Vérifiez que ComfyUI est démarré et que son URL est correcte.';
+
+class ComfyUnavailableError extends Error {
+  constructor() {
+    super(COMFY_UNAVAILABLE_MESSAGE);
+    this.name = 'ComfyUnavailableError';
+  }
+}
 
 export const setWss = (wsServer: WebSocketServer) => {
   wss = wsServer;
@@ -88,6 +96,7 @@ export const processQueue = async () => {
       try {
         await releaseComfyMemory(targetComfyUrl);
       } catch (err: unknown) {
+        if (isComfyConnectionRefused(err)) throw new ComfyUnavailableError();
         throw new Error(`Unable to release ComfyUI memory: ${parseComfyError(err)}`);
       }
     }
@@ -149,6 +158,7 @@ export const processQueue = async () => {
         details: { promptId, response: response.data }
       });
     } catch (err: unknown) { 
+      if (isComfyConnectionRefused(err)) throw new ComfyUnavailableError();
       throw new Error(`Submission failed: ${parseComfyError(err)}`); 
     }
 
@@ -160,6 +170,8 @@ export const processQueue = async () => {
       if (Date.now() - startTime > POLLING_TIMEOUT) throw new Error('Generation timed out after 5 minutes.');
       
       const currentDuration = Math.floor((Date.now() - startTime) / 1000);
+      db.prepare('UPDATE messages SET duration = ? WHERE id = ?')
+        .run(currentDuration, task.messageId);
       broadcastToSession(task.sessionId, {
         messageId: task.messageId,
         status: 'processing',
@@ -171,6 +183,7 @@ export const processQueue = async () => {
       try { 
         hResp = await axios.get(`${targetComfyUrl}/history/${promptId}`, { timeout: 5000 }); 
       } catch (err: unknown) { 
+        if (isComfyConnectionRefused(err)) throw new ComfyUnavailableError();
         console.warn(`[Queue] Polling attempt failed: ${(err as Error).message}`); 
         writeAuditLog({
           level: 'warning',
@@ -232,6 +245,7 @@ export const processQueue = async () => {
         timeout: 15000
       });
     } catch (err: unknown) { 
+      if (isComfyConnectionRefused(err)) throw new ComfyUnavailableError();
       throw new Error(`Failed to retrieve image: ${parseComfyError(err)}`); 
     }
     
@@ -278,7 +292,44 @@ export const processQueue = async () => {
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : 'Unexpected error';
     console.error(`[Queue] Fatal error for task ${task?.messageId}:`, errorMsg);
-    if (task) {
+    if (error instanceof ComfyUnavailableError) {
+      const stoppedTasks = db.prepare(
+        "SELECT * FROM queue WHERE status IN ('pending', 'processing') ORDER BY createdAt ASC"
+      ).all() as QueueTask[];
+
+      db.transaction(() => {
+        const failMessage = db.prepare('UPDATE messages SET status = ?, text = ? WHERE id = ?');
+        const deleteTask = db.prepare('DELETE FROM queue WHERE id = ?');
+        for (const stoppedTask of stoppedTasks) {
+          failMessage.run('failed', errorMsg, stoppedTask.messageId);
+          deleteTask.run(stoppedTask.id);
+        }
+      })();
+
+      console.error(`[Queue] ComfyUI unavailable; stopped ${stoppedTasks.length} queued generation(s).`);
+      for (const stoppedTask of stoppedTasks) {
+        const failedOwner = db.prepare('SELECT userId FROM sessions WHERE id = ?').get(stoppedTask.sessionId) as { userId: string } | undefined;
+        broadcastToSession(stoppedTask.sessionId, {
+          messageId: stoppedTask.messageId,
+          status: 'failed',
+          error: errorMsg,
+          serviceUnavailable: true,
+          stopAll: true
+        });
+        writeAuditLog({
+          level: 'error',
+          source: 'comfyui',
+          direction: 'inbound',
+          event: 'comfy.generation.failed',
+          message: errorMsg,
+          status: 'failed',
+          userId: failedOwner?.userId,
+          sessionId: stoppedTask.sessionId,
+          messageId: stoppedTask.messageId,
+          details: { queueId: stoppedTask.id, reason: 'ECONNREFUSED', queueStopped: true }
+        });
+      }
+    } else if (task) {
       const failedOwner = db.prepare('SELECT userId FROM sessions WHERE id = ?').get(task.sessionId) as { userId: string } | undefined;
       db.prepare('UPDATE messages SET status = ?, text = ? WHERE id = ?').run('failed', errorMsg, task.messageId);
       db.prepare('DELETE FROM queue WHERE id = ?').run(task.id);

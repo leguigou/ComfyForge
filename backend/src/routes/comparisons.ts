@@ -81,31 +81,31 @@ router.get('/', authenticate, (req, res) => {
   const user = (req as any).user;
   const rows = db.prepare(`
     SELECT ${imageProjection},
-      cp.preferredMessageId AS comparisonPreferredMessageId,
-      cp.updatedAt AS comparisonPreferenceUpdatedAt,
       (
-        SELECT COUNT(*)
-        FROM messages earlier
-        WHERE earlier.comparisonSourceId = m.comparisonSourceId
-          AND earlier.imageUrl IS NOT NULL
-          AND earlier.status = 'completed'
-          AND (
-            earlier.timestamp < m.timestamp
-            OR (earlier.timestamp = m.timestamp AND earlier.id <= m.id)
-          )
-      ) AS comparisonVersionIndex
+        SELECT COUNT(*) + 1
+        FROM messages version
+        WHERE version.comparisonSourceId = m.id
+          AND version.imageUrl IS NOT NULL
+          AND version.status = 'completed'
+      ) AS comparisonVersionCount,
+      (
+        SELECT MAX(version.timestamp)
+        FROM messages version
+        WHERE version.comparisonSourceId = m.id
+          AND version.imageUrl IS NOT NULL
+          AND version.status = 'completed'
+      ) AS latestComparisonAt
     FROM messages m JOIN sessions s ON s.id = m.sessionId
-    LEFT JOIN comparison_preferences cp
-      ON cp.userId = s.userId
-      AND cp.sourceMessageId = m.comparisonSourceId
-      AND (
-        (cp.firstMessageId = m.comparisonSourceId AND cp.secondMessageId = m.id)
-        OR (cp.firstMessageId = m.id AND cp.secondMessageId = m.comparisonSourceId)
-      )
     WHERE s.userId = ? AND m.role = 'bot' AND m.imageUrl IS NOT NULL
       AND m.status = 'completed'
-      AND m.comparisonSourceId IS NOT NULL
-    ORDER BY m.timestamp DESC LIMIT 500
+      AND m.comparisonSourceId IS NULL
+      AND EXISTS (
+        SELECT 1 FROM messages version
+        WHERE version.comparisonSourceId = m.id
+          AND version.imageUrl IS NOT NULL
+          AND version.status = 'completed'
+      )
+    ORDER BY latestComparisonAt DESC LIMIT 500
   `).all(user.id);
   res.json(rows);
 });
@@ -113,6 +113,174 @@ router.get('/', authenticate, (req, res) => {
 router.get('/status/availability', authenticate, (_req, res) => {
   const active = db.prepare("SELECT COUNT(*) AS count FROM queue WHERE status IN ('pending', 'processing')").get() as { count: number };
   res.json({ available: active.count === 0, activeGenerations: active.count });
+});
+
+router.post('/batch/generate', authenticate, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const requestedIds = [...new Set(
+      (Array.isArray(req.body?.messageIds) ? req.body.messageIds : [])
+        .map((value: unknown) => String(value || '').trim())
+        .filter(Boolean)
+    )].slice(0, 500);
+    if (!requestedIds.length) return res.status(400).json({ error: 'Sélectionnez au moins une image' });
+
+    const active = db.prepare("SELECT COUNT(*) AS count FROM queue WHERE status IN ('pending', 'processing')").get() as { count: number };
+
+    const requestedModel = String(req.body?.model || '');
+    const requestedType = req.body?.modelType === 'diffusion' ? 'diffusion' : 'checkpoint';
+    const activeModel = String(req.body?.activeModel || '');
+    const activeModelType = req.body?.activeModelType === 'diffusion' ? 'diffusion' : 'checkpoint';
+    const settings = getUserSettings(user.id);
+    const favorite = (Array.isArray(settings.favoriteModels) ? settings.favoriteModels : []).find((entry: StoredFavorite) => (
+      entry.model === requestedModel && (entry.modelType || 'checkpoint') === requestedType
+    )) as StoredFavorite | undefined;
+    if (!favorite?.model || !favorite.workflowFile) {
+      return res.status(400).json({ error: 'Sélectionnez un modèle favori associé à un workflow' });
+    }
+
+    const placeholders = requestedIds.map(() => '?').join(', ');
+    const requestedRows = db.prepare(`
+      SELECT m.* FROM messages m JOIN sessions s ON s.id = m.sessionId
+      WHERE s.userId = ? AND m.id IN (${placeholders}) AND m.role = 'bot'
+        AND m.imageUrl IS NOT NULL AND m.status = 'completed'
+    `).all(user.id, ...requestedIds) as any[];
+    const sourceIds = [...new Set(requestedRows.map(item => item.comparisonSourceId || item.id))];
+    if (!sourceIds.length) return res.status(400).json({ error: 'Aucune image terminée dans la sélection' });
+
+    const sourcePlaceholders = sourceIds.map(() => '?').join(', ');
+    const sources = db.prepare(`
+      SELECT m.* FROM messages m JOIN sessions s ON s.id = m.sessionId
+      WHERE s.userId = ? AND m.id IN (${sourcePlaceholders}) AND m.role = 'bot'
+        AND m.imageUrl IS NOT NULL AND m.status = 'completed'
+      ORDER BY m.timestamp ASC
+    `).all(user.id, ...sourceIds) as any[];
+    const requestedModelKey = normalizeModelKey(favorite.model);
+    const existingRows = db.prepare(`
+      SELECT comparisonSourceId, model FROM messages
+      WHERE comparisonSourceId IN (${sourcePlaceholders})
+        AND status IN ('pending', 'processing', 'completed')
+    `).all(...sourceIds) as Array<{ comparisonSourceId: string; model?: string }>;
+    const alreadyProcessed = new Set(existingRows
+      .filter(item => normalizeModelKey(item.model) === requestedModelKey)
+      .map(item => item.comparisonSourceId));
+    const eligibleSources = sources.filter(source => (
+      normalizeModelKey(source.model) !== requestedModelKey && !alreadyProcessed.has(source.id)
+    ));
+
+    const defaults = { ...(favorite.generationDefaults || {}), ...getWorkflowDefaults(favorite.workflowFile) };
+    const created: Array<{ messageId: string; sourceMessageId: string }> = [];
+    const timestampBase = Date.now();
+    db.transaction(() => {
+      eligibleSources.forEach((source, index) => {
+        const executionPrompt = source.generationPrompt || source.prompt || source.text;
+        if (!executionPrompt || source.seed === null || source.seed === undefined) return;
+        const sourceParams = parseJson(source.generationParams);
+        const params: Record<string, any> = {
+          ...sourceParams,
+          ...defaults,
+          comfyModel: favorite.model,
+          comfyModelType: requestedType,
+          workflowFile: favorite.workflowFile,
+          comfyUrl: getTargetComfyUrl(sourceParams.comfyUrl || settings.comfyUrl),
+          seed: source.seed,
+          unloadBeforeRun: created.length === 0
+            ? active.count > 0 || favorite.model !== activeModel || requestedType !== activeModelType
+            : false
+        };
+        const messageId = uuidv4();
+        const timestamp = timestampBase + index;
+        db.prepare(`
+          INSERT INTO messages (
+            id, sessionId, role, text, prompt, imageUrl, timestamp, model, width,
+            height, steps, cfg, workflow, status, seed, randomSelections,
+            generationPrompt, generationParams, comparisonMessageId, comparisonSourceId
+          ) VALUES (?, ?, 'bot', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+        `).run(
+          messageId, source.sessionId,
+          executionPrompt !== source.prompt ? executionPrompt : '', source.prompt,
+          timestamp, favorite.model,
+          Number(params.width) || source.width, Number(params.height) || source.height,
+          Number(params.steps) || source.steps, Number(params.cfg) || source.cfg,
+          favorite.workflowFile, source.seed, source.randomSelections,
+          executionPrompt, JSON.stringify(params), source.id, source.id
+        );
+        db.prepare('UPDATE messages SET comparisonMessageId = ? WHERE id = ?').run(messageId, source.id);
+        db.prepare(`
+          INSERT INTO queue (messageId, prompt, originalPrompt, sessionId, params, status, createdAt)
+          VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        `).run(messageId, executionPrompt, source.prompt, source.sessionId, JSON.stringify(params), timestamp);
+        db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, source.sessionId);
+        created.push({ messageId, sourceMessageId: source.id });
+      });
+    })();
+
+    created.forEach(item => {
+      const source = eligibleSources.find(entry => entry.id === item.sourceMessageId);
+      if (source) broadcastToSession(source.sessionId, { messageId: item.messageId, status: 'pending', duration: 0, comparisonMessageId: source.id });
+    });
+    if (created.length) processQueue();
+    return res.status(created.length ? 202 : 200).json({
+      success: true,
+      queued: created.length,
+      processed: sourceIds.length,
+      messageIds: created.map(item => item.messageId)
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Impossible de lancer les comparaisons par lot' });
+  }
+});
+
+router.delete('/batch', authenticate, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const requestedIds = [...new Set(
+      (Array.isArray(req.body?.messageIds) ? req.body.messageIds : [])
+        .map((value: unknown) => String(value || '').trim())
+        .filter(Boolean)
+    )].slice(0, 500);
+    if (!requestedIds.length) return res.status(400).json({ error: 'Sélectionnez au moins une image' });
+    const placeholders = requestedIds.map(() => '?').join(', ');
+    const requestedRows = db.prepare(`
+      SELECT m.id, m.comparisonSourceId FROM messages m JOIN sessions s ON s.id = m.sessionId
+      WHERE s.userId = ? AND m.id IN (${placeholders}) AND m.role = 'bot'
+    `).all(user.id, ...requestedIds) as Array<{ id: string; comparisonSourceId?: string }>;
+    const sourceIds = [...new Set(requestedRows.map(item => item.comparisonSourceId || item.id))];
+    if (!sourceIds.length) return res.json({ success: true, deleted: 0 });
+    const sourcePlaceholders = sourceIds.map(() => '?').join(', ');
+    const comparisons = db.prepare(`
+      SELECT m.* FROM messages m JOIN sessions s ON s.id = m.sessionId
+      WHERE s.userId = ? AND m.comparisonSourceId IN (${sourcePlaceholders}) AND m.role = 'bot'
+    `).all(user.id, ...sourceIds) as any[];
+    if (comparisons.some(item => ['pending', 'processing'].includes(item.status))) {
+      return res.status(409).json({ error: 'Attendez la fin des générations avant de supprimer la sélection' });
+    }
+    db.transaction(() => {
+      for (const comparison of comparisons) {
+        if (comparison.isFavorite === 1 || comparison.isPromptFavorite === 1) {
+          db.prepare(`
+            UPDATE messages SET
+              isFavorite = CASE WHEN ? = 1 THEN 1 ELSE isFavorite END,
+              isPromptFavorite = CASE WHEN ? = 1 THEN 1 ELSE isPromptFavorite END
+            WHERE id = ?
+          `).run(comparison.isFavorite === 1 ? 1 : 0, comparison.isPromptFavorite === 1 ? 1 : 0, comparison.comparisonSourceId);
+        }
+        db.prepare(`
+          DELETE FROM comparison_preferences
+          WHERE userId = ? AND (firstMessageId = ? OR secondMessageId = ? OR preferredMessageId = ?)
+        `).run(user.id, comparison.id, comparison.id, comparison.id);
+        db.prepare('DELETE FROM queue WHERE messageId = ?').run(comparison.id);
+        db.prepare('DELETE FROM messages WHERE id = ?').run(comparison.id);
+      }
+      for (const sourceId of sourceIds) {
+        db.prepare('UPDATE messages SET comparisonMessageId = NULL WHERE id = ?').run(sourceId);
+      }
+    })();
+    deleteFiles(comparisons);
+    return res.json({ success: true, deleted: comparisons.length });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Impossible de supprimer la sélection' });
+  }
 });
 
 router.get('/:messageId', authenticate, (req, res) => {

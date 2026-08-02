@@ -29,7 +29,8 @@ const sendFileIfInside = (res: express.Response, baseDir: string, filePath: stri
     return res.status(404).send('Not found');
   }
 
-  return res.sendFile(resolvedPath);
+  res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
+  return res.sendFile(resolvedPath, { cacheControl: false });
 };
 
 const getWorkflowsDir = () => {

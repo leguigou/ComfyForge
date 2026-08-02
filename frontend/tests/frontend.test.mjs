@@ -15,6 +15,7 @@ let generationTimer;
 let promptEnhancement;
 let slashCommands;
 let config;
+let webSocketHelpers;
 
 before(async () => {
   vite = await createServer({
@@ -30,6 +31,7 @@ before(async () => {
   generationTimer = await vite.ssrLoadModule('/src/utils/generationTimer.ts');
   promptEnhancement = await vite.ssrLoadModule('/src/utils/promptEnhancement.ts');
   slashCommands = await vite.ssrLoadModule('/src/utils/slashCommands.ts');
+  webSocketHelpers = await vite.ssrLoadModule('/src/hooks/useWebSocket.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
   ({ MessageText } = await vite.ssrLoadModule('/src/components/chat/MessageText.tsx'));
 });
@@ -149,8 +151,55 @@ test('keeps generation timers independent from time spent waiting in the queue',
   assert.equal(generationTimer.getTrackedGenerationElapsedSeconds(0, 97_500, 98_000, 1, now), 2.5);
   assert.equal(generationTimer.resolveGenerationStartedAt('processing', undefined, undefined, now), now);
   assert.equal(generationTimer.resolveGenerationStartedAt('processing', undefined, 98_000, now), 98_000);
-  assert.equal(generationTimer.resolveGenerationStartedAt('processing', 95_000, 98_000, now), 95_000);
+  assert.equal(generationTimer.resolveGenerationStartedAt('processing', 95_000, 98_000, now), 98_000);
+  assert.equal(generationTimer.resolveGenerationStartedAt('processing', 95_000, undefined, now, 4), 96_000);
   assert.equal(generationTimer.resolveGenerationStartedAt('pending', undefined, undefined, now), undefined);
+});
+
+test('applies an early processing update to the random temporary generation ID', () => {
+  const acknowledged = [{
+    id: 'temp-random-client-id',
+    role: 'bot',
+    text: '',
+    timestamp: 1_000,
+    status: 'pending',
+  }];
+  const updated = webSocketHelpers.applyQueueUpdateToMessages(acknowledged, {
+    messageId: 'server-message-id',
+    status: 'processing',
+    duration: 1,
+  }, 2_000, 'temp-random-client-id');
+
+  assert.equal(updated[0].id, 'server-message-id');
+  assert.equal(updated[0].status, 'processing');
+  assert.equal(updated[0].generationStartedAt, 1_000);
+});
+
+test('keeps a counter-free starting state until processing is confirmed', () => {
+  const message = {
+    id: 'temp-generation',
+    role: 'bot',
+    text: '',
+    timestamp: 1_000,
+    status: 'pending',
+    isStarting: true,
+  };
+  const queued = webSocketHelpers.applyQueueUpdateToMessages([message], {
+    messageId: message.id,
+    status: 'pending',
+    queueRemaining: 2,
+  }, 1_500);
+  const processing = webSocketHelpers.applyQueueUpdateToMessages([message], {
+    messageId: message.id,
+    status: 'processing',
+    duration: 3,
+  }, 5_000);
+
+  assert.equal(queued[0].status, 'pending');
+  assert.equal(queued[0].isStarting, false);
+  assert.equal(processing[0].status, 'processing');
+  assert.equal(processing[0].isStarting, false);
+  assert.equal(processing[0].generationStartedAt, 2_000);
 });
 
 test('estimates generation progress without reaching completion early', () => {

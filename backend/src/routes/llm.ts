@@ -60,6 +60,7 @@ const fetchLuckyCandidates = (
 ) => {
   const keywords = options.keywords || [];
   const messageIds = [...new Set((options.messageIds || []).filter(Boolean))].slice(0, 20);
+  const promptFavoriteFilter = messageIds.length > 0 ? '' : 'AND m.isPromptFavorite = 1';
   const filters: string[] = [];
   const params: unknown[] = [userId];
 
@@ -86,7 +87,7 @@ const fetchLuckyCandidates = (
     JOIN sessions s ON s.id = m.sessionId
     WHERE s.userId = ?
       AND m.role = 'bot'
-      AND m.isPromptFavorite = 1
+      ${promptFavoriteFilter}
       AND m.imageUrl IS NOT NULL
       AND TRIM(${LUCKY_PROMPT_EXPRESSION}) <> ''
       ${filters.join('\n')}
@@ -277,7 +278,7 @@ const persistEnhancedPromptRecovery = (
       .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
   })();
 
-  return { messageId, tags };
+  return { messageId, userMessageId, tags };
 };
 
 const updateEnhancedPromptRecovery = (
@@ -623,12 +624,14 @@ router.post('/enhance-prompt', authenticate, async (req, res) => {
       enhancedPrompt: result.positive,
       negativePrompt: result.negative,
       recoveryMessageId: recovery?.messageId,
+      recoveryUserMessageId: recovery?.userMessageId,
       tags,
     });
   } catch (error: any) {
     res.status(502).json({
       error: 'LLM Error: ' + (error.response?.data?.error?.message || error.message),
       recoveryMessageId: recovery?.messageId,
+      recoveryUserMessageId: recovery?.userMessageId,
     });
   }
 });

@@ -7,6 +7,12 @@ import { withParsedRandomSelections } from '../services/message-metadata';
 import { attachPromptTags } from '../services/prompt-tags';
 
 const router = express.Router();
+const DEFAULT_MESSAGE_PAGE_SIZE = 60;
+const MAX_MESSAGE_PAGE_SIZE = 120;
+const MESSAGE_FIELDS = `id, role, text, prompt, generationPrompt, imageUrl, thumbnailUrl,
+  model, width, height, steps, cfg, workflow, status, timestamp, seed, isFavorite,
+  isPromptFavorite, duration, generationStartedAt, sampler, scheduler, randomSelections,
+  comparisonMessageId`;
 
 const sessionListQuery = `
   SELECT
@@ -49,9 +55,47 @@ router.get('/:id', authenticate, (req, res) => {
   const user = (req as any).user;
   const session = db.prepare('SELECT * FROM sessions WHERE id = ? AND userId = ?').get(req.params.id, user.id) as any;
   if (!session) return res.json({ error: 'Not found' });
-  const messages = db.prepare('SELECT id, role, text, prompt, generationPrompt, imageUrl, thumbnailUrl, model, width, height, steps, cfg, workflow, status, timestamp, seed, isFavorite, isPromptFavorite, duration, generationStartedAt, sampler, scheduler, randomSelections, comparisonMessageId FROM messages WHERE sessionId = ? ORDER BY timestamp ASC').all(req.params.id) as Record<string, unknown>[];
-  const enrichedMessages = attachPromptTags(db, messages.map(withParsedRandomSelections), 'id');
-  res.json({ ...session, messages: enrichedMessages });
+
+  if (req.query.all === 'true') {
+    const messages = db.prepare(`
+      SELECT ${MESSAGE_FIELDS} FROM messages
+      WHERE sessionId = ? ORDER BY timestamp ASC, id ASC
+    `).all(req.params.id) as Record<string, unknown>[];
+    const enrichedMessages = attachPromptTags(db, messages.map(withParsedRandomSelections), 'id');
+    return res.json({ ...session, messages: enrichedMessages, hasMore: false, nextCursor: null });
+  }
+
+  const requestedLimit = Number(req.query.limit);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(MAX_MESSAGE_PAGE_SIZE, Math.max(1, Math.round(requestedLimit)))
+    : DEFAULT_MESSAGE_PAGE_SIZE;
+  const beforeTimestamp = Number(req.query.beforeTimestamp);
+  const beforeId = typeof req.query.beforeId === 'string' ? req.query.beforeId : '';
+  const hasCursor = Number.isFinite(beforeTimestamp) && beforeId.length > 0;
+
+  const rows = (hasCursor
+    ? db.prepare(`
+        SELECT ${MESSAGE_FIELDS} FROM messages
+        WHERE sessionId = ? AND (timestamp < ? OR (timestamp = ? AND id < ?))
+        ORDER BY timestamp DESC, id DESC LIMIT ?
+      `).all(req.params.id, beforeTimestamp, beforeTimestamp, beforeId, limit + 1)
+    : db.prepare(`
+        SELECT ${MESSAGE_FIELDS} FROM messages
+        WHERE sessionId = ? ORDER BY timestamp DESC, id DESC LIMIT ?
+      `).all(req.params.id, limit + 1)) as Record<string, unknown>[];
+
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit).reverse();
+  const enrichedMessages = attachPromptTags(db, page.map(withParsedRandomSelections), 'id');
+  const oldest = page[0];
+  return res.json({
+    ...session,
+    messages: enrichedMessages,
+    hasMore,
+    nextCursor: hasMore && oldest
+      ? { timestamp: Number(oldest.timestamp), id: String(oldest.id) }
+      : null,
+  });
 });
 
 router.patch('/:id', authenticate, (req, res) => {

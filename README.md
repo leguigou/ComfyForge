@@ -17,22 +17,19 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
-## What's new in 2.3.0
+## What's new in 2.4.0
 
-Version 2.3.0 is a major feature update over the previous 2.1.1 code on `main` and the 2.1.0 public release.
+Version 2.4.0 focuses on faster mobile workflows, batch operations, reliable live generation feedback, and large-library performance.
 
-- **Model comparison workspace:** generate the same prompt and seed with several favorite model/workflow pairs, browse every version, inspect matching images with a draggable split view, zoom and pan, vote for the better result or a tie, and safely delete comparison versions.
-- **Creative statistics:** explore weekly, monthly, or yearly generation activity, success rate, average duration, conversations, model and workflow usage, favorites, liked prompts, tag trends, and recent text/vision LLM activity.
-- **Vision-powered image recreation:** import JPEG, PNG, WebP, or AVIF images and turn them into detailed reconstruction prompts through a configured multimodal model.
-- **Guided image variations:** describe only the change you want, optionally keep the original seed, and let the active LLM rewrite the existing prompt before the new version is queued.
-- **A richer Lucky workflow:** preview the liked-prompt references selected for a draw, filter them by tag, reroll one or all references, add optional creative guidance, and tune reference count and temperature. Selection favors coherent but diverse references while avoiding near-duplicates.
-- **Quick slash commands:** use `/ai`, `/luck`, `/seed`, `/steps`, `/cfg`, `/random`, and `/favorite` directly in the prompt composer, with keyboard navigation and validation.
-- **One-shot AI enhancement:** enhance one prompt without permanently enabling automatic LLM enhancement.
-- **Editable queued prompts:** correct a pending prompt before ComfyUI starts it; the queue, linked user message, extracted tags, and live UI stay synchronized.
-- **More capable local AI support:** first-class LM Studio preset, model discovery, configurable vision model and system prompt, automatic vision-model expiry, and manual memory release for Ollama and LM Studio.
-- **ComfyUI memory controls:** unload models and clear the ComfyUI cache from settings; model comparisons also release memory immediately before a model switch.
-- **Better live generation feedback:** persisted start timestamps and WebSocket updates keep elapsed-time displays accurate across views and refreshes.
-- **Responsive UI expansion:** dedicated navigation for Statistics and Comparisons, comparison badges in chat and gallery, mobile-friendly comparison grids with pinch column control, and polished English/French copy for the new workflows.
+- **Gallery multi-selection:** hold an image for one second on touch devices, or Shift-click on desktop, then regenerate, build a Lucky draw, favorite/unfavorite images, like/unlike prompts, or delete the entire selection. Selection exits automatically after an action or cancellation.
+- **Batch model comparisons:** select several comparison sources, render all eligible images with one favorite model/workflow pair, and delete completed comparison groups in a single operation while preserving favorite state on their sources.
+- **Progressive conversation loading:** recent messages open first and older pages load as the user scrolls upward, preserving the exact scroll position. Compressed JSON responses reduce transfer size for long histories.
+- **Clearer generation lifecycle:** new requests show a counter-free **Preparing** stage, queued work remains **Waiting**, and elapsed time starts only after processing is confirmed. WebSocket/HTTP reconciliation, persisted durations, immediate retries in the same card, and duplicate-message cleanup keep mobile cards stable.
+- **Live library updates:** completed background generations appear automatically in My Content, gallery images use lazy decoding, and large histories no longer need to be transferred in full.
+- **Improved mobile gestures:** long-press selection, swipe navigation, swipe-down lightbox dismissal, pinch-aware grids, and click suppression prevent accidental openings after touch gestures.
+- **Expanded lightbox actions:** create a random image from a favorite prompt with a dedicated dice action, while seed reuse now has its own distinct icon.
+- **Richer model discovery:** checkpoint, diffusion, and UNet inventories are merged across current and legacy ComfyUI endpoints, with model file sizes shown when ComfyUI exposes them.
+- **Stronger local-service reliability:** unreachable ComfyUI queues fail cleanly instead of remaining stuck, and local vision requests now distinguish LM Studio from Ollama by endpoint before provider name.
 
 ## Feature overview
 
@@ -42,6 +39,7 @@ Version 2.3.0 is a major feature update over the previous 2.1.1 code on `main` a
 - Prompt, negative prompt, checkpoint or diffusion model, workflow, width, height, seed, steps, CFG, sampler, and scheduler controls.
 - Fixed or random seeds, reusable random prompt lists such as `[R-Color]`, and regeneration with fresh dynamic selections.
 - Pending-prompt editing before execution and synchronized status updates over WebSockets.
+- Distinct Preparing, Waiting, and Processing stages, with retries reusing the failed card and timers based on persisted render duration.
 - Favorite models with associated workflows and saved generation defaults for one-click switching.
 
 ### Prompt intelligence
@@ -55,7 +53,8 @@ Version 2.3.0 is a major feature update over the previous 2.1.1 code on `main` a
 
 ### Library and discovery
 
-- Conversation history, archives, bulk archive/delete tools, gallery browsing, image favorites, and liked prompts.
+- Progressively loaded conversation history, archives, bulk archive/delete tools, gallery browsing, image favorites, and liked prompts.
+- Long-press/Shift-click gallery selection with batch regeneration, Lucky creation, favorite and prompt-like changes, and deletion.
 - Automatic prompt tags, tag search and filtering, tag-focused browsing, prompt reuse, and random selection from liked or favorite content.
 - Lucky generations built from weighted, coherent, non-duplicate liked-prompt references, with a visual preview and reroll controls.
 - Full-resolution lightbox, metadata, downloads, thumbnails, and direct navigation back to the originating chat.
@@ -67,6 +66,7 @@ Version 2.3.0 is a major feature update over the previous 2.1.1 code on `main` a
 - Compare any two same-size completed versions with a draggable split slider, zoom, pan, and reset controls.
 - Record pairwise preferences as left, right, or tie; inspect generation metadata and delete individual variants.
 - Browse a dedicated comparison history with a configurable one-to-six-column grid and touch pinch controls.
+- Select multiple comparison sources to generate them with one favorite model or delete completed comparison groups in bulk.
 
 ### Statistics
 

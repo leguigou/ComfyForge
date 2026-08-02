@@ -406,6 +406,50 @@ describe('API security boundaries', () => {
     expect(db.prepare('SELECT id FROM audit_logs WHERE message = ?').get('recent-log')).toBeTruthy();
   });
 
+  it('paginates long histories and compresses their JSON response', async () => {
+    const sessionId = 'paginated-history-session';
+    db.prepare(`
+      INSERT INTO sessions (id, userId, title, updatedAt, isArchived)
+      VALUES (?, ?, 'Paginated history', ?, 0)
+    `).run(sessionId, adminId, Date.now());
+    const insertMessage = db.prepare(`
+      INSERT INTO messages (id, sessionId, role, text, timestamp, status)
+      VALUES (?, ?, 'bot', ?, ?, 'completed')
+    `);
+    db.transaction(() => {
+      for (let index = 0; index < 65; index++) {
+        insertMessage.run(
+          `page-message-${String(index).padStart(2, '0')}`,
+          sessionId,
+          `Message ${index} ${'content '.repeat(20)}`,
+          10_000 + index
+        );
+      }
+    })();
+
+    const firstResponse = await request(`/api/history/${sessionId}?limit=60`, {
+      cookie: adminCookie,
+      headers: { 'Accept-Encoding': 'gzip' },
+    });
+    const firstPage = await json(firstResponse);
+    expect(firstResponse.headers.get('content-encoding')).toBe('gzip');
+    expect(firstPage.messages).toHaveLength(60);
+    expect(firstPage.messages[0].id).toBe('page-message-05');
+    expect(firstPage.hasMore).toBe(true);
+
+    const cursor = firstPage.nextCursor as { timestamp: number; id: string };
+    const secondResponse = await request(
+      `/api/history/${sessionId}?limit=60&beforeTimestamp=${cursor.timestamp}&beforeId=${cursor.id}`,
+      { cookie: adminCookie }
+    );
+    const secondPage = await json(secondResponse);
+    expect(secondPage.messages).toHaveLength(5);
+    expect(secondPage.messages[0].id).toBe('page-message-00');
+    expect(secondPage.hasMore).toBe(false);
+
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+  });
+
   it('deletes active sessions, archives, or both according to the selected scope', async () => {
     await request('/api/users', {
       method: 'POST',

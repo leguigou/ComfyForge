@@ -18,6 +18,7 @@ export interface Message {
   timestamp: number;
   status?: 'pending' | 'processing' | 'completed' | 'failed';
   isEnhancing?: boolean;
+  isStarting?: boolean;
   duration?: number;
   generationStartedAt?: number;
   isFavorite?: number;
@@ -75,6 +76,12 @@ export interface FavoriteModel {
   workflowFile: string;
   modelType?: 'checkpoint' | 'diffusion';
   generationDefaults?: Partial<ModelGenerationDefaults>;
+}
+
+export interface ComfyModelDetails {
+  name: string;
+  sizeBytes?: number;
+  sizeGb?: number;
 }
 
 export interface ModelGenerationDefaults {

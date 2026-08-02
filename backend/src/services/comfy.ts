@@ -177,3 +177,19 @@ export const parseComfyError = (error: unknown): string => {
   if (err?.code === 'ETIMEDOUT' || (err?.message as string | undefined)?.includes('timeout')) return 'ComfyUI request timed out (possible GPU overload or hang).';
   return (err?.message as string) || 'Unknown server error';
 };
+
+export const isComfyConnectionRefused = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+
+  const err = error as {
+    code?: unknown;
+    message?: unknown;
+    cause?: unknown;
+    errors?: unknown[];
+  };
+
+  if (err.code === 'ECONNREFUSED') return true;
+  if (typeof err.message === 'string' && err.message.includes('ECONNREFUSED')) return true;
+  if (isComfyConnectionRefused(err.cause)) return true;
+  return Array.isArray(err.errors) && err.errors.some(isComfyConnectionRefused);
+};

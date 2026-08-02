@@ -169,8 +169,12 @@ export const detectLocalProviderEngine = (provider: Pick<StoredProvider, 'name' 
   const name = provider.name.toLowerCase();
   try {
     const url = new URL(provider.baseUrl);
-    if (name.includes('ollama') || url.port === '11434') return 'ollama';
-    if (name.includes('lm studio') || name.includes('lmstudio') || url.port === '1234') return 'lmstudio';
+    // The configured endpoint is more reliable than a provider name that may
+    // have been kept after switching the local engine.
+    if (url.port === '11434') return 'ollama';
+    if (url.port === '1234') return 'lmstudio';
+    if (name.includes('ollama')) return 'ollama';
+    if (name.includes('lm studio') || name.includes('lmstudio')) return 'lmstudio';
   } catch {
     return null;
   }
@@ -274,6 +278,12 @@ export const completeVisionWithProvider = async (
         options: { temperature: 0.2 },
       }, { headers: authHeaders(provider), timeout: 120000 });
       responseData = response.data;
+      if (response.data?.error) {
+        const providerError = typeof response.data.error === 'string'
+          ? response.data.error
+          : response.data.error.message;
+        throw new Error(providerError || 'Ollama vision request failed');
+      }
       content = response.data.message?.content || '';
     } else if (provider.type === 'anthropic') {
       const response = await axios.post(`${baseUrl}/v1/messages`, {

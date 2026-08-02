@@ -153,6 +153,7 @@ router.post('/generate', authenticate, async (req, res) => {
 
     const timestamp = Date.now();
     let messageId: string;
+    let userMessageId: string | undefined;
     let tags: Array<{ slug: string; category: string; labelFr: string; labelEn: string }>;
 
     if (typeof recoveryMessageId === 'string' && recoveryMessageId) {
@@ -176,7 +177,7 @@ router.post('/generate', authenticate, async (req, res) => {
     } else {
       const safeParams = normalizeGenerationParams(params);
       messageId = uuidv4();
-      const userMessageId = uuidv4();
+      userMessageId = uuidv4();
 
       // Si prompt est différent d'originalPrompt, c'est que l'IA a bossé
       const isEnhanced = prompt && originalPrompt && prompt !== originalPrompt;
@@ -212,14 +213,26 @@ router.post('/generate', authenticate, async (req, res) => {
       db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
     }
 
-    res.json({ success: true, messageId, status: 'pending', tags });
-    
     // Publish the new queue size immediately. Without this, clients only hear
     // about additional pending items when the active job emits its next update.
     broadcastToSession(sessionId, { messageId, status: 'pending', duration: 0 });
 
-    // Start processing immediately
-    processQueue();
+    // Start processing before replying. processQueue updates the message status
+    // synchronously before its first network await, so the response can expose
+    // the state the UI should actually render without waiting for its 3s poll.
+    void processQueue();
+    const currentMessageState = db.prepare(
+      'SELECT status, generationStartedAt FROM messages WHERE id = ?'
+    ).get(messageId) as { status: 'pending' | 'processing'; generationStartedAt?: number } | undefined;
+
+    res.json({
+      success: true,
+      messageId,
+      userMessageId: req.body.isRegeneration ? undefined : userMessageId,
+      status: currentMessageState?.status || 'pending',
+      generationStartedAt: currentMessageState?.generationStartedAt,
+      tags
+    });
   } catch (error: any) {
     if (error instanceof ServiceUrlError) return res.status(error.statusCode).json({ success: false, error: error.message });
     res.status(500).json({ success: false, error: error.message });

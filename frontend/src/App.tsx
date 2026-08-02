@@ -8,7 +8,8 @@ import type {
   Language,
   User,
   PromptTag,
-  LuckyReference
+  LuckyReference,
+  ComfyModelDetails
 } from './types';
 import type { AppView } from './types';
 import { API_BASE, getFullImageUrl } from './services/api';
@@ -26,7 +27,7 @@ import { useSessions } from './hooks/useSessions';
 import { useGeneration } from './hooks/useGeneration';
 import { useWebSocket } from './hooks/useWebSocket';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
-import { ComposeIcon, InfoIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon, XIcon } from './components/ui/Icons';
+import { ComposeIcon, DiceIcon, HashIcon, InfoIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon, XIcon } from './components/ui/Icons';
 import toast, { Toaster } from 'react-hot-toast';
 import NoSleep from 'nosleep.js';
 import comfyForgeLogo from './assets/comfyforge-logo-v2.png';
@@ -170,7 +171,10 @@ function App() {
     deleteSessions,
     deleteMessage,
     massActionType,
-    setMassActionType
+    setMassActionType,
+    hasMoreMessages,
+    isLoadingOlderMessages,
+    loadOlderMessages
   } = useSessions(view, isAuthenticated);
 
   const [loginUsername, setLoginUsername] = useState('');
@@ -212,6 +216,7 @@ function App() {
   const scrollRequestTimeoutRef = useRef<number | null>(null);
   const restoredScrollContextRef = useRef<string | null>(null);
   const scrollSaveFrameRef = useRef<number | null>(null);
+  const refreshGalleryRef = useRef<(() => void) | null>(null);
 
   const smoothScrollTo = useCallback((elementId: string) => {
     if (pendingAnchorRef.current || isAnchoringRef.current) return;
@@ -319,6 +324,10 @@ function App() {
     if (status === 'completed' && isCurrentlyVisible) {
       await markSessionAsViewed(sessionId);
     }
+
+    if (status === 'completed' && view === 'gallery') {
+      refreshGalleryRef.current?.();
+    }
   }, [currentSessionId, markSessionAsViewed, setSessions, view]);
 
   useEffect(() => {
@@ -333,7 +342,7 @@ function App() {
     return () => document.removeEventListener('visibilitychange', markCurrentSessionAsViewed);
   }, [currentSessionId, markSessionAsViewed, view]);
 
-  const { clientIdRef } = useWebSocket(
+  const { clientIdRef, acknowledgeQueueMessage } = useWebSocket(
     isAuthenticated,
     currentSessionId,
     setMessages,
@@ -342,7 +351,15 @@ function App() {
     handleGenerationStatus,
     setQueueRemaining
   );
-  const { handleSend, retryMessage, retryAllIncomplete, updatePendingPrompt, interruptGeneration, isEnhancing } = useGeneration(currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions);
+  const { handleSend, retryMessage, retryAllIncomplete, updatePendingPrompt, interruptGeneration, isEnhancing } = useGeneration(
+    currentSessionId,
+    params,
+    clientIdRef,
+    setMessages,
+    smoothScrollTo,
+    fetchSessions,
+    acknowledgeQueueMessage
+  );
 
   const isGenerating = isEnhancing || messages.some(m => m.role === 'bot' && (m.status === 'pending' || m.status === 'processing'));
 
@@ -370,6 +387,7 @@ function App() {
   const [modifyDirection, setModifyDirection] = useState('');
   const [keepModifySeed, setKeepModifySeed] = useState(true);
   const [isModifyingImage, setIsModifyingImage] = useState(false);
+  const [isGeneratingRandomFavorite, setIsGeneratingRandomFavorite] = useState(false);
   const lightboxChatWasNavigatedRef = useRef(false);
 
   const closeLightbox = useCallback(() => {
@@ -553,6 +571,12 @@ function App() {
 
   const handleLightboxTouchEnd = (e: React.TouchEvent) => {
     const tap = lightboxTapGesture.current;
+    if (tap?.moved) {
+      suppressLightboxClickRef.current = true;
+      window.setTimeout(() => {
+        suppressLightboxClickRef.current = false;
+      }, 500);
+    }
     if (
       e.touches.length === 0
       && zoomScale > 1
@@ -574,7 +598,7 @@ function App() {
       ? { x: e.touches[0].clientX, y: e.touches[0].clientY }
       : null;
     if (zoomScale === 1) {
-      handleTouchEnd();
+      handleTouchEnd(e.type === 'touchcancel');
     }
   };
 
@@ -716,6 +740,105 @@ function App() {
     }
   }, [setMessages, t.promptLiked, t.promptUnliked, t.promptLikeFailed]);
 
+  const batchSetGalleryFlag = useCallback(async (
+    items: GalleryItem[],
+    value: number,
+    kind: 'favorite' | 'prompt-favorite'
+  ) => {
+    const bodyKey = kind === 'favorite' ? 'isFavorite' : 'isPromptFavorite';
+    const results = await Promise.all(items.map(async item => {
+      const response = await fetch(`${API_BASE}/api/history/${item.sessionId}/message/${item.messageId}/${kind}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [bodyKey]: value }),
+        credentials: 'include'
+      });
+      return { id: item.messageId, ok: response.ok };
+    }));
+    const updatedIds = new Set(results.filter(result => result.ok).map(result => result.id));
+    const patch = kind === 'favorite' ? { isFavorite: value } : { isPromptFavorite: value };
+    setMessages(previous => previous.map(message => updatedIds.has(message.id) ? { ...message, ...patch } : message));
+    setGalleryItems(previous => previous
+      .map(item => updatedIds.has(item.messageId) ? { ...item, ...patch } : item)
+      .filter(item => !(kind === 'favorite' && favoritesOnly && value === 0 && updatedIds.has(item.messageId))));
+    if (kind === 'favorite' && favoritesOnly && value === 0) {
+      setGalleryTotal(total => Math.max(0, total - updatedIds.size));
+    }
+    if (updatedIds.size !== items.length) throw new Error(t.batchUpdateFailed);
+  }, [favoritesOnly, setMessages, t.batchUpdateFailed]);
+
+  const batchSetGalleryFavorites = useCallback((items: GalleryItem[], value: number) => (
+    batchSetGalleryFlag(items, value, 'favorite')
+  ), [batchSetGalleryFlag]);
+
+  const batchSetGalleryPromptFavorites = useCallback((items: GalleryItem[], value: number) => (
+    batchSetGalleryFlag(items, value, 'prompt-favorite')
+  ), [batchSetGalleryFlag]);
+
+  const batchDeleteGalleryItems = useCallback(async (items: GalleryItem[]) => {
+    const results = await Promise.all(items.map(async item => {
+      const response = await fetch(`${API_BASE}/api/history/${item.sessionId}/message/${item.messageId}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      return { id: item.messageId, ok: response.ok };
+    }));
+    const deletedIds = new Set(results.filter(result => result.ok).map(result => result.id));
+    setMessages(previous => previous.filter(message => !deletedIds.has(message.id)));
+    setGalleryItems(previous => previous.filter(item => !deletedIds.has(item.messageId)));
+    setGalleryTotal(total => Math.max(0, total - deletedIds.size));
+    await fetchSessions();
+    if (deletedIds.size !== items.length) throw new Error(t.batchDeleteFailed);
+  }, [fetchSessions, setMessages, t.batchDeleteFailed]);
+
+  const batchRegenerateGalleryItems = useCallback(async (items: GalleryItem[]) => {
+    const failures: string[] = [];
+    for (const item of items) {
+      const prompt = item.generationPrompt || item.prompt || item.text || '';
+      if (!prompt.trim()) {
+        failures.push(item.messageId);
+        continue;
+      }
+      try {
+        recordRegeneration(item.messageId);
+        await handleSend(prompt, true, item.sessionId, false, true);
+      } catch {
+        failures.push(item.messageId);
+      }
+    }
+    if (failures.length > 0) throw new Error(`${items.length - failures.length}/${items.length} ${t.batchQueuedPartial}`);
+  }, [handleSend, recordRegeneration, t.batchQueuedPartial]);
+
+  const batchLuckyGalleryItems = useCallback(async (items: GalleryItem[]) => {
+    if (!params.llmProviderId) throw new Error(t.luckyNeedsProvider);
+    if (items.length > 8) throw new Error(t.batchLuckyLimit);
+    const references: LuckyReference[] = items.map(item => ({
+      messageId: item.messageId,
+      prompt: item.generationPrompt || item.prompt || item.text || '',
+      imageUrl: item.imageUrl,
+      thumbnailUrl: item.thumbnailUrl,
+      isFavorite: item.isFavorite,
+      tags: item.tags || [],
+      matchingTags: [],
+    }));
+    const normalizedReferences = references.map(reference => ({
+      ...reference,
+      matchingTags: reference.tags.filter(tag => (
+        tag.category !== 'subject'
+        && tag.category !== 'count'
+        && references.some(other => other.messageId !== reference.messageId && other.tags.some(otherTag => otherTag.slug === tag.slug))
+      )),
+    }));
+    setLuckyReferencePreview({
+      keywords: '',
+      references: normalizedReferences,
+      totalCandidates: references.length,
+      guidance: '',
+      activeTagSlug: '',
+    });
+    setView('chat');
+  }, [params.llmProviderId, t.batchLuckyLimit, t.luckyNeedsProvider]);
+
   const handleImageClick = useCallback((item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, source: 'chat' | 'gallery' }) => {
     if (clickTimeoutRef.current) {
       clearTimeout(clickTimeoutRef.current);
@@ -776,6 +899,8 @@ function App() {
 
   const [comfyModels, setComfyModels] = useState<string[]>([]);
   const [diffusionModels, setDiffusionModels] = useState<string[]>([]);
+  const [checkpointModelDetails, setCheckpointModelDetails] = useState<ComfyModelDetails[]>([]);
+  const [diffusionModelDetails, setDiffusionModelDetails] = useState<ComfyModelDetails[]>([]);
   const [isFetchingComfyModels, setIsFetchingComfyModels] = useState(false);
   const [comfyStatus, setComfyStatus] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
   const [comfyCheckStatus, setComfyCheckStatus] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
@@ -838,10 +963,43 @@ function App() {
     }
   }, [currentSessionId, view]);
 
+  const olderMessagesLoadRef = useRef(false);
+  const loadOlderMessagesPreservingScroll = useCallback(async () => {
+    const container = containerRef.current;
+    if (!container || olderMessagesLoadRef.current || !hasMoreMessages) return;
+
+    olderMessagesLoadRef.current = true;
+    const previousHeight = container.scrollHeight;
+    const previousTop = container.scrollTop;
+    const loaded = await loadOlderMessages();
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const currentContainer = containerRef.current;
+        if (currentContainer && loaded > 0) {
+          isProgrammaticScrollRef.current = true;
+          currentContainer.scrollTop = previousTop + currentContainer.scrollHeight - previousHeight;
+          isProgrammaticScrollRef.current = false;
+        }
+        olderMessagesLoadRef.current = false;
+      });
+    });
+  }, [hasMoreMessages, loadOlderMessages]);
+
   const handleScroll = useCallback((isUserScroll: boolean | React.UIEvent = false) => {
     if (isProgrammaticScrollRef.current) return;
     const container = containerRef.current;
     if (!container) return;
+
+    if (
+      isUserScroll === true
+      && view === 'chat'
+      && container.scrollTop < 240
+      && hasMoreMessages
+      && !isLoadingOlderMessages
+    ) {
+      void loadOlderMessagesPreservingScroll();
+    }
 
     if (view === 'chat' && currentSessionId && scrollSaveFrameRef.current === null) {
       scrollSaveFrameRef.current = window.requestAnimationFrame(() => {
@@ -871,7 +1029,7 @@ function App() {
     } else {
       setShowScrollBottom(true);
     }
-  }, [currentSessionId, saveChatScrollPosition, view]);
+  }, [currentSessionId, hasMoreMessages, isLoadingOlderMessages, loadOlderMessagesPreservingScroll, saveChatScrollPosition, view]);
 
   // Force scroll check when content changes
   useEffect(() => {
@@ -895,6 +1053,8 @@ function App() {
         const diffusion = data.diffusionModels || [];
         setComfyModels(checkpoints);
         setDiffusionModels(diffusion);
+        setCheckpointModelDetails(Array.isArray(data.checkpointDetails) ? data.checkpointDetails : []);
+        setDiffusionModelDetails(Array.isArray(data.diffusionModelDetails) ? data.diffusionModelDetails : []);
         setComfyStatus({ type: 'success', msg: `${checkpoints.length + diffusion.length} ${t.modelsFound}` });
         setParams(p => {
           const selectedList = p.comfyModelType === 'diffusion' ? diffusion : checkpoints;
@@ -1262,7 +1422,16 @@ function App() {
     hasMoreGalleryRef.current = true;
     setGalleryItems([]);
     setHasMoreGallery(true);
-    fetchGallery(true);
+    void fetchGallery(true);
+  }, [fetchGallery]);
+
+  useEffect(() => {
+    refreshGalleryRef.current = () => {
+      void fetchGallery(true);
+    };
+    return () => {
+      refreshGalleryRef.current = null;
+    };
   }, [fetchGallery]);
 
   const openPromptTag = useCallback((slug: string) => {
@@ -1322,7 +1491,7 @@ function App() {
     setMessages([]);
     setCurrentSessionId(sessionId);
     setView('chat');
-    void fetchSessionDetails(sessionId);
+    void fetchSessionDetails(sessionId, { all: true, reset: true });
   }, [fetchSessionDetails, setCurrentSessionId, setMessages]);
 
   useEffect(() => {
@@ -1416,10 +1585,20 @@ function App() {
     setTimeout(() => textareaRef.current?.focus(), 50);
   }, []);
 
-  const touchStart = useRef<number | null>(null);
-  const touchEnd = useRef<number | null>(null);
-  const handleTouchStart = useCallback((e: React.TouchEvent) => { touchStart.current = e.targetTouches[0].clientX; }, []);
-  const handleTouchMove = useCallback((e: React.TouchEvent) => { touchEnd.current = e.targetTouches[0].clientX; }, []);
+  const dismissFailedMessage = useCallback((messageId: string) => {
+    setMessages(previous => previous.filter(message => message.id !== messageId));
+  }, [setMessages]);
+
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const touchEnd = useRef<{ x: number; y: number } | null>(null);
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    const position = { x: e.targetTouches[0].clientX, y: e.targetTouches[0].clientY };
+    touchStart.current = position;
+    touchEnd.current = position;
+  }, []);
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    touchEnd.current = { x: e.targetTouches[0].clientX, y: e.targetTouches[0].clientY };
+  }, []);
 
   const navigateLightbox = useCallback(async (direction: 1 | -1) => {
     if (!activeLightbox) return;
@@ -1485,14 +1664,29 @@ function App() {
     });
   }, [activeLightbox, currentSessionId, fetchGallery, messages]);
 
-  const handleTouchEnd = useCallback(() => {
+  const handleTouchEnd = useCallback((cancelled = false) => {
     if (touchStart.current === null || touchEnd.current === null) return;
-    const distance = touchStart.current - touchEnd.current;
-    if (activeLightbox && Math.abs(distance) > 50) {
-      void navigateLightbox(distance > 0 ? 1 : -1);
+    const deltaX = touchStart.current.x - touchEnd.current.x;
+    const deltaY = touchStart.current.y - touchEnd.current.y;
+    const horizontalDistance = Math.abs(deltaX);
+    const verticalDistance = Math.abs(deltaY);
+
+    if (Math.hypot(deltaX, deltaY) > 8) {
+      suppressLightboxClickRef.current = true;
+      window.setTimeout(() => {
+        suppressLightboxClickRef.current = false;
+      }, 500);
+    }
+
+    if (!cancelled && activeLightbox) {
+      if (horizontalDistance > 50 && horizontalDistance > verticalDistance * 1.25) {
+        void navigateLightbox(deltaX > 0 ? 1 : -1);
+      } else if (verticalDistance > 70 && verticalDistance > horizontalDistance * 1.25) {
+        closeLightbox();
+      }
     }
     touchStart.current = touchEnd.current = null;
-  }, [activeLightbox, navigateLightbox]);
+  }, [activeLightbox, closeLightbox, navigateLightbox]);
 
   const downloadImage = useCallback(async (url: string, filename: string) => {
     const res = await fetch(url, { credentials: 'include' });
@@ -1937,6 +2131,32 @@ function App() {
     }
   };
 
+  const generateFromRandomFavorite = async () => {
+    if (!activeLightbox || isGeneratingRandomFavorite) return;
+
+    const { sessionId } = activeLightbox;
+    setShowLightboxMenu(false);
+    setIsGeneratingRandomFavorite(true);
+    try {
+      const query = new URLSearchParams({ source: 'favorite' });
+      const response = await fetch(`${API_BASE}/api/gallery/random-prompt?${query.toString()}`, {
+        credentials: 'include'
+      });
+      const data = await response.json();
+      if (!response.ok || typeof data.prompt !== 'string' || !data.prompt.trim()) {
+        throw new Error(t.slashNoFavoritePrompts);
+      }
+
+      await handleSend(data.prompt.trim(), false, sessionId, true, true);
+      toast.success(t.randomFavoriteGenerationStarted);
+    } catch (error) {
+      console.error('Random favorite generation failed:', error);
+      toast.error(error instanceof Error ? error.message : t.randomFavoriteGenerationFailed);
+    } finally {
+      setIsGeneratingRandomFavorite(false);
+    }
+  };
+
   const modifyLightboxImage = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!activeLightbox || !currentLightboxItem || !modifyDirection.trim() || isModifyingImage) return;
@@ -2143,6 +2363,16 @@ function App() {
                       type="button"
                       className="lightbox-menu-item"
                       role="menuitem"
+                      disabled={isGeneratingRandomFavorite}
+                      onClick={() => void generateFromRandomFavorite()}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true"><DiceIcon size={18} /></span>
+                      <span>{isGeneratingRandomFavorite ? t.randomFavoriteGenerating : t.randomFavoriteGeneration}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="lightbox-menu-item"
+                      role="menuitem"
                       disabled={!currentLightboxPrompt.trim()}
                       onClick={() => {
                         setModifyDirection('');
@@ -2188,7 +2418,7 @@ function App() {
                         toast.success(t.reuseSeed);
                       }}
                     >
-                      <span className="lightbox-menu-icon" aria-hidden="true">🎲</span>
+                      <span className="lightbox-menu-icon" aria-hidden="true"><HashIcon size={18} /></span>
                       <span>{t.reuseSeed}</span>
                     </button>
                     <button
@@ -2246,7 +2476,9 @@ function App() {
       <SettingsModal
         showSettings={showSettings} setShowSettings={setShowSettings} activeTab={activeTab} setActiveTab={setActiveTab}
         params={params} setParams={setParams} lang={lang} t={t} currentUser={currentUser}
-        comfyModels={comfyModels} diffusionModels={diffusionModels} isFetchingComfyModels={isFetchingComfyModels} fetchComfyModels={fetchComfyModels}
+        comfyModels={comfyModels} diffusionModels={diffusionModels}
+        checkpointModelDetails={checkpointModelDetails} diffusionModelDetails={diffusionModelDetails}
+        isFetchingComfyModels={isFetchingComfyModels} fetchComfyModels={fetchComfyModels}
         comfyStatus={comfyStatus} testComfyConnection={testComfyConnection} isCheckingComfy={isCheckingComfy} comfyCheckStatus={comfyCheckStatus}
         availableWorkflows={availableWorkflows} fetchWorkflows={fetchWorkflows}
         adminUsers={adminUsers} newUser={newUser} setNewUser={setNewUser} handleAddUser={handleAddUser} isAdminLoading={isAdminLoading}
@@ -2392,10 +2624,14 @@ function App() {
           currentSessionId={currentSessionId} input={input} setInput={onInputChange} handleSend={onHandleSend}
           createLuckyGeneration={createLuckyGeneration} isCreatingLuckyPrompt={isCreatingLuckyPrompt} isLoadingLuckyReferences={isLoadingLuckyReferences}
           regenerationCounts={regenerationCounts} recordRegeneration={recordRegeneration}
-          retryMessage={retryMessage} retryAllIncomplete={retryAllIncomplete} updatePendingPrompt={updatePendingPrompt}
+          retryMessage={retryMessage} dismissFailedMessage={dismissFailedMessage}
+          retryAllIncomplete={retryAllIncomplete} updatePendingPrompt={updatePendingPrompt}
           interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} openComparison={openComparison} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
           setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} favoritedId={favoritedId}
           galleryItems={galleryItems} galleryTotal={galleryTotal} isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
+          batchDeleteGalleryItems={batchDeleteGalleryItems} batchRegenerateGalleryItems={batchRegenerateGalleryItems}
+          batchLuckyGalleryItems={batchLuckyGalleryItems} batchSetGalleryFavorites={batchSetGalleryFavorites}
+          batchSetGalleryPromptFavorites={batchSetGalleryPromptFavorites}
           availablePromptTags={availablePromptTags} selectedPromptTags={selectedPromptTags} setSelectedPromptTags={setSelectedPromptTags}
           gallerySearch={gallerySearch} setGallerySearch={setGallerySearch} openPromptTag={openPromptTag}
           showArchivedInGallery={showArchivedInGallery} setShowArchivedInGallery={setShowArchivedInGallery}
