@@ -556,6 +556,64 @@ describe('API security boundaries', () => {
     }
   });
 
+  it('persists a completed vision prompt before returning it to the browser', async () => {
+    const { encryptApiKey } = await import('../services/llm-providers');
+    const providerId = 'vision-recovery-provider';
+    const recoveryId = 'vision-recovery-00000000-0000-4000-8000-000000000001';
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO llm_providers (
+        id, userId, name, type, baseUrl, model, apiKey, isActive, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      providerId,
+      adminId,
+      'Vision recovery test',
+      'openai',
+      'https://vision.example.test',
+      'vision-test-model',
+      encryptApiKey('test-api-key'),
+      0,
+      now,
+      now,
+    );
+
+    const postSpy = vi.spyOn(axios, 'post').mockResolvedValueOnce({
+      data: { choices: [{ message: { content: 'Recovered vision prompt' } }] },
+    });
+    try {
+      const response = await request('/api/llm/analyze-image', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: JSON.stringify({
+          providerId,
+          model: 'vision-test-model',
+          recoveryId,
+          mimeType: 'image/png',
+          image: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect((await json(response)).prompt).toBe('Recovered vision prompt');
+
+      const saved = db.prepare(`
+        SELECT status, prompt FROM vision_prompt_recoveries WHERE id = ? AND userId = ?
+      `).get(recoveryId, adminId) as { status: string; prompt: string };
+      expect(saved.status).toBe('completed');
+      expect(saved.prompt).toBe('Recovered vision prompt');
+
+      const recoveryResponse = await request(`/api/llm/vision-recoveries/${recoveryId}`, {
+        cookie: adminCookie,
+      });
+      expect(recoveryResponse.status).toBe(200);
+      expect((await json(recoveryResponse)).prompt).toBe('Recovered vision prompt');
+      expect((await request(`/api/llm/vision-recoveries/${recoveryId}`)).status).toBe(401);
+    } finally {
+      postSpy.mockRestore();
+      db.prepare('DELETE FROM llm_providers WHERE id = ?').run(providerId);
+    }
+  });
+
   it('isolates admin logs by administrator account', async () => {
     await request('/api/users', {
       method: 'POST',

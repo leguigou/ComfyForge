@@ -27,6 +27,12 @@ const MAX_GALLERY_COLUMNS = 6;
 const GALLERY_PINCH_STEP = 1.16;
 const GALLERY_LONG_PRESS_MS = 1000;
 const GALLERY_LONG_PRESS_MOVE_TOLERANCE = 12;
+const VISION_RECOVERY_STORAGE_KEY = 'comfyforge.pendingVisionRecovery';
+
+const createVisionRecoveryId = () => {
+  if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
+  return `vision-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+};
 
 const createSafeImagePreview = async (file: File) => {
   const bitmap = await createImageBitmap(file);
@@ -291,7 +297,11 @@ export const ChatInterface = ({
   const [isResolvingSlashCommand, setIsResolvingSlashCommand] = useState(false);
   const [isPromptFocused, setIsPromptFocused] = useState(false);
   const [isAnalyzingImage, setIsAnalyzingImage] = useState(false);
+  const [analysisStartedAt, setAnalysisStartedAt] = useState(0);
   const [analysisPreview, setAnalysisPreview] = useState<{ url: string } | null>(null);
+  const [pendingVisionRecoveryId, setPendingVisionRecoveryId] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : window.localStorage.getItem(VISION_RECOVERY_STORAGE_KEY)
+  );
   const [isGallerySearchFocused, setIsGallerySearchFocused] = useState(false);
   const [pendingPromptEditor, setPendingPromptEditor] = useState<{
     displayMessageId: string;
@@ -368,6 +378,70 @@ export const ChatInterface = ({
     if (analysisPreview?.url) URL.revokeObjectURL(analysisPreview.url);
   }, [analysisPreview]);
 
+  useEffect(() => {
+    if (!pendingVisionRecoveryId) return;
+    let cancelled = false;
+    let pollTimer: number | undefined;
+    const startedAt = Date.now();
+    const deadline = startedAt + 3 * 60 * 1000;
+    setAnalysisStartedAt(startedAt);
+    setTimerNow(startedAt);
+    setIsAnalyzingImage(true);
+
+    const finishRecovery = () => {
+      window.localStorage.removeItem(VISION_RECOVERY_STORAGE_KEY);
+      setPendingVisionRecoveryId(null);
+      setIsAnalyzingImage(false);
+      setAnalysisPreview(null);
+      if (imageImportRef.current) imageImportRef.current.value = '';
+    };
+    const schedulePoll = () => {
+      if (cancelled) return;
+      if (Date.now() >= deadline) {
+        toast.error(lang === 'fr'
+          ? 'La récupération du prompt Vision a expiré.'
+          : 'Vision prompt recovery timed out.');
+        finishRecovery();
+        return;
+      }
+      pollTimer = window.setTimeout(poll, 2500);
+    };
+    const poll = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/llm/vision-recoveries/${encodeURIComponent(pendingVisionRecoveryId)}`, {
+          credentials: 'include',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        if (response.ok && data.status === 'completed' && typeof data.prompt === 'string' && data.prompt.trim()) {
+          setInput(data.prompt.trim());
+          toast.success(t.visionAnalysisReady || 'Detailed prompt ready');
+          finishRecovery();
+          window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+          return;
+        }
+        if (response.ok && data.status === 'failed') {
+          toast.error(data.error || 'Image analysis failed');
+          finishRecovery();
+          return;
+        }
+        if (response.status === 400 || (response.status === 404 && Date.now() >= deadline)) {
+          finishRecovery();
+          return;
+        }
+        schedulePoll();
+      } catch {
+        schedulePoll();
+      }
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
+    };
+  }, [lang, pendingVisionRecoveryId, setInput, t.visionAnalysisReady, textareaRef]);
+
   const analyzeImportedImage = async (file: File) => {
     if (!params.visionProviderId || !params.visionModel) {
       toast.error(t.visionSetupRequired || 'Choose a vision provider and model in LLM settings first.');
@@ -384,10 +458,18 @@ export const ChatInterface = ({
 
     const previewUrl = await createSafeImagePreview(file).catch(() => null);
     setAnalysisPreview(previewUrl ? { url: previewUrl } : null);
+    const startedAt = Date.now();
+    setAnalysisStartedAt(startedAt);
+    setTimerNow(startedAt);
     setIsAnalyzingImage(true);
     setShowOptions(false);
     window.setTimeout(() => smoothScrollTo('vision-analysis-post'), 60);
 
+    const recoveryId = createVisionRecoveryId();
+    window.localStorage.setItem(VISION_RECOVERY_STORAGE_KEY, recoveryId);
+    let requestSent = false;
+    let definitiveFailure = false;
+    let recoveryPending = false;
     try {
       const image = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -395,6 +477,7 @@ export const ChatInterface = ({
         reader.onerror = () => reject(reader.error || new Error('Unable to read image'));
         reader.readAsDataURL(file);
       });
+      requestSent = true;
       const response = await fetch(`${API_BASE}/api/llm/analyze-image`, {
         method: 'POST',
         credentials: 'include',
@@ -406,18 +489,33 @@ export const ChatInterface = ({
           ttlSeconds: (params.visionModelTtlMinutes || 30) * 60,
           mimeType: file.type,
           image,
+          recoveryId,
         }),
       });
       const data = await response.json().catch(() => ({}));
+      definitiveFailure = !response.ok;
       if (!response.ok || !data.prompt) throw new Error(data.error || 'Image analysis failed');
       setInput(data.prompt.trim());
+      window.localStorage.removeItem(VISION_RECOVERY_STORAGE_KEY);
       toast.success(t.visionAnalysisReady || 'Detailed prompt ready');
+      window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : String(error));
+      if (requestSent && !definitiveFailure) {
+        recoveryPending = true;
+        setPendingVisionRecoveryId(recoveryId);
+        toast(t.visionRecoveryPending || (lang === 'fr'
+          ? 'Connexion interrompue : récupération automatique du prompt en cours…'
+          : 'Connection interrupted: recovering the prompt automatically…'));
+      } else {
+        window.localStorage.removeItem(VISION_RECOVERY_STORAGE_KEY);
+        toast.error(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setIsAnalyzingImage(false);
-      setAnalysisPreview(null);
-      if (imageImportRef.current) imageImportRef.current.value = '';
+      if (!recoveryPending) {
+        setIsAnalyzingImage(false);
+        setAnalysisPreview(null);
+        if (imageImportRef.current) imageImportRef.current.value = '';
+      }
     }
   };
 
@@ -844,11 +942,11 @@ export const ChatInterface = ({
       && !message.isEnhancing
       && message.status === 'processing'
     ));
-    if (!hasActiveGeneration) return;
+    if (!hasActiveGeneration && !isAnalyzingImage) return;
     setTimerNow(Date.now());
     const interval = window.setInterval(() => setTimerNow(Date.now()), 1000);
     return () => window.clearInterval(interval);
-  }, [messages]);
+  }, [isAnalyzingImage, messages]);
   
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -1205,7 +1303,11 @@ export const ChatInterface = ({
                       <SeedyCompanion state="magic" settings={params.companionSettings} />
                       <div>
                         <strong>{t.visionAnalysisInProgress || 'Analyse visuelle en cours'}</strong>
-                        <span>{t.visionAnalysisDetail || 'Composition · lumière · textures · optique'}</span>
+                        <span>
+                          {t.visionAnalysisDetail || 'Composition · lumière · textures · optique'}
+                          {' · '}
+                          {formatDuration(Math.max(1, Math.floor((timerNow - analysisStartedAt) / 1000)))}
+                        </span>
                       </div>
                       <i className="vision-live-dot" aria-hidden="true" />
                     </div>

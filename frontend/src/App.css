@@ -1036,7 +1036,10 @@ div:focus:not(:focus-visible) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .workspace-loading span { animation: none; }
+  .workspace-loading span {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 
 .login-screen {

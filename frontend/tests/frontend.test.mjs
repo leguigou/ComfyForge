@@ -192,6 +192,28 @@ test('keeps the loading dots visible and animated with reduced motion', () => {
   assert.match(reducedMotionRules, /animation-iteration-count:\s*infinite\s*!important/);
 });
 
+test('keeps the imported-image scanner animated with reduced motion', () => {
+  const css = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+  const scannerRules = css.slice(css.lastIndexOf('@media (prefers-reduced-motion: reduce)'));
+
+  assert.match(scannerRules, /\.vision-scan-line/);
+  assert.match(scannerRules, /animation-duration:\s*3\.6s\s*!important/);
+  assert.match(scannerRules, /\.vision-pixel-cloud/);
+  assert.match(scannerRules, /\.vision-live-dot/);
+  assert.equal((scannerRules.match(/animation-iteration-count:\s*infinite\s*!important/g) || []).length, 3);
+});
+
+test('does not globally cancel loaders and continuous status animations', () => {
+  const globalCss = readFileSync('src/index.css', 'utf8');
+  const appCss = readFileSync('src/App.css', 'utf8');
+  const sidebarCss = readFileSync('src/components/sidebar/Sidebar.css', 'utf8');
+
+  assert.doesNotMatch(globalCss, /animation-duration:\s*0\.01ms\s*!important/);
+  assert.doesNotMatch(globalCss, /animation-iteration-count:\s*1\s*!important/);
+  assert.match(appCss, /\.workspace-loading span\s*\{[\s\S]*?animation-duration:\s*1\.6s\s*!important;[\s\S]*?animation-iteration-count:\s*infinite\s*!important/);
+  assert.match(sidebarCss, /\.session-processing-loader\s*\{[\s\S]*?animation-duration:\s*1\.5s\s*!important;[\s\S]*?animation-iteration-count:\s*infinite\s*!important/);
+});
+
 test('removes duplicate companion IDs while normalizing settings', () => {
   const normalized = companions.normalizeCompanionSettings({
     activeId: 'companion-local-lina',

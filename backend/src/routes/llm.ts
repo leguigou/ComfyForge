@@ -145,6 +145,8 @@ const sharpFormatMimeTypes: Record<string, string> = {
   webp: 'image/webp',
   heif: 'image/avif',
 };
+const visionRecoveryIdPattern = /^[a-zA-Z0-9-]{16,80}$/;
+const VISION_RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 const getProvider = (userId: string, providerId?: unknown) => {
   if (typeof providerId === 'string' && providerId) {
@@ -518,11 +520,36 @@ router.post('/unload-models', authenticate, async (req, res) => {
   return res.json({ success: true, unloaded, alreadyUnloaded, results });
 });
 
+router.get('/vision-recoveries/:recoveryId', authenticate, (req, res) => {
+  const userId = (req as any).user.id;
+  const recoveryId = String(req.params.recoveryId || '');
+  if (!visionRecoveryIdPattern.test(recoveryId)) {
+    return res.status(400).json({ error: 'Invalid vision recovery identifier' });
+  }
+
+  const recovery = db.prepare(`
+    SELECT id, status, prompt, importUrl, width, height, error, createdAt, updatedAt
+    FROM vision_prompt_recoveries
+    WHERE id = ? AND userId = ?
+  `).get(recoveryId, userId) as Record<string, unknown> | undefined;
+  if (!recovery) return res.status(404).json({ status: 'not_found' });
+  return res.json(recovery);
+});
+
 router.post('/analyze-image', authenticate, async (req, res) => {
+  let recoveryId = '';
+  let recoveryUserId = '';
   try {
     const userId = (req as any).user.id;
     const provider = getProvider(userId, req.body.providerId);
     if (!provider) return res.status(400).json({ code: 'NO_VISION_PROVIDER', error: 'No vision provider selected' });
+
+    const requestedRecoveryId = typeof req.body.recoveryId === 'string' ? req.body.recoveryId.trim() : '';
+    if (requestedRecoveryId && !visionRecoveryIdPattern.test(requestedRecoveryId)) {
+      return res.status(400).json({ error: 'Invalid vision recovery identifier' });
+    }
+    recoveryId = requestedRecoveryId || uuidv4();
+    recoveryUserId = userId;
 
     const model = typeof req.body.model === 'string' ? req.body.model.trim() : '';
     const requestedTtlSeconds = Number(req.body.ttlSeconds);
@@ -562,6 +589,17 @@ router.post('/analyze-image', authenticate, async (req, res) => {
     const filename = `${Date.now()}-${uuidv4()}.${visionExtensions[detectedMimeType]}`;
     const importPath = path.join(userImportsDir, filename);
     await fs.promises.writeFile(importPath, buffer, { flag: 'wx' });
+    const importUrl = `/api/image-files/imports/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
+    const now = Date.now();
+    db.transaction(() => {
+      db.prepare('DELETE FROM vision_prompt_recoveries WHERE updatedAt < ?')
+        .run(now - VISION_RECOVERY_RETENTION_MS);
+      db.prepare(`
+        INSERT INTO vision_prompt_recoveries (
+          id, userId, status, prompt, importUrl, width, height, error, createdAt, updatedAt
+        ) VALUES (?, ?, 'pending', NULL, ?, ?, ?, NULL, ?, ?)
+      `).run(recoveryId, userId, importUrl, metadata.width, metadata.height, now, now);
+    })();
 
     const content = await completeVisionWithProvider(
       provider,
@@ -574,16 +612,31 @@ router.post('/analyze-image', authenticate, async (req, res) => {
     const result = parseEnhancedContent(content);
     const prompt = result.positive.trim();
     if (!prompt) throw new Error('The vision model returned an empty prompt');
+    db.prepare(`
+      UPDATE vision_prompt_recoveries
+      SET status = 'completed', prompt = ?, error = NULL, updatedAt = ?
+      WHERE id = ? AND userId = ?
+    `).run(prompt, Date.now(), recoveryId, userId);
 
     return res.json({
       prompt,
-      importUrl: `/api/image-files/imports/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`,
+      recoveryId,
+      importUrl,
       width: metadata.width,
       height: metadata.height,
     });
   } catch (error: any) {
+    const errorMessage = error.response?.data?.error?.message || error.message || 'Image analysis failed';
+    if (recoveryId && recoveryUserId) {
+      db.prepare(`
+        UPDATE vision_prompt_recoveries
+        SET status = 'failed', error = ?, updatedAt = ?
+        WHERE id = ? AND userId = ? AND status = 'pending'
+      `).run(String(errorMessage).slice(0, 2000), Date.now(), recoveryId, recoveryUserId);
+    }
     return res.status(502).json({
-      error: 'Vision Error: ' + (error.response?.data?.error?.message || error.message || 'Image analysis failed'),
+      recoveryId: recoveryId || undefined,
+      error: 'Vision Error: ' + errorMessage,
     });
   }
 });

@@ -258,7 +258,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .session-processing-loader {
-    animation-duration: 1.5s;
+    animation-duration: 1.5s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 

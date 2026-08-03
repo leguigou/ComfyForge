@@ -17,6 +17,15 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.6.0
+
+Version 2.6.0 makes long-running Vision analysis recoverable and restores reliable visual activity indicators across the interface.
+
+- **Recoverable Vision prompts:** image-analysis results are persisted before the HTTP response, then automatically recovered after a mobile connection loss or page reload.
+- **Clear Vision progress:** the imported-image scanner is animated consistently, shows elapsed time, and focuses the recovered prompt when analysis completes.
+- **Reliable status animations:** loaders, session spinners, gallery and comparison indicators, queue pulses, statistics loaders, and companion sprites are no longer accidentally frozen by the global reduced-motion rule.
+- **Database schema 4:** user-scoped Vision recoveries retain completed prompts for seven days without exposing them to other accounts.
+
 ## What's new in 2.5.0
 
 Version 2.5.0 focuses on safer upgrades, fair multi-user operation, faster large libraries, and a smoother first launch.

@@ -1,6 +1,6 @@
 {
   "name": "comfyforge-backend",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch index.ts",

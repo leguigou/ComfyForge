@@ -856,6 +856,10 @@
   isolation: isolate;
 }
 
+.vision-scan-frame.without-preview {
+  min-height: 180px;
+}
+
 .vision-scan-frame img {
   display: block;
   width: 100%;
@@ -886,7 +890,7 @@
   height: 2px;
   background: #53ffad;
   box-shadow: 0 0 5px #53ffad, 0 0 16px #53ffad, 0 0 38px rgba(83, 255, 173, 0.8);
-  animation: visionScan 2.6s ease-in-out infinite alternate;
+  animation: visionScan 2.2s ease-in-out infinite alternate;
 }
 
 .vision-scan-line::after {
@@ -955,6 +959,23 @@
 @keyframes visionPulse {
   from { opacity: 0.35; transform: scale(0.7); }
   to { opacity: 1; transform: scale(1.2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vision-scan-line {
+    animation-duration: 3.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+
+  .vision-pixel-cloud {
+    animation-duration: 3.8s !important;
+    animation-iteration-count: infinite !important;
+  }
+
+  .vision-live-dot {
+    animation-duration: 1.8s !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 
 .lucky-prompt-icon {

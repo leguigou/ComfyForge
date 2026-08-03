@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { syncPromptTags } from './prompt-tags';
 
-export const DATABASE_SCHEMA_VERSION = 3;
+export const DATABASE_SCHEMA_VERSION = 4;
 
 // Standardized path for Docker, local development, and isolated tests.
 let dbPath: string;
@@ -143,6 +143,20 @@ export const initDatabase = () => {
       FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS vision_prompt_recoveries (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      status TEXT NOT NULL,
+      prompt TEXT,
+      importUrl TEXT,
+      width INTEGER,
+      height INTEGER,
+      error TEXT,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS tags (
       id TEXT PRIMARY KEY,
       category TEXT NOT NULL,
@@ -185,6 +199,8 @@ export const initDatabase = () => {
     CREATE INDEX IF NOT EXISTS idx_queue_sessionId ON queue(sessionId);
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
     CREATE INDEX IF NOT EXISTS idx_llm_providers_userId ON llm_providers(userId);
+    CREATE INDEX IF NOT EXISTS idx_vision_recoveries_user_updated
+      ON vision_prompt_recoveries(userId, updatedAt DESC);
     CREATE INDEX IF NOT EXISTS idx_message_tags_tagId ON message_tags(tagId);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_level ON audit_logs(level);
@@ -304,6 +320,30 @@ export const initDatabase = () => {
         END;
       `);
       db.pragma('user_version = 3');
+    })();
+    currentSchemaVersion = 3;
+  }
+
+  if (currentSchemaVersion < 4) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vision_prompt_recoveries (
+          id TEXT PRIMARY KEY,
+          userId TEXT NOT NULL,
+          status TEXT NOT NULL,
+          prompt TEXT,
+          importUrl TEXT,
+          width INTEGER,
+          height INTEGER,
+          error TEXT,
+          createdAt INTEGER NOT NULL,
+          updatedAt INTEGER NOT NULL,
+          FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_vision_recoveries_user_updated
+          ON vision_prompt_recoveries(userId, updatedAt DESC);
+      `);
+      db.pragma('user_version = 4');
     })();
   }
 
