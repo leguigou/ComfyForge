@@ -30,8 +30,10 @@ export const normalizeCompanionSettings = (value?: Partial<CompanionSettings>): 
         && typeof companion.id === 'string'
         && companion.id.trim().length > 0
         && typeof companion.name === 'string'
-        && typeof companion.spriteDataUrl === 'string'
-        && companion.spriteDataUrl.startsWith('data:image/')
+        && (
+          (typeof companion.spriteUrl === 'string' && companion.spriteUrl.startsWith('/api/companions/'))
+          || (typeof companion.spriteDataUrl === 'string' && companion.spriteDataUrl.startsWith('data:image/'))
+        )
       ))
     : [];
   const seenCompanionIds = new Set<string>([DEFAULT_COMPANION_ID]);

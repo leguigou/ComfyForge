@@ -99,6 +99,152 @@ afterAll(async () => {
 });
 
 describe('API security boundaries', () => {
+  it('exposes a minimal public health contract without checking ComfyUI', async () => {
+    const response = await request('/api/health?dependencies=0');
+    const body = await json(response);
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe('healthy');
+    expect(body.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(body.database.status).toBe('available');
+    expect(body.database.schemaVersion).toBe(body.database.expectedSchemaVersion);
+    expect(body.comfy.status).toBe('not_checked');
+  });
+
+  it('paginates the gallery with a stable timestamp and id cursor', async () => {
+    const ids = Array.from({ length: 12 }, (_, index) => `cursor-gallery-${index.toString().padStart(2, '0')}`);
+    try {
+      const insert = db.prepare(`
+        INSERT INTO messages (id, sessionId, role, text, prompt, imageUrl, timestamp, status)
+        VALUES (?, ?, 'bot', '', ?, ?, ?, 'completed')
+      `);
+      db.transaction(() => ids.forEach((id, index) => {
+        insert.run(id, adminSessionId, `Prompt ${index}`, `/api/image-files/${id}.png`, 10_000 + index);
+      }))();
+
+      const firstResponse = await request('/api/gallery?limit=5&includeTotal=true', { cookie: adminCookie });
+      const first = await json(firstResponse);
+      expect(firstResponse.status).toBe(200);
+      expect(first.items).toHaveLength(5);
+      expect(first.nextCursor).toBeTruthy();
+
+      const cursor = new URLSearchParams({
+        limit: '5',
+        includeTotal: 'true',
+        cursorTimestamp: String(first.nextCursor.timestamp),
+        cursorId: String(first.nextCursor.id)
+      });
+      const secondResponse = await request(`/api/gallery?${cursor}`, { cookie: adminCookie });
+      const second = await json(secondResponse);
+      const firstIds = new Set(first.items.map((item: { messageId: string }) => item.messageId));
+      expect(secondResponse.status).toBe(200);
+      expect(second.items).toHaveLength(5);
+      expect(second.items.every((item: { messageId: string }) => !firstIds.has(item.messageId))).toBe(true);
+
+      const searchResponse = await request('/api/gallery?limit=5&includeTotal=true&search=Prompt%2011', { cookie: adminCookie });
+      const search = await json(searchResponse);
+      expect(searchResponse.status).toBe(200);
+      expect(search.items.map((item: { messageId: string }) => item.messageId)).toContain('cursor-gallery-11');
+    } finally {
+      db.prepare(`DELETE FROM messages WHERE id LIKE 'cursor-gallery-%'`).run();
+    }
+  });
+
+  it('paginates comparison sources without duplicates', async () => {
+    const sourceIds = Array.from({ length: 7 }, (_, index) => `comparison-cursor-source-${index}`);
+    const versionIds = Array.from({ length: 7 }, (_, index) => `comparison-cursor-version-${index}`);
+    try {
+      const insert = db.prepare(`
+        INSERT INTO messages (
+          id, sessionId, role, text, prompt, imageUrl, timestamp, status, comparisonSourceId
+        ) VALUES (?, ?, 'bot', '', ?, ?, ?, 'completed', ?)
+      `);
+      db.transaction(() => sourceIds.forEach((sourceId, index) => {
+        insert.run(
+          sourceId,
+          adminSessionId,
+          `Source ${index}`,
+          `/api/image-files/${sourceId}.png`,
+          20_000 + index,
+          null
+        );
+        insert.run(
+          versionIds[index],
+          adminSessionId,
+          `Version ${index}`,
+          `/api/image-files/${versionIds[index]}.png`,
+          30_000 + index,
+          sourceId
+        );
+      }))();
+
+      const firstResponse = await request('/api/comparisons?limit=3', { cookie: adminCookie });
+      const first = await json(firstResponse);
+      expect(firstResponse.status).toBe(200);
+      expect(first.items).toHaveLength(3);
+      expect(first.nextCursor).toBeTruthy();
+
+      const cursor = new URLSearchParams({
+        limit: '3',
+        cursorLatestAt: String(first.nextCursor.latestAt),
+        cursorId: String(first.nextCursor.id)
+      });
+      const secondResponse = await request(`/api/comparisons?${cursor}`, { cookie: adminCookie });
+      const second = await json(secondResponse);
+      const firstIds = new Set(first.items.map((item: { messageId: string }) => item.messageId));
+      expect(secondResponse.status).toBe(200);
+      expect(second.items).toHaveLength(3);
+      expect(second.items.every((item: { messageId: string }) => !firstIds.has(item.messageId))).toBe(true);
+      expect(second.nextCursor).toBeTruthy();
+
+      const finalCursor = new URLSearchParams({
+        limit: '3',
+        cursorLatestAt: String(second.nextCursor.latestAt),
+        cursorId: String(second.nextCursor.id)
+      });
+      const finalResponse = await request(`/api/comparisons?${finalCursor}`, { cookie: adminCookie });
+      const finalPage = await json(finalResponse);
+      expect(finalPage.items).toHaveLength(1);
+      expect(finalPage.nextCursor).toBeNull();
+    } finally {
+      db.prepare(`DELETE FROM messages WHERE id LIKE 'comparison-cursor-%'`).run();
+    }
+  });
+
+  it('lets an administrator inspect and cancel a pending queue item', async () => {
+    const messageId = 'admin-queue-test-message';
+    let queueId: number | undefined;
+    try {
+      db.prepare(`
+        INSERT INTO messages (id, sessionId, role, text, prompt, timestamp, status)
+        VALUES (?, ?, 'bot', '', 'Queued prompt', ?, 'pending')
+      `).run(messageId, adminSessionId, Date.now());
+      const result = db.prepare(`
+        INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt)
+        VALUES (?, ?, ?, ?, ?, '{}', 'pending', ?)
+      `).run(messageId, adminId, 'Queued prompt', 'Queued prompt', adminSessionId, Date.now());
+      queueId = Number(result.lastInsertRowid);
+
+      const listResponse = await request('/api/admin/queue', { cookie: adminCookie });
+      const list = await json(listResponse);
+      expect(listResponse.status).toBe(200);
+      expect(list.items.some((item: { id: number }) => item.id === queueId)).toBe(true);
+      expect(list.perUser.some((item: { userId: string }) => item.userId === adminId)).toBe(true);
+
+      const deleteResponse = await request(`/api/admin/queue/${queueId}`, {
+        method: 'DELETE',
+        cookie: adminCookie
+      });
+      expect(deleteResponse.status).toBe(200);
+      expect(db.prepare('SELECT id FROM queue WHERE id = ?').get(queueId)).toBeUndefined();
+      expect((db.prepare('SELECT status FROM messages WHERE id = ?').get(messageId) as { status: string }).status)
+        .toBe('failed');
+    } finally {
+      if (queueId) db.prepare('DELETE FROM queue WHERE id = ?').run(queueId);
+      db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
+    }
+  });
+
   it('rejects a cross-origin request instead of reflecting arbitrary origins', async () => {
     const response = await request('/api/auth/logout', {
       method: 'POST',
@@ -119,6 +265,32 @@ describe('API security boundaries', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('access-control-allow-origin')).toBe(baseUrl);
+  });
+
+  it('accepts legacy large generation payloads but keeps the global JSON limit', async () => {
+    const oversizedData = 'x'.repeat(2_100_000);
+    const legacyResponse = await request('/api/generate/generate', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({
+        prompt: 'Payload compatibility probe',
+        originalPrompt: 'Payload compatibility probe',
+        sessionId: 'invalid-session',
+        params: { randomPromptLists: [oversizedData] }
+      })
+    });
+    expect(legacyResponse.status).toBe(403);
+    expect(legacyResponse.headers.get('content-type')).toContain('application/json');
+
+    const limitedResponse = await request('/api/auth/logout', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ oversizedData })
+    });
+    const limitedBody = await json(limitedResponse);
+    expect(limitedResponse.status).toBe(413);
+    expect(limitedResponse.headers.get('content-type')).toContain('application/json');
+    expect(limitedBody.code).toBe('PAYLOAD_TOO_LARGE');
   });
 
   it('rejects service URLs outside the explicit allowlist without making a request', async () => {
@@ -214,9 +386,21 @@ describe('API security boundaries', () => {
     expect(fs.existsSync(victimFile)).toBe(false);
   });
 
-  it('persists several custom companion sprite sheets in user settings', async () => {
-    const spriteDataUrl = `data:image/webp;base64,${'A'.repeat(180_000)}`;
-    const settings = {
+  it('externalizes legacy companion sprites and isolates their files by user', async () => {
+    const username = 'companion-owner';
+    const createResponse = await request('/api/users', {
+      method: 'POST',
+      cookie: adminCookie,
+      body: JSON.stringify({ username, password: 'companion-owner-password' }),
+    });
+    const ownerId = (await json(createResponse)).id as string;
+    const login = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password: 'companion-owner-password' }),
+    });
+    const ownerCookie = authCookieFrom(login);
+    const spriteDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const legacySettings = {
       width: 896,
       companionSettings: {
         enabled: true,
@@ -229,17 +413,49 @@ describe('API security boundaries', () => {
       },
     };
 
-    const saveResponse = await request('/api/settings', {
-      method: 'POST',
-      cookie: adminCookie,
-      body: JSON.stringify(settings),
-    });
-    expect(saveResponse.status).toBe(200);
+    try {
+      db.prepare('INSERT INTO user_settings (userId, data, updatedAt) VALUES (?, ?, ?)')
+        .run(ownerId, JSON.stringify(legacySettings), Date.now());
 
-    const savedSettings = await json(await request('/api/settings', { cookie: adminCookie }));
-    expect(savedSettings.companionSettings.companions).toHaveLength(3);
-    expect(savedSettings.companionSettings.activeId).toBe('companion-two');
-    expect(savedSettings.companionSettings.companions[2].spriteDataUrl).toBe(spriteDataUrl);
+      const settingsResponse = await request('/api/settings', { cookie: ownerCookie });
+      const savedSettings = await json(settingsResponse);
+      expect(settingsResponse.status).toBe(200);
+      expect(savedSettings.companionSettings.companions).toHaveLength(3);
+      expect(savedSettings.companionSettings.activeId).toBe('companion-two');
+      expect(savedSettings.companionSettings.companions[2].spriteDataUrl).toBeUndefined();
+      expect(savedSettings.companionSettings.companions[2].spriteUrl).toBe('/api/companions/companion-two');
+      expect((db.prepare('SELECT length(data) AS bytes FROM user_settings WHERE userId = ?').get(ownerId) as { bytes: number }).bytes)
+        .toBeLessThan(2_000);
+
+      const assetResponse = await request('/api/companions/companion-two', { cookie: ownerCookie });
+      expect(assetResponse.status, await assetResponse.clone().text()).toBe(200);
+      expect(assetResponse.headers.get('content-type')).toContain('image/png');
+      expect((await assetResponse.arrayBuffer()).byteLength).toBeGreaterThan(50);
+      expect((await request('/api/companions/companion-two')).status).toBe(401);
+      expect((await request('/api/companions/companion-two', { cookie: adminCookie })).status).toBe(404);
+
+      savedSettings.companionSettings.companions = savedSettings.companionSettings.companions
+        .filter((companion: { id: string }) => companion.id !== 'companion-two');
+      savedSettings.companionSettings.activeId = 'companion-one';
+      const cleanupResponse = await request('/api/settings', {
+        method: 'POST',
+        cookie: ownerCookie,
+        body: JSON.stringify(savedSettings),
+      });
+      expect(cleanupResponse.status).toBe(200);
+      expect((await request('/api/companions/companion-two', { cookie: ownerCookie })).status).toBe(404);
+
+      const uploadResponse = await request('/api/companions/companion-three', {
+        method: 'POST',
+        cookie: ownerCookie,
+        body: JSON.stringify({ spriteDataUrl }),
+      });
+      const upload = await json(uploadResponse);
+      expect(uploadResponse.status).toBe(201);
+      expect(upload.profile.spriteUrl).toBe('/api/companions/companion-three');
+    } finally {
+      await request(`/api/users/${ownerId}`, { method: 'DELETE', cookie: adminCookie });
+    }
   });
 
   it('persists an LLM prompt as retryable before image generation is queued', async () => {

@@ -10,6 +10,7 @@ import { formatBytes, getFullImageUrl, API_BASE } from '../../services/api';
 import toast from 'react-hot-toast';
 import { LLMProvidersPanel } from './LLMProvidersPanel';
 import { AdminLogsPanel } from './AdminLogsPanel';
+import { AdminQueuePanel } from './AdminQueuePanel';
 import { DEFAULT_LLM_SYSTEM_MESSAGE } from '../../config';
 
 interface WorkflowMappingData {
@@ -59,6 +60,7 @@ const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
     llm: <><rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 10h.01M12 10h.01M16 10h.01M8 14h8M9 2v3m6-3v3" /></>,
     update: <><path d="M20 7v5h-5" /><path d="M18.5 16a8 8 0 1 1 .8-9L20 12" /></>,
     admin: <><path d="M12 3 4.5 6v5c0 4.8 3.2 8.5 7.5 10 4.3-1.5 7.5-5.2 7.5-10V6z" /><path d="m9 12 2 2 4-4" /></>,
+    queue: <><path d="M5 6h14M5 12h14M5 18h14" /><circle cx="8" cy="6" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="16" cy="18" r="1" /></>,
     logs: <><path d="M4 5h16v14H4z" /><path d="M7 9h2m2 0h6M7 13h2m2 0h6M7 17h2m2 0h4" /></>
   };
 
@@ -87,8 +89,8 @@ const SessionActionIcon = ({ type }: { type: 'archive' | 'delete' }) => (
 interface SettingsModalProps {
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
-  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs';
-  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs') => void;
+  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs';
+  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs') => void;
   params: GenParameters;
   setParams: Dispatch<SetStateAction<GenParameters>>;
   lang: Language;
@@ -183,6 +185,7 @@ export const SettingsModal = ({
   const workflowFileInputRef = useRef<HTMLInputElement>(null);
   const companionFileInputRef = useRef<HTMLInputElement>(null);
   const activeTabButtonRef = useRef<HTMLButtonElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
   const hydratedProfilesRef = useRef('');
 
   const unloadLlmMemory = async () => {
@@ -293,6 +296,39 @@ export const SettingsModal = ({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [activeTab, showSettings]);
+
+  useEffect(() => {
+    if (!showSettings) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const frame = window.requestAnimationFrame(() => activeTabButtonRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setShowSettings(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !modalRef.current) return;
+      const focusable = [...modalRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+      )].filter(element => !element.hasAttribute('hidden') && element.offsetParent !== null);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', handleKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [setShowSettings, showSettings]);
 
   if (!showSettings) return null;
 
@@ -613,14 +649,26 @@ export const SettingsModal = ({
         return;
       }
       const spriteDataUrl = await readFileAsDataUrl(file);
-      const storedDataSize = customCompanions.reduce((total, companion) => total + (companion.spriteDataUrl?.length || 0), 0);
-      if (storedDataSize + spriteDataUrl.length > MAX_COMPANION_DATA_SIZE) {
+      const storedDataSize = customCompanions.reduce((total, companion) => (
+        total + (companion.spriteBytes || Math.round((companion.spriteDataUrl?.length || 0) * 0.75))
+      ), 0);
+      if (storedDataSize + file.size > MAX_COMPANION_DATA_SIZE) {
         toast.error(t.companionStorageFull);
         return;
       }
 
       const id = `companion-${crypto.randomUUID()}`;
       const name = file.name.replace(/\.[^.]+$/, '') || t.newCompanion;
+      const response = await fetch(`${API_BASE}/api/companions/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ spriteDataUrl })
+      });
+      const result = await response.json();
+      if (!response.ok || !result.profile?.spriteUrl) {
+        throw new Error(result.error || t.companionFileInvalid);
+      }
       setParams({
         ...params,
         companionSettings: {
@@ -630,7 +678,9 @@ export const SettingsModal = ({
             id,
             name,
             source: 'custom',
-            spriteDataUrl,
+            spriteUrl: result.profile.spriteUrl,
+            spriteMimeType: result.profile.spriteMimeType,
+            spriteBytes: result.profile.spriteBytes,
             fileName: file.name,
           }],
         },
@@ -655,13 +705,14 @@ export const SettingsModal = ({
     { id: 'update', label: t.tabUpdate },
     ...(currentUser?.isAdmin ? [
       { id: 'admin' as const, label: t.tabAdmin },
+      { id: 'queue' as const, label: lang === 'fr' ? 'File' : 'Queue' },
       { id: 'logs' as const, label: t.tabLogs }
     ] : [])
   ];
 
   return (
     <div className="settings-modal-overlay" onClick={() => setShowSettings(false)}>
-      <div className="settings-modal settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(e) => e.stopPropagation()}>
+      <div ref={modalRef} className="settings-modal settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(e) => e.stopPropagation()}>
         <header className="settings-header">
           <div>
             <h3 id="settings-title">{t.settings}</h3>
@@ -1616,6 +1667,7 @@ export const SettingsModal = ({
           )}
 
           {activeTab === 'logs' && currentUser?.isAdmin && <AdminLogsPanel t={t} />}
+          {activeTab === 'queue' && currentUser?.isAdmin && <AdminQueuePanel lang={lang} />}
           
           {activeTab === 'update' && <UpdateTab t={t} />}
           </main>

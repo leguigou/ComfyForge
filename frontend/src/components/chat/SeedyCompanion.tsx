@@ -15,8 +15,8 @@ export function SeedyCompanion({ state, settings }: SeedyCompanionProps) {
   if (!normalizedSettings.enabled) return null;
 
   const activeCompanion = normalizedSettings.companions.find(companion => companion.id === normalizedSettings.activeId);
-  const spriteUrl = activeCompanion?.source === 'custom' && activeCompanion.spriteDataUrl
-    ? activeCompanion.spriteDataUrl
+  const spriteUrl = activeCompanion?.source === 'custom' && (activeCompanion.spriteUrl || activeCompanion.spriteDataUrl)
+    ? (activeCompanion.spriteUrl || activeCompanion.spriteDataUrl)!
     : seedySpriteUrl;
 
   return (

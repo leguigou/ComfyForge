@@ -907,11 +907,11 @@ export const ChatInterface = ({
               if (!messageText && !msg.imageUrl && msg.status !== 'pending' && msg.status !== 'processing') return null;
 
               const isRedundant = prevText === messageText;
-              const shouldShowText = messageText && (!isRedundant || (msg.role === 'bot' && (msg.isEnhancing || msg.status === 'pending' || msg.status === 'processing')));
+              const shouldShowText = messageText && (!isRedundant || (msg.role === 'bot' && (msg.isEnhancing || msg.status === 'pending' || msg.status === 'preparing' || msg.status === 'processing')));
               const hasNonTextContent = Boolean(
                 msg.imageUrl
                 || msg.randomSelections?.length
-                || (msg.role === 'bot' && (msg.status === 'pending' || msg.status === 'processing' || msg.status === 'failed'))
+                || (msg.role === 'bot' && (msg.status === 'pending' || msg.status === 'preparing' || msg.status === 'processing' || msg.status === 'failed'))
               );
               if (!shouldShowText && !hasNonTextContent) return null;
               
@@ -973,7 +973,7 @@ export const ChatInterface = ({
                               ? t.enhancing
                               : msg.status === 'processing'
                                 ? t.generating
-                                : msg.isStarting
+                                : msg.status === 'preparing'
                                   ? t.startingGeneration
                                   : t.waiting}
                           </span>

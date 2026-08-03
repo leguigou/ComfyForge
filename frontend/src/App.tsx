@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import './App.css';
 import { translations } from './i18n';
 import type { 
@@ -14,13 +14,10 @@ import type {
 import type { AppView } from './types';
 import { API_BASE, getFullImageUrl } from './services/api';
 import { Sidebar } from './components/sidebar/Sidebar';
-import { SettingsModal } from './components/settings/SettingsModal';
 import { DEFAULT_RANDOM_PROMPT_LISTS, migrateRandomPromptLists, RANDOM_PROMPT_LISTS_VERSION } from './utils/randomPrompts';
 import { DEFAULT_COMPANION_SETTINGS, normalizeCompanionSettings } from './utils/companions';
 import { ChatInterface } from './components/chat/ChatInterface';
 import { LuckyReferencesModal } from './components/chat/LuckyReferencesModal';
-import { StatisticsDashboard } from './components/statistics/StatisticsDashboard';
-import { ComparisonView } from './components/comparison/ComparisonView';
 import { APP_CONFIG, DEFAULT_LLM_SYSTEM_MESSAGE, DEFAULT_VISION_SYSTEM_MESSAGE, PREVIOUS_DEFAULT_VISION_SYSTEM_MESSAGE } from './config';
 import { useAuth } from './hooks/useAuth';
 import { useSessions } from './hooks/useSessions';
@@ -31,6 +28,42 @@ import { ComposeIcon, DiceIcon, HashIcon, InfoIcon, MoreVerticalIcon, RefreshIco
 import toast, { Toaster } from 'react-hot-toast';
 import NoSleep from 'nosleep.js';
 import comfyForgeLogo from './assets/comfyforge-logo-v2.png';
+
+const SettingsModal = lazy(() => import('./components/settings/SettingsModal').then(module => ({
+  default: module.SettingsModal
+})));
+const StatisticsDashboard = lazy(() => import('./components/statistics/StatisticsDashboard').then(module => ({
+  default: module.StatisticsDashboard
+})));
+const ComparisonView = lazy(() => import('./components/comparison/ComparisonView').then(module => ({
+  default: module.ComparisonView
+})));
+const OnboardingWizard = lazy(() => import('./components/onboarding/OnboardingWizard').then(module => ({
+  default: module.OnboardingWizard
+})));
+
+const WorkspaceLoading = () => (
+  <div className="workspace-loading" role="status" aria-live="polite">
+    <span aria-hidden="true" />
+    Chargement…
+  </div>
+);
+
+const getRouteState = (pathname = window.location.pathname): { view: AppView; sessionId?: string } => {
+  const chatMatch = pathname.match(/^\/chat\/([^/]+)$/);
+  if (chatMatch) return { view: 'chat', sessionId: decodeURIComponent(chatMatch[1]) };
+  if (pathname === '/gallery') return { view: 'gallery' };
+  if (pathname === '/archives') return { view: 'archives' };
+  if (pathname === '/statistics') return { view: 'statistics' };
+  if (pathname === '/comparisons') return { view: 'comparison' };
+  return { view: 'chat' };
+};
+
+const getRoutePath = (view: AppView, sessionId: string | null) => {
+  if (view === 'chat') return sessionId ? `/chat/${encodeURIComponent(sessionId)}` : '/';
+  if (view === 'comparison') return '/comparisons';
+  return `/${view}`;
+};
 
 const createDefaultGenParameters = (): GenParameters => ({
   width: 896,
@@ -70,7 +103,26 @@ function App() {
   });
   const t = translations[lang];
 
-  const { 
+  useEffect(() => {
+    const handleUpdateReady = (event: Event) => {
+      const version = (event as CustomEvent<{ version?: string }>).detail?.version;
+      toast((instance) => (
+        <div className="update-ready-toast">
+          <span>{lang === 'fr' ? `ComfyForge ${version || ''} est prêt.` : `ComfyForge ${version || ''} is ready.`}</span>
+          <button type="button" onClick={() => {
+            toast.dismiss(instance.id);
+            window.location.reload();
+          }}>
+            {lang === 'fr' ? 'Actualiser' : 'Reload'}
+          </button>
+        </div>
+      ), { id: 'comfyforge-update-ready', duration: Infinity });
+    };
+    window.addEventListener('comfyforge:update-ready', handleUpdateReady);
+    return () => window.removeEventListener('comfyforge:update-ready', handleUpdateReady);
+  }, [lang]);
+
+  const {
     isAuthenticated, 
     currentUser, 
     loginError, 
@@ -80,8 +132,41 @@ function App() {
     updateProfile
   } = useAuth();
 
+  useEffect(() => {
+    if (!isAuthenticated || !currentUser?.isAdmin) return;
+    let cancelled = false;
+
+    const checkRuntimeVersion = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/health?dependencies=0`, { credentials: 'include' });
+        if (!response.ok) return;
+        const health = await response.json() as { version?: string };
+        if (!cancelled && health.version && health.version !== APP_CONFIG.VERSION) {
+          toast.error(
+            lang === 'fr'
+              ? `Versions différentes : interface ${APP_CONFIG.VERSION}, serveur ${health.version}`
+              : `Version mismatch: interface ${APP_CONFIG.VERSION}, server ${health.version}`,
+            { id: 'runtime-version-mismatch', duration: 12_000 }
+          );
+        }
+      } catch {
+        // Older servers do not expose the health endpoint yet.
+      }
+    };
+
+    void checkRuntimeVersion();
+    const timer = window.setInterval(checkRuntimeVersion, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [currentUser?.isAdmin, isAuthenticated, lang]);
+
   const [view, setView] = useState<AppView>(() => {
-    return (localStorage.getItem('currentView') as AppView) || 'chat';
+    const route = getRouteState();
+    return window.location.pathname === '/'
+      ? (localStorage.getItem('currentView') as AppView) || 'chat'
+      : route.view;
   });
 
   const [keepAwake, setKeepAwakeState] = useState<boolean>(() => {
@@ -177,6 +262,30 @@ function App() {
     loadOlderMessages
   } = useSessions(view, isAuthenticated);
 
+  useEffect(() => {
+    const route = getRouteState();
+    if (route.view === 'chat' && route.sessionId) setCurrentSessionId(route.sessionId);
+
+    const handlePopState = () => {
+      const next = getRouteState();
+      setView(next.view);
+      if (next.view === 'chat' && next.sessionId) setCurrentSessionId(next.sessionId);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [setCurrentSessionId]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const nextPath = getRoutePath(view, currentSessionId);
+    if (window.location.pathname === nextPath) return;
+    if (window.location.pathname === '/') {
+      window.history.replaceState({}, '', nextPath);
+    } else {
+      window.history.pushState({}, '', nextPath);
+    }
+  }, [currentSessionId, isAuthenticated, view]);
+
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showSettings, setShowSettings] = useState(false);
@@ -195,7 +304,7 @@ function App() {
     guidance: string;
     activeTagSlug: string;
   } | null>(null);
-  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'logs'>('images');
+  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs'>('images');
   
   const [input, setInput] = useState('');
   const [openOptionsRequest, setOpenOptionsRequest] = useState(0);
@@ -203,6 +312,7 @@ function App() {
   const [params, setParams] = useState<GenParameters>(createDefaultGenParameters);
   const lastSavedParamsRef = useRef<string>('');
   const settingsRequestIdRef = useRef(0);
+  const settingsSaveRequestIdRef = useRef(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -301,7 +411,7 @@ function App() {
 
   const handleGenerationStatus = useCallback(async (
     sessionId: string,
-    status: 'pending' | 'processing' | 'completed' | 'failed'
+    status: 'pending' | 'preparing' | 'processing' | 'completed' | 'failed'
   ) => {
     const isCurrentlyVisible = document.visibilityState === 'visible'
       && view === 'chat'
@@ -311,7 +421,7 @@ function App() {
       if (session.id !== sessionId) return session;
       return {
         ...session,
-        generationStatus: status === 'pending' || status === 'processing'
+        generationStatus: status === 'pending' || status === 'preparing' || status === 'processing'
           ? 'processing'
           : status === 'completed'
             ? (isCurrentlyVisible ? 'idle' : 'unseen')
@@ -361,7 +471,7 @@ function App() {
     acknowledgeQueueMessage
   );
 
-  const isGenerating = isEnhancing || messages.some(m => m.role === 'bot' && (m.status === 'pending' || m.status === 'processing'));
+  const isGenerating = isEnhancing || messages.some(m => m.role === 'bot' && (m.status === 'pending' || m.status === 'preparing' || m.status === 'processing'));
 
   useEffect(() => {
     if (queueRemaining === null) return;
@@ -688,6 +798,8 @@ function App() {
   const [debouncedGallerySearch, setDebouncedGallerySearch] = useState('');
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const [isSettingsResolved, setIsSettingsResolved] = useState(false);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [favoritedId, setFavoritedId] = useState<string | null>(null);
   const clickTimeoutRef = useRef<number | null>(null);
 
@@ -1085,6 +1197,7 @@ function App() {
       if (!res.ok) throw new Error(`Failed to fetch settings: ${res.status}`);
       const data = await res.json();
       if (settingsRequestIdRef.current !== requestId) return;
+      setNeedsOnboarding(res.headers.get('X-ComfyForge-Settings-Source') === 'default');
       if (data && data.width) {
         setParams(prev => {
           const storedParams = {
@@ -1133,9 +1246,12 @@ function App() {
   useEffect(() => {
     if (isAuthenticated === true) return;
     settingsRequestIdRef.current += 1;
+    settingsSaveRequestIdRef.current += 1;
     lastSavedParamsRef.current = '';
     setIsSettingsLoaded(false);
     setIsSettingsResolved(false);
+    setNeedsOnboarding(false);
+    setOnboardingDismissed(false);
     setParams(createDefaultGenParameters());
   }, [isAuthenticated]);
 
@@ -1159,6 +1275,7 @@ function App() {
     // Stringify to compare content
     const paramsString = JSON.stringify(newParams);
     if (paramsString === lastSavedParamsRef.current) return;
+    const requestId = ++settingsSaveRequestIdRef.current;
 
     try {
       const res = await fetch(`${API_BASE}/api/settings`, {
@@ -1167,11 +1284,23 @@ function App() {
         body: paramsString,
         credentials: 'include'
       });
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
-        const data = await res.json().catch(() => null);
         throw new Error(data?.error || `${t.settingsSaveFailed} (${res.status})`);
       }
-      lastSavedParamsRef.current = paramsString;
+      if (requestId !== settingsSaveRequestIdRef.current) return;
+      const persistedParams: GenParameters = data?.settings
+        ? {
+            ...newParams,
+            ...data.settings,
+            companionSettings: normalizeCompanionSettings(data.settings.companionSettings || newParams.companionSettings)
+          }
+        : newParams;
+      const persistedString = JSON.stringify(persistedParams);
+      lastSavedParamsRef.current = persistedString;
+      if (persistedString !== paramsString) {
+        setParams(current => JSON.stringify(current) === paramsString ? persistedParams : current);
+      }
       if (!silent) {
         toast.success(t.settingsSaved, { id: 'settings-save' });
       }
@@ -1180,6 +1309,31 @@ function App() {
       toast.error(err instanceof Error ? err.message : t.settingsSaveFailed, { id: 'settings-save' });
     }
   }, [isSettingsLoaded, t.settingsSaved, t.settingsSaveFailed]);
+
+  const completeOnboarding = useCallback(async (configured: GenParameters) => {
+    const response = await fetch(`${API_BASE}/api/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(configured)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || t.settingsSaveFailed);
+    }
+    const persisted = data.settings
+      ? {
+          ...configured,
+          ...data.settings,
+          companionSettings: normalizeCompanionSettings(data.settings.companionSettings || configured.companionSettings)
+        }
+      : configured;
+    lastSavedParamsRef.current = JSON.stringify(persisted);
+    setParams(persisted);
+    setNeedsOnboarding(false);
+    setOnboardingDismissed(false);
+    toast.success(lang === 'fr' ? 'Configuration terminée' : 'Setup complete');
+  }, [lang, t.settingsSaveFailed]);
 
   useEffect(() => {
     if (!isAuthenticated || !isSettingsLoaded) return;
@@ -1234,6 +1388,7 @@ function App() {
   }, [logout, setSessions, setCurrentSessionId, setMessages]);
 
   const galleryOffsetRef = useRef(0);
+  const galleryCursorRef = useRef<{ timestamp: number; id: string } | null>(null);
   const galleryRequestRef = useRef(0);
 
   useEffect(() => {
@@ -1346,11 +1501,16 @@ function App() {
     try {
       const query = new URLSearchParams({
         limit: '25',
-        offset: String(currentOffset),
         includeArchived: String(showArchivedInGallery),
         favoritesOnly: String(favoritesOnly),
         includeTotal: 'true',
       });
+      if (!isInitial && galleryCursorRef.current) {
+        query.set('cursorTimestamp', String(galleryCursorRef.current.timestamp));
+        query.set('cursorId', galleryCursorRef.current.id);
+      } else {
+        query.set('offset', String(currentOffset));
+      }
       selectedPromptTags.forEach(tag => query.append('tag', tag));
       if (debouncedGallerySearch) query.set('search', debouncedGallerySearch);
       const res = await fetch(`${API_BASE}/api/gallery?${query.toString()}`, { credentials: 'include' });
@@ -1367,13 +1527,19 @@ function App() {
 
       if (requestId !== galleryRequestRef.current) return [];
       if (typeof responseData?.total === 'number') setGalleryTotal(responseData.total);
+      const nextCursor = responseData?.nextCursor
+        && typeof responseData.nextCursor.timestamp === 'number'
+        && typeof responseData.nextCursor.id === 'string'
+        ? responseData.nextCursor as { timestamp: number; id: string }
+        : null;
 
       if (isInitial) {
         loadedItems = data;
         galleryItemsRef.current = data;
         setGalleryItems(data);
         galleryOffsetRef.current = data.length;
-        hasMoreGalleryRef.current = data.length === 25;
+        galleryCursorRef.current = nextCursor;
+        hasMoreGalleryRef.current = Boolean(nextCursor) || data.length === 25;
         setHasMoreGallery(hasMoreGalleryRef.current);
       } else if (data.length > 0) {
         const existingIds = new Set(galleryItemsRef.current.map(item => item.messageId));
@@ -1382,7 +1548,8 @@ function App() {
         galleryItemsRef.current = nextItems;
         setGalleryItems(nextItems);
         galleryOffsetRef.current += data.length;
-        hasMoreGalleryRef.current = data.length === 25;
+        galleryCursorRef.current = nextCursor;
+        hasMoreGalleryRef.current = Boolean(nextCursor);
         setHasMoreGallery(hasMoreGalleryRef.current);
       } else {
         hasMoreGalleryRef.current = false;
@@ -1419,6 +1586,7 @@ function App() {
 
   const resetGallery = useCallback(() => {
     galleryOffsetRef.current = 0;
+    galleryCursorRef.current = null;
     hasMoreGalleryRef.current = true;
     setGalleryItems([]);
     setHasMoreGallery(true);
@@ -2045,7 +2213,7 @@ function App() {
       const generations = await response.json() as Array<{
         messageId: string;
         sessionId: string;
-        status: 'processing' | 'pending';
+        status: 'processing' | 'preparing' | 'pending';
       }>;
       const target = generations[0];
       if (!target) return;
@@ -2062,7 +2230,7 @@ function App() {
       console.error('Error locating active generation:', error);
       const fallback = messages.find(message => (
         message.role === 'bot'
-        && (message.status === 'processing' || message.status === 'pending')
+        && (message.status === 'processing' || message.status === 'preparing' || message.status === 'pending')
       ));
       if (fallback) {
         setView('chat');
@@ -2080,13 +2248,13 @@ function App() {
 
   if (!isAuthenticated) return (
     <div className={`login-screen ${theme}`}>
-      <div className="theme-toggle-corner"><button className="theme-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☀️' : '🌙'}</button></div>
+      <div className="theme-toggle-corner"><button className="theme-btn" aria-label={theme === 'dark' ? (lang === 'fr' ? 'Activer le thème clair' : 'Use light theme') : (lang === 'fr' ? 'Activer le thème sombre' : 'Use dark theme')} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☀️' : '🌙'}</button></div>
       <form className="login-form" onSubmit={(e) => { e.preventDefault(); login(loginUsername, loginPassword).then(r => !r.success && alert(r.error)); }}>
         <div className="login-header">
           <img className="login-logo" src={comfyForgeLogo} alt={`${t.title} — Connectez-vous pour commencer`} />
         </div>
-        <div className="input-group"><label>{t.username}</label><input type="text" autoFocus value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} className={loginError ? 'error' : ''} /></div>
-        <div className="input-group"><label>{t.password}</label><input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className={loginError ? 'error' : ''} />{loginError && <p className="error-msg">{t.incorrectLogin}</p>}</div>
+        <div className="input-group"><label htmlFor="login-username">{t.username}</label><input id="login-username" name="username" autoComplete="username" type="text" autoFocus value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} className={loginError ? 'error' : ''} /></div>
+        <div className="input-group"><label htmlFor="login-password">{t.password}</label><input id="login-password" name="password" autoComplete="current-password" type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className={loginError ? 'error' : ''} aria-describedby={loginError ? 'login-error' : undefined} />{loginError && <p id="login-error" className="error-msg" role="alert">{t.incorrectLogin}</p>}</div>
         <button type="submit" disabled={isLoginLoading}>{isLoginLoading ? '...' : t.login}</button>
         <div style={{ marginTop: '1.5rem', textAlign: 'center', opacity: 0.3, fontSize: '0.7rem', letterSpacing: '0.05em' }}>
           v.{APP_CONFIG.VERSION}
@@ -2202,8 +2370,19 @@ function App() {
     <ErrorBoundary name="ComfyForge App">
       <div className={`app-layout ${theme} ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
         <Toaster position="top-right" containerClassName="app-toaster" />
+        {needsOnboarding && !onboardingDismissed && (
+          <Suspense fallback={<WorkspaceLoading />}>
+            <OnboardingWizard
+              lang={lang}
+              params={params}
+              setParams={setParams}
+              onComplete={completeOnboarding}
+              onDismiss={() => setOnboardingDismissed(true)}
+            />
+          </Suspense>
+        )}
         {activeLightbox && (
-        <div className={`lightbox ${zoomScale > 1 ? 'zoomed' : ''}`} onClick={handleLightboxBackdropClick} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd} onTouchCancel={handleLightboxTouchEnd}>
+        <div className={`lightbox ${zoomScale > 1 ? 'zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={lang === 'fr' ? 'Aperçu de l’image' : 'Image preview'} onClick={handleLightboxBackdropClick} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd} onTouchCancel={handleLightboxTouchEnd}>
           <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick}>
             {activeLightbox.thumbnailUrl && !isAlreadyLoaded && (
               <img src={getFullImageUrl(activeLightbox.thumbnailUrl)} alt="Loading..." className="lightbox-thumb" style={{ filter: 'blur(10px)', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: hdLoaded === activeLightbox.messageId ? 0 : 1, transition: 'opacity 0.3s ease-out' }} />
@@ -2473,20 +2652,24 @@ function App() {
         </div>
       )}
 
-      <SettingsModal
-        showSettings={showSettings} setShowSettings={setShowSettings} activeTab={activeTab} setActiveTab={setActiveTab}
-        params={params} setParams={setParams} lang={lang} t={t} currentUser={currentUser}
-        comfyModels={comfyModels} diffusionModels={diffusionModels}
-        checkpointModelDetails={checkpointModelDetails} diffusionModelDetails={diffusionModelDetails}
-        isFetchingComfyModels={isFetchingComfyModels} fetchComfyModels={fetchComfyModels}
-        comfyStatus={comfyStatus} testComfyConnection={testComfyConnection} isCheckingComfy={isCheckingComfy} comfyCheckStatus={comfyCheckStatus}
-        availableWorkflows={availableWorkflows} fetchWorkflows={fetchWorkflows}
-        adminUsers={adminUsers} newUser={newUser} setNewUser={setNewUser} handleAddUser={handleAddUser} isAdminLoading={isAdminLoading}
-        deleteUser={internalDeleteUser} resetPasswordId={resetPasswordId} setResetPasswordId={setResetPasswordId} newPasswordValue={newPasswordValue}
-        setNewPasswordValue={setNewPasswordValue} handleResetPassword={handleResetPassword}
-        requestArchiveAll={() => setMassActionType('archiveAll')} requestDeleteAll={() => setMassActionType('deleteAll')}
-        updateProfile={updateProfile} galleryItems={galleryItems} fetchGallery={fetchGallery}
-      />
+      {showSettings && (
+        <Suspense fallback={<WorkspaceLoading />}>
+          <SettingsModal
+            showSettings={showSettings} setShowSettings={setShowSettings} activeTab={activeTab} setActiveTab={setActiveTab}
+            params={params} setParams={setParams} lang={lang} t={t} currentUser={currentUser}
+            comfyModels={comfyModels} diffusionModels={diffusionModels}
+            checkpointModelDetails={checkpointModelDetails} diffusionModelDetails={diffusionModelDetails}
+            isFetchingComfyModels={isFetchingComfyModels} fetchComfyModels={fetchComfyModels}
+            comfyStatus={comfyStatus} testComfyConnection={testComfyConnection} isCheckingComfy={isCheckingComfy} comfyCheckStatus={comfyCheckStatus}
+            availableWorkflows={availableWorkflows} fetchWorkflows={fetchWorkflows}
+            adminUsers={adminUsers} newUser={newUser} setNewUser={setNewUser} handleAddUser={handleAddUser} isAdminLoading={isAdminLoading}
+            deleteUser={internalDeleteUser} resetPasswordId={resetPasswordId} setResetPasswordId={setResetPasswordId} newPasswordValue={newPasswordValue}
+            setNewPasswordValue={setNewPasswordValue} handleResetPassword={handleResetPassword}
+            requestArchiveAll={() => setMassActionType('archiveAll')} requestDeleteAll={() => setMassActionType('deleteAll')}
+            updateProfile={updateProfile} galleryItems={galleryItems} fetchGallery={fetchGallery}
+          />
+        </Suspense>
+      )}
 
       {sessionToDelete && (
         <div className="settings-modal-overlay" onClick={() => setSessionToDelete(null)}>
@@ -2608,17 +2791,23 @@ function App() {
           </div>}
         </header>
 
-        {view === 'statistics' ? <StatisticsDashboard lang={lang} /> : view === 'comparison' ? (
-          <ComparisonView
-            lang={lang}
-            favoriteModels={params.favoriteModels || []}
-            currentModel={params.comfyModel}
-            currentModelType={params.comfyModelType}
-            initialMessageId={comparisonMessageId}
-            queueRemaining={queueRemaining}
-            companionSettings={params.companionSettings}
-            onModelActivated={activateComparedModel}
-          />
+        {view === 'statistics' ? (
+          <Suspense fallback={<WorkspaceLoading />}>
+            <StatisticsDashboard lang={lang} />
+          </Suspense>
+        ) : view === 'comparison' ? (
+          <Suspense fallback={<WorkspaceLoading />}>
+            <ComparisonView
+              lang={lang}
+              favoriteModels={params.favoriteModels || []}
+              currentModel={params.comfyModel}
+              currentModelType={params.comfyModelType}
+              initialMessageId={comparisonMessageId}
+              queueRemaining={queueRemaining}
+              companionSettings={params.companionSettings}
+              onModelActivated={activateComparedModel}
+            />
+          </Suspense>
         ) : <ChatInterface
           view={view} messages={messages} lang={lang} t={t} isGenerating={isGenerating} isEnhancing={isEnhancing}
           currentSessionId={currentSessionId} input={input} setInput={onInputChange} handleSend={onHandleSend}

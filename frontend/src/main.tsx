@@ -4,6 +4,14 @@ import './index.css'
 import App from './App.tsx'
 
 if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'COMFYFORGE_UPDATE_READY') {
+      window.dispatchEvent(new CustomEvent('comfyforge:update-ready', {
+        detail: { version: event.data.version }
+      }));
+    }
+  });
+
   window.addEventListener('load', () => {
     if (import.meta.env.PROD) {
       navigator.serviceWorker.register('/sw.js')

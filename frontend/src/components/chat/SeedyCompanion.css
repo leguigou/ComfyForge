@@ -55,7 +55,13 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .seedy-companion-waiting { animation-duration: 12s; }
-  .seedy-companion-working { animation-duration: 3s; }
-  .seedy-companion-magic { animation-duration: 6s; }
+  .seedy-companion-waiting { animation-duration: 12s !important; }
+  .seedy-companion-working { animation-duration: 3s !important; }
+  .seedy-companion-magic { animation-duration: 6s !important; }
+
+  .seedy-companion-waiting,
+  .seedy-companion-working,
+  .seedy-companion-magic {
+    animation-iteration-count: infinite !important;
+  }
 }

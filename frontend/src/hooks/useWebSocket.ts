@@ -5,7 +5,7 @@ import type { Message } from '../types';
 
 export type QueueUpdatePayload = {
   messageId: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'preparing' | 'processing' | 'completed' | 'failed';
   text?: string;
   error?: string;
   prompt?: string;
@@ -68,9 +68,7 @@ export const applyQueueUpdateToMessages = (
       seed: data.seed ?? message.seed,
       workflow: data.workflow || message.workflow,
       duration: nextDuration,
-      isStarting: data.status === 'pending'
-        ? Boolean(message.isStarting && (data.queueRemaining ?? 1) <= 1)
-        : false,
+      isStarting: data.status === 'preparing',
       generationStartedAt: data.status === 'processing'
         ? (hasValidLocalStart ? message.generationStartedAt : now - Math.max(0, nextDuration) * 1000)
         : (data.status === 'pending' ? undefined : message.generationStartedAt)
@@ -90,7 +88,7 @@ export const useWebSocket = (
   fetchSessionDetails: (id: string) => Promise<void>,
   onGenerationStatus?: (
     sessionId: string,
-    status: 'pending' | 'processing' | 'completed' | 'failed'
+    status: 'pending' | 'preparing' | 'processing' | 'completed' | 'failed'
   ) => void | Promise<void>,
   onQueueRemainingChange?: (remaining: number) => void
 ) => {
@@ -181,7 +179,7 @@ export const useWebSocket = (
           if (typeof data.queueRemaining === 'number') {
             onQueueRemainingChangeRef.current?.(data.queueRemaining);
           }
-          const status = data.status as 'pending' | 'processing' | 'completed' | 'failed';
+          const status = data.status as 'pending' | 'preparing' | 'processing' | 'completed' | 'failed';
           if (data.sessionId === currentSessionIdRef.current) {
             const temporaryMessageId = queueMessageAliasesRef.current.get(data.messageId);
             setMessages(previous => applyQueueUpdateToMessages(

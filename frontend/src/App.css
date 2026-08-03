@@ -996,6 +996,49 @@ div:focus:not(:focus-visible) {
 }
 
 /* Login Screen */
+.workspace-loading {
+  min-height: 40vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  color: var(--text-secondary, var(--text));
+}
+
+.update-ready-toast {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.update-ready-toast button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workspace-loading span {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: workspace-loading-spin 0.8s linear infinite;
+}
+
+@keyframes workspace-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-loading span { animation: none; }
+}
+
 .login-screen {
   height: 100vh; width: 100vw; display: flex; align-items: center; justify-content: center;
   background-color: var(--bg); position: relative;

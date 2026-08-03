@@ -29,7 +29,7 @@ export interface Message {
   steps: number | null;
   cfg: number | null;
   workflow: string | null;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'preparing' | 'processing' | 'completed' | 'failed';
   seed: number | null;
   duration: number | null;
   generationStartedAt: number | null;
@@ -53,6 +53,7 @@ export interface Session {
 export interface QueueTask {
   id: number;
   messageId: string;
+  userId: string;
   prompt: string;
   originalPrompt: string;
   sessionId: string;

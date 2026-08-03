@@ -4,7 +4,13 @@ import axios from 'axios';
 import db from '../services/database';
 import { authenticate } from '../middleware/auth';
 import { getTargetComfyUrl } from '../services/comfy';
-import { broadcastToSession, processQueue } from '../services/queue';
+import {
+  assertUserQueueCapacity,
+  broadcastToSession,
+  getUserQueueCapacity,
+  processQueue,
+  QueueCapacityError
+} from '../services/queue';
 import { ServiceUrlError } from '../security/service-url';
 import { GenerationParams } from '../types';
 import { replaceAutoPromptTags } from '../services/prompt-tags';
@@ -108,7 +114,7 @@ router.get('/active', authenticate, (req, res) => {
   res.json(generations);
 });
 
-const enqueueRetry = (message: RetryableMessage, fallbackParams: any, createdAt: number) => {
+const enqueueRetry = (message: RetryableMessage, userId: string, fallbackParams: any, createdAt: number) => {
   const params = normalizeGenerationParams(
     { ...fallbackParams, ...parseStoredParams(message.generationParams) },
     {
@@ -127,9 +133,9 @@ const enqueueRetry = (message: RetryableMessage, fallbackParams: any, createdAt:
 
   db.prepare('DELETE FROM queue WHERE messageId = ?').run(message.id);
   db.prepare(`
-    INSERT INTO queue (messageId, prompt, originalPrompt, sessionId, params, status, createdAt)
-    VALUES (?, ?, ?, ?, ?, 'pending', ?)
-  `).run(message.id, executionPrompt, message.prompt, message.sessionId, JSON.stringify(params), createdAt);
+    INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+  `).run(message.id, userId, executionPrompt, message.prompt, message.sessionId, JSON.stringify(params), createdAt);
   db.prepare(`
     UPDATE messages
     SET status = 'pending', text = ?, imageUrl = NULL, thumbnailUrl = NULL,
@@ -150,6 +156,7 @@ router.post('/generate', authenticate, async (req, res) => {
     if (!session) {
       return res.status(403).json({ success: false, error: 'Unauthorized session' });
     }
+    assertUserQueueCapacity(user.id);
 
     const timestamp = Date.now();
     let messageId: string;
@@ -169,7 +176,7 @@ router.post('/generate', authenticate, async (req, res) => {
 
       messageId = recovery.id;
       tags = db.transaction(() => {
-        enqueueRetry(recovery, params, timestamp);
+        enqueueRetry(recovery, user.id, params, timestamp);
         db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
         return replaceAutoPromptTags(db, messageId, recovery.generationPrompt || recovery.prompt)
           .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
@@ -206,8 +213,8 @@ router.post('/generate', authenticate, async (req, res) => {
       tags = replaceAutoPromptTags(db, messageId, prompt)
         .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
 
-      db.prepare('INSERT INTO queue (messageId, prompt, originalPrompt, sessionId, params, status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(messageId, prompt, originalPrompt, sessionId, JSON.stringify(storedParams), 'pending', timestamp);
+      db.prepare('INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(messageId, user.id, prompt, originalPrompt, sessionId, JSON.stringify(storedParams), 'pending', timestamp);
 
       db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ? AND title = \'New Chat\'').run(displayPrompt.substring(0, 30), timestamp, sessionId);
       db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
@@ -217,13 +224,12 @@ router.post('/generate', authenticate, async (req, res) => {
     // about additional pending items when the active job emits its next update.
     broadcastToSession(sessionId, { messageId, status: 'pending', duration: 0 });
 
-    // Start processing before replying. processQueue updates the message status
-    // synchronously before its first network await, so the response can expose
-    // the state the UI should actually render without waiting for its 3s poll.
+    // Claim the next task before replying. processQueue marks it as preparing
+    // synchronously, then switches to processing only after ComfyUI accepts it.
     void processQueue();
     const currentMessageState = db.prepare(
       'SELECT status, generationStartedAt FROM messages WHERE id = ?'
-    ).get(messageId) as { status: 'pending' | 'processing'; generationStartedAt?: number } | undefined;
+    ).get(messageId) as { status: 'pending' | 'preparing' | 'processing'; generationStartedAt?: number } | undefined;
 
     res.json({
       success: true,
@@ -234,6 +240,12 @@ router.post('/generate', authenticate, async (req, res) => {
       tags
     });
   } catch (error: any) {
+    if (error instanceof QueueCapacityError) return res.status(error.statusCode).json({
+      success: false,
+      code: error.code,
+      error: 'La file de génération de cet utilisateur est pleine',
+      capacity: error.capacity
+    });
     if (error instanceof ServiceUrlError) return res.status(error.statusCode).json({ success: false, error: error.message });
     res.status(500).json({ success: false, error: error.message });
   }
@@ -242,20 +254,22 @@ router.post('/generate', authenticate, async (req, res) => {
 router.post('/retry/:messageId', authenticate, (req, res) => {
   try {
     const user = (req as any).user;
+    assertUserQueueCapacity(user.id);
     const message = db.prepare(`
       SELECT m.* FROM messages m
       JOIN sessions s ON s.id = m.sessionId
       WHERE m.id = ? AND s.userId = ? AND m.role = 'bot'
-        AND m.imageUrl IS NULL AND m.status IN ('failed', 'pending', 'processing')
+        AND m.imageUrl IS NULL AND m.status IN ('failed', 'pending', 'preparing', 'processing')
     `).get(req.params.messageId, user.id) as RetryableMessage | undefined;
     if (!message) return res.status(404).json({ success: false, error: 'Génération inachevée introuvable' });
 
-    const transaction = db.transaction(() => enqueueRetry(message, req.body?.params, Date.now()));
+    const transaction = db.transaction(() => enqueueRetry(message, user.id, req.body?.params, Date.now()));
     transaction();
     broadcastToSession(message.sessionId, { messageId: message.id, status: 'pending', duration: 0 });
     processQueue();
     return res.json({ success: true, messageId: message.id, queued: 1 });
   } catch (error: any) {
+    if (error instanceof QueueCapacityError) return res.status(error.statusCode).json({ success: false, code: error.code, error: 'La file de génération de cet utilisateur est pleine', capacity: error.capacity });
     if (error instanceof ServiceUrlError) return res.status(error.statusCode).json({ success: false, error: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -264,26 +278,37 @@ router.post('/retry/:messageId', authenticate, (req, res) => {
 router.post('/retry-incomplete', authenticate, (req, res) => {
   try {
     const user = (req as any).user;
-    const messages = db.prepare(`
+    const retryableMessages = db.prepare(`
       SELECT m.* FROM messages m
       JOIN sessions s ON s.id = m.sessionId
       LEFT JOIN queue q ON q.messageId = m.id
       WHERE s.userId = ? AND m.role = 'bot' AND m.imageUrl IS NULL
-        AND m.status IN ('failed', 'pending', 'processing')
+        AND m.status IN ('failed', 'pending', 'preparing', 'processing')
         AND (m.status = 'failed' OR q.id IS NULL)
       ORDER BY m.timestamp ASC
       LIMIT 500
     `).all(user.id) as RetryableMessage[];
 
+    const capacity = getUserQueueCapacity(user.id);
+    if (capacity.remaining === 0) throw new QueueCapacityError(capacity, 1);
+    const messages = retryableMessages.slice(0, Math.min(capacity.remaining, capacity.batchLimit));
+
     const now = Date.now();
     const transaction = db.transaction(() => {
-      messages.forEach((message, index) => enqueueRetry(message, req.body?.params, now + index));
+      messages.forEach((message, index) => enqueueRetry(message, user.id, req.body?.params, now + index));
     });
     transaction();
     messages.forEach(message => broadcastToSession(message.sessionId, { messageId: message.id, status: 'pending', duration: 0 }));
     processQueue();
-    return res.json({ success: true, queued: messages.length, messageIds: messages.map(message => message.id) });
+    return res.json({
+      success: true,
+      queued: messages.length,
+      skipped: Math.max(0, retryableMessages.length - messages.length),
+      messageIds: messages.map(message => message.id),
+      capacity: getUserQueueCapacity(user.id)
+    });
   } catch (error: any) {
+    if (error instanceof QueueCapacityError) return res.status(error.statusCode).json({ success: false, code: error.code, error: 'La file de génération de cet utilisateur est pleine', capacity: error.capacity });
     if (error instanceof ServiceUrlError) return res.status(error.statusCode).json({ success: false, error: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -384,7 +409,7 @@ router.post('/interrupt', authenticate, async (req, res) => {
       SELECT m.id, m.sessionId 
       FROM messages m 
       JOIN sessions s ON m.sessionId = s.id 
-      WHERE m.status IN ('pending', 'processing') 
+      WHERE m.status IN ('pending', 'preparing', 'processing')
       AND s.userId = ?
     `).all(user.id) as any[];
 
@@ -398,7 +423,7 @@ router.post('/interrupt', authenticate, async (req, res) => {
     db.prepare(`
       UPDATE messages 
       SET status = 'failed', text = 'Interrompu par l''utilisateur' 
-      WHERE status IN ('pending', 'processing') 
+      WHERE status IN ('pending', 'preparing', 'processing')
       AND sessionId IN (SELECT id FROM sessions WHERE userId = ?)
     `).run(user.id);
 

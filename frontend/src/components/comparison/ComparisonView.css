@@ -237,3 +237,20 @@
   .comparison-batch-modal { box-sizing: border-box; width: 100%; padding: 24px 18px max(20px,env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; }
   .comparison-batch-modal-actions { grid-template-columns: 1fr 1.4fr; }
 }
+
+.comparison-load-more {
+  display: block;
+  min-width: 150px;
+  min-height: 44px;
+  margin: 18px auto 90px;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--input-bg, transparent);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.comparison-load-more:disabled { opacity: 0.55; cursor: wait; }

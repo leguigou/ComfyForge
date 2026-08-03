@@ -62,8 +62,11 @@ router.get('/random-prompt', authenticate, (req, res) => {
 
 router.get('/', authenticate, (req, res) => {
   const user = (req as any).user;
-  const limit = parseInt(req.query.limit as string) || 25;
-  const offset = parseInt(req.query.offset as string) || 0;
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
+  const offset = Math.min(100_000, Math.max(0, parseInt(req.query.offset as string) || 0));
+  const cursorTimestamp = Number(req.query.cursorTimestamp);
+  const cursorId = typeof req.query.cursorId === 'string' ? req.query.cursorId.trim() : '';
+  const hasCursor = Number.isFinite(cursorTimestamp) && cursorTimestamp > 0 && Boolean(cursorId);
   const onlyArchived = req.query.includeArchived === 'true';
   const favoritesOnly = req.query.favoritesOnly === 'true';
   const promptFavoritesOnly = req.query.promptFavoritesOnly === 'true';
@@ -102,28 +105,38 @@ router.get('/', authenticate, (req, res) => {
     params.push(...selectedTags, selectedTags.length);
   }
   if (search) {
-    const escapedSearch = search.toLowerCase().replace(/[\\%_]/g, '\\$&');
-    filteredSource += ` AND lower(
-      COALESCE(m.generationPrompt, '') || ' ' ||
-      COALESCE(m.prompt, '') || ' ' ||
-      COALESCE(m.text, '')
-    ) LIKE ? ESCAPE '\\'`;
-    params.push(`%${escapedSearch}%`);
+    const tokens = search.match(/[\p{L}\p{N}_-]+/gu) || [];
+    if (tokens.length) {
+      filteredSource += ` AND m.id IN (
+        SELECT messageId FROM message_search WHERE message_search MATCH ?
+      )`;
+      params.push(tokens.map(token => `"${token.replace(/"/g, '""')}"*`).join(' AND '));
+    }
   }
 
   const totalRow = db.prepare(`SELECT COUNT(*) AS total ${filteredSource}`)
     .get(...params) as { total: number };
+  const pageSource = hasCursor
+    ? `${filteredSource} AND (m.timestamp < ? OR (m.timestamp = ? AND m.id < ?))`
+    : filteredSource;
+  const pageParams = hasCursor
+    ? [...params, cursorTimestamp, cursorTimestamp, cursorId]
+    : params;
   const results = db.prepare(`
     SELECT m.sessionId, m.id as messageId, m.imageUrl, m.thumbnailUrl, m.prompt, m.text,
       m.generationPrompt, m.timestamp, m.model, m.width, m.height, m.steps, m.cfg,
       m.workflow, m.seed, m.isFavorite, m.isPromptFavorite, m.duration, m.sampler,
       m.scheduler, m.randomSelections, m.comparisonMessageId
-    ${filteredSource}
-    ORDER BY m.timestamp DESC LIMIT ? OFFSET ?
-  `).all(...params, limit, offset) as Record<string, unknown>[];
+    ${pageSource}
+    ORDER BY m.timestamp DESC, m.id DESC LIMIT ? OFFSET ?
+  `).all(...pageParams, limit, hasCursor ? 0 : offset) as Record<string, unknown>[];
   const enrichedResults = attachPromptTags(db, results.map(withParsedRandomSelections), 'messageId');
+  const lastResult = results[results.length - 1] as { timestamp?: number; messageId?: string } | undefined;
+  const nextCursor = results.length === limit && lastResult?.timestamp && lastResult?.messageId
+    ? { timestamp: lastResult.timestamp, id: lastResult.messageId }
+    : null;
   if (req.query.includeTotal === 'true') {
-    return res.json({ items: enrichedResults, total: totalRow.total });
+    return res.json({ items: enrichedResults, total: totalRow.total, nextCursor });
   }
   res.json(enrichedResults);
 });

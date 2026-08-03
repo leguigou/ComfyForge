@@ -23,7 +23,7 @@ const sessionListQuery = `
     CASE
       WHEN EXISTS(
         SELECT 1 FROM messages m
-        WHERE m.sessionId = s.id AND m.status IN ('pending', 'processing')
+        WHERE m.sessionId = s.id AND m.status IN ('pending', 'preparing', 'processing')
       ) THEN 'processing'
       WHEN COALESCE(s.lastImageAt, 0) > COALESCE(s.lastViewedAt, 0) THEN 'unseen'
       ELSE 'idle'

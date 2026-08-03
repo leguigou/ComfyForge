@@ -46,6 +46,15 @@
   40% { transform: scale(1); }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .bounce1,
+  .bounce2,
+  .bounce3 {
+    animation-duration: 2.8s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
 .bounced-ball {
   width: 8px;
   height: 8px;

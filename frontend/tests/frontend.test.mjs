@@ -9,9 +9,11 @@ let vite;
 let api;
 let WelcomeScreen;
 let MessageText;
+let SeedyCompanion;
 let randomPrompts;
 let companions;
 let generationTimer;
+let generationParams;
 let promptEnhancement;
 let slashCommands;
 let config;
@@ -29,11 +31,13 @@ before(async () => {
   randomPrompts = await vite.ssrLoadModule('/src/utils/randomPrompts.ts');
   companions = await vite.ssrLoadModule('/src/utils/companions.ts');
   generationTimer = await vite.ssrLoadModule('/src/utils/generationTimer.ts');
+  generationParams = await vite.ssrLoadModule('/src/utils/generationParams.ts');
   promptEnhancement = await vite.ssrLoadModule('/src/utils/promptEnhancement.ts');
   slashCommands = await vite.ssrLoadModule('/src/utils/slashCommands.ts');
   webSocketHelpers = await vite.ssrLoadModule('/src/hooks/useWebSocket.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
   ({ MessageText } = await vite.ssrLoadModule('/src/components/chat/MessageText.tsx'));
+  ({ SeedyCompanion } = await vite.ssrLoadModule('/src/components/chat/SeedyCompanion.tsx'));
 });
 
 after(async () => {
@@ -71,6 +75,43 @@ test('truncates long message text while keeping short text intact', () => {
 test('uses the root VERSION file as the frontend version', () => {
   const rootVersion = readFileSync('../VERSION', 'utf8').trim();
   assert.equal(config.APP_CONFIG.VERSION, rootVersion);
+});
+
+test('keeps large settings data out of generation requests', () => {
+  const requestParams = generationParams.toGenerationRequestParams({
+    comfyModel: 'model.safetensors',
+    comfyModelType: 'checkpoint',
+    comfyUrl: 'http://127.0.0.1:8188',
+    workflowFile: 'workflow.json',
+    width: 1024,
+    height: 1024,
+    steps: 20,
+    cfg: 4,
+    sampler: 'euler',
+    scheduler: 'normal',
+    negativePrompt: 'default negative',
+    nodeMapping: { positive: '1', ksampler: '2' },
+    seedMode: 'fixed',
+    forcedSeed: '42',
+    randomPromptLists: [{ id: 'large', name: 'Large', slug: 'R-Large', values: ['x'.repeat(3_000_000)], enabled: true }],
+    favoriteModels: [],
+    companionSettings: { enabled: true, activeId: 'custom', companions: [{ id: 'custom', name: 'Custom', source: 'custom', spriteDataUrl: 'x'.repeat(3_000_000) }] },
+    llmUrl: '',
+    llmModel: '',
+    llmSystemMessage: 'x'.repeat(3_000_000),
+    llmEnabled: false,
+    visionSystemMessage: '',
+    visionModelTtlMinutes: 0,
+    luckyTemperature: 0.9,
+    luckyFavoriteCount: 4,
+  }, { negativePrompt: 'request negative' });
+
+  assert.equal(requestParams.seed, 42);
+  assert.equal(requestParams.negativePrompt, 'request negative');
+  assert.equal(requestParams.comfyModel, 'model.safetensors');
+  assert.equal('randomPromptLists' in requestParams, false);
+  assert.equal('companionSettings' in requestParams, false);
+  assert.ok(JSON.stringify(requestParams).length < 2_000);
 });
 
 test('adds new default random lists once when migrating existing settings', () => {
@@ -115,7 +156,7 @@ test('migrates and preserves companion settings', () => {
     activeId: 'custom-one',
     companions: [
       { id: companions.DEFAULT_COMPANION_ID, name: 'Pousse', source: 'builtin' },
-      { id: 'custom-one', name: 'Pixel', source: 'custom', spriteDataUrl: 'data:image/webp;base64,AAAA' },
+      { id: 'custom-one', name: 'Pixel', source: 'custom', spriteUrl: '/api/companions/custom-one', spriteBytes: 1234 },
     ],
   });
 
@@ -123,6 +164,32 @@ test('migrates and preserves companion settings', () => {
   assert.equal(customized.companions[0].name, 'Pousse');
   assert.equal(customized.activeId, 'custom-one');
   assert.equal(customized.companions[1].name, 'Pixel');
+  assert.equal(customized.companions[1].spriteUrl, '/api/companions/custom-one');
+
+  const markup = renderToStaticMarkup(React.createElement(SeedyCompanion, {
+    state: 'working',
+    settings: { ...customized, enabled: true },
+  }));
+  assert.match(markup, /\/api\/companions\/custom-one/);
+});
+
+test('keeps companion sprites animated when reduced motion is enabled', () => {
+  const css = readFileSync('src/components/chat/SeedyCompanion.css', 'utf8');
+  const reducedMotionRules = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+
+  assert.match(reducedMotionRules, /animation-duration:\s*12s\s*!important/);
+  assert.match(reducedMotionRules, /animation-duration:\s*3s\s*!important/);
+  assert.match(reducedMotionRules, /animation-duration:\s*6s\s*!important/);
+  assert.match(reducedMotionRules, /animation-iteration-count:\s*infinite\s*!important/);
+});
+
+test('keeps the loading dots visible and animated with reduced motion', () => {
+  const css = readFileSync('src/components/ui/Icons.css', 'utf8');
+  const reducedMotionRules = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+
+  assert.match(reducedMotionRules, /\.bounce1,\s*\.bounce2,\s*\.bounce3/);
+  assert.match(reducedMotionRules, /animation-duration:\s*2\.8s\s*!important/);
+  assert.match(reducedMotionRules, /animation-iteration-count:\s*infinite\s*!important/);
 });
 
 test('removes duplicate companion IDs while normalizing settings', () => {
@@ -175,7 +242,7 @@ test('applies an early processing update to the random temporary generation ID',
   assert.equal(updated[0].generationStartedAt, 1_000);
 });
 
-test('keeps a counter-free starting state until processing is confirmed', () => {
+test('moves through waiting, preparing, and processing before starting the timer', () => {
   const message = {
     id: 'temp-generation',
     role: 'bot',
@@ -189,6 +256,11 @@ test('keeps a counter-free starting state until processing is confirmed', () => 
     status: 'pending',
     queueRemaining: 2,
   }, 1_500);
+  const preparing = webSocketHelpers.applyQueueUpdateToMessages(queued, {
+    messageId: message.id,
+    status: 'preparing',
+    queueRemaining: 1,
+  }, 1_750);
   const processing = webSocketHelpers.applyQueueUpdateToMessages([message], {
     messageId: message.id,
     status: 'processing',
@@ -197,6 +269,10 @@ test('keeps a counter-free starting state until processing is confirmed', () => 
 
   assert.equal(queued[0].status, 'pending');
   assert.equal(queued[0].isStarting, false);
+  assert.equal(queued[0].generationStartedAt, undefined);
+  assert.equal(preparing[0].status, 'preparing');
+  assert.equal(preparing[0].isStarting, true);
+  assert.equal(preparing[0].generationStartedAt, undefined);
   assert.equal(processing[0].status, 'processing');
   assert.equal(processing[0].isStarting, false);
   assert.equal(processing[0].generationStartedAt, 2_000);

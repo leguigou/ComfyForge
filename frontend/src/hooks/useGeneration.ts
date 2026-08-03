@@ -3,6 +3,7 @@ import { API_BASE } from '../services/api';
 import type { Message, GenParameters } from '../types';
 import { resolveRandomPromptsWithSelections } from '../utils/randomPrompts';
 import { shouldEnhancePrompt } from '../utils/promptEnhancement';
+import { toGenerationRequestParams } from '../utils/generationParams';
 
 const readApiResponse = async (response: Response) => {
   const contentType = response.headers.get('content-type') || '';
@@ -30,7 +31,7 @@ export const useGeneration = (
       await fetch(`${API_BASE}/api/generate/interrupt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ params }),
+        body: JSON.stringify({ params: toGenerationRequestParams(params) }),
         credentials: 'include'
       });
     } catch (err) {
@@ -40,13 +41,13 @@ export const useGeneration = (
 
   const retryMessage = useCallback(async (messageId: string) => {
     setMessages(prev => prev.map(message => message.id === messageId
-      ? { ...message, text: '', status: 'pending', isStarting: true, duration: 0, generationStartedAt: undefined }
+      ? { ...message, text: '', status: 'pending', isStarting: false, duration: 0, generationStartedAt: undefined }
       : message));
     try {
       const res = await fetch(`${API_BASE}/api/generate/retry/${encodeURIComponent(messageId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ params }),
+        body: JSON.stringify({ params: toGenerationRequestParams(params) }),
         credentials: 'include'
       });
       const data = await readApiResponse(res);
@@ -65,14 +66,14 @@ export const useGeneration = (
     const res = await fetch(`${API_BASE}/api/generate/retry-incomplete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ params }),
+      body: JSON.stringify({ params: toGenerationRequestParams(params) }),
       credentials: 'include'
     });
     const data = await readApiResponse(res);
     if (!res.ok || !data.success) throw new Error(data.error || 'Bulk retry failed');
     const retriedIds = new Set<string>(data.messageIds || []);
     setMessages(prev => prev.map(message => retriedIds.has(message.id)
-      ? { ...message, text: '', status: 'pending', isStarting: true, duration: 0, generationStartedAt: undefined }
+      ? { ...message, text: '', status: 'pending', isStarting: false, duration: 0, generationStartedAt: undefined }
       : message));
     fetchSessions();
     return data as { queued: number; messageIds: string[] };
@@ -157,7 +158,7 @@ export const useGeneration = (
         randomSelections: randomResult.selections,
         status: 'pending',
         isEnhancing: shouldEnhance,
-        isStarting: !shouldEnhance,
+        isStarting: false,
         timestamp: Date.now(),
         model: generationParams.comfyModel,
         workflow: generationParams.workflowFile,
@@ -188,15 +189,9 @@ export const useGeneration = (
               providerId: generationParams.llmProviderId,
               systemMessage: generationParams.llmSystemMessage,
               randomSelections: randomResult.selections,
-              params: {
-                ...generationParams,
-                negativePrompt: finalNegativePrompt,
-                workflowFile: generationParams.workflowFile,
-                nodeMapping: generationParams.nodeMapping,
-                seed: generationParams.seedMode === 'fixed' && generationParams.forcedSeed
-                  ? parseInt(generationParams.forcedSeed, 10)
-                  : -1
-              }
+              params: toGenerationRequestParams(generationParams, {
+                negativePrompt: finalNegativePrompt
+              })
             }),
             credentials: 'include'
           });
@@ -238,13 +233,8 @@ export const useGeneration = (
         }
       }
 
-      // 3. Lancer la génération. The card remains in a counter-free starting
-      // state until the processing event confirms that rendering has begun.
-      if (shouldUpdateVisibleMessages) {
-        setMessages(previous => previous.map(message => message.id === botMsgId
-          ? { ...message, status: 'pending', isStarting: true, generationStartedAt: undefined }
-          : message));
-      }
+      // 3. Queue the generation. The backend emits the distinct pending,
+      // preparing, and processing phases as the job advances.
       const res = await fetch(`${API_BASE}/api/generate/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -256,14 +246,9 @@ export const useGeneration = (
           sessionId: activeSessionId,
           clientId: clientIdRef.current,
           isRegeneration: isRegeneration,
-          params: { 
-            ...generationParams,
-            negativePrompt: finalNegativePrompt,
-            workflowFile: generationParams.workflowFile,
-            nodeMapping: generationParams.nodeMapping,
-            // Gestion de la seed
-            seed: generationParams.seedMode === 'fixed' && generationParams.forcedSeed ? parseInt(generationParams.forcedSeed, 10) : -1
-          }
+          params: toGenerationRequestParams(generationParams, {
+            negativePrompt: finalNegativePrompt
+          })
         }),
         credentials: 'include'
       });
@@ -281,13 +266,19 @@ export const useGeneration = (
                 return { ...m, id: acknowledgedUserMessageId };
               }
               if (m.id !== botMsgId && m.id !== data.messageId) return m;
-              const processingWasAlreadyConfirmed = m.status === 'processing';
+              const confirmedStatus = m.status === 'preparing' || m.status === 'processing'
+                ? m.status
+                : data.status === 'preparing' || data.status === 'processing'
+                  ? data.status
+                  : 'pending';
               return {
                 ...m,
                 id: data.messageId,
-                status: processingWasAlreadyConfirmed ? 'processing' as const : 'pending' as const,
-                isStarting: processingWasAlreadyConfirmed ? false : (m.isStarting ?? true),
-                generationStartedAt: processingWasAlreadyConfirmed ? m.generationStartedAt : undefined,
+                status: confirmedStatus,
+                isStarting: confirmedStatus === 'preparing',
+                generationStartedAt: confirmedStatus === 'processing'
+                  ? (m.generationStartedAt ?? data.generationStartedAt)
+                  : undefined,
                 generationPrompt: finalPrompt,
                 tags: data.tags || []
               };

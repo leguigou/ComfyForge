@@ -20,9 +20,17 @@ services:
       - SERVICE_URL_ALLOWLIST=${SERVICE_URL_ALLOWLIST:-}
       - ALLOW_PRIVATE_SERVICE_URLS=${ALLOW_PRIVATE_SERVICE_URLS:-false}
       - ALLOW_USER_LLM_URLS=${ALLOW_USER_LLM_URLS:-false}
+      - MAX_QUEUE_PER_USER=${MAX_QUEUE_PER_USER:-25}
+      - MAX_QUEUE_BATCH=${MAX_QUEUE_BATCH:-50}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health?dependencies=0').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   frontend:
     build:
@@ -32,8 +40,15 @@ services:
     ports:
       - "5173:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   images:

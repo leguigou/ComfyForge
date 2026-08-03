@@ -40,7 +40,7 @@ export const getTrackedGenerationElapsedSeconds = (
 };
 
 export const resolveGenerationStartedAt = (
-  status: 'pending' | 'processing' | 'completed' | 'failed' | undefined,
+  status: 'pending' | 'preparing' | 'processing' | 'completed' | 'failed' | undefined,
   loadedStartedAt: number | undefined,
   existingStartedAt: number | undefined,
   now: number,

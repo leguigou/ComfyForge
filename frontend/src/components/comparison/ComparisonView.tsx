@@ -27,7 +27,7 @@ type ComparisonImage = {
   duration?: number;
   generationStartedAt?: number | null;
   timestamp?: number;
-  status?: 'pending' | 'processing' | 'completed' | 'failed';
+  status?: 'pending' | 'preparing' | 'processing' | 'completed' | 'failed';
   isFavorite?: number;
   isPromptFavorite?: number;
   comparisonMessageId?: string;
@@ -104,6 +104,9 @@ export const ComparisonView = ({
   onModelActivated
 }: ComparisonViewProps) => {
   const [images, setImages] = useState<ComparisonImage[]>([]);
+  const historyCursorRef = useRef<{ latestAt: number; id: string } | null>(null);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false);
   const [source, setSource] = useState<ComparisonImage | null>(null);
   const [comparisons, setComparisons] = useState<ComparisonImage[]>([]);
   const [leftVersionId, setLeftVersionId] = useState('');
@@ -195,10 +198,34 @@ export const ComparisonView = ({
     .map(item => normalizeModelKey(item.model))
     .filter(Boolean)), [source, versions]);
 
-  const loadImages = useCallback(async () => {
-    const response = await fetch(`${API_BASE}/api/comparisons`, { credentials: 'include' });
-    if (!response.ok) throw new Error(fr ? 'Impossible de charger les images' : 'Unable to load images');
-    setImages(await response.json());
+  const loadImages = useCallback(async (reset = true) => {
+    if (!reset && !historyCursorRef.current) return;
+    if (!reset) setLoadingMoreHistory(true);
+    try {
+      const query = new URLSearchParams({ limit: '40' });
+      if (!reset && historyCursorRef.current) {
+        query.set('cursorLatestAt', String(historyCursorRef.current.latestAt));
+        query.set('cursorId', historyCursorRef.current.id);
+      }
+      const response = await fetch(`${API_BASE}/api/comparisons?${query}`, { credentials: 'include' });
+      if (!response.ok) throw new Error(fr ? 'Impossible de charger les images' : 'Unable to load images');
+      const body = await response.json();
+      const nextItems: ComparisonImage[] = Array.isArray(body) ? body : body.items || [];
+      const nextCursor = body?.nextCursor
+        && typeof body.nextCursor.latestAt === 'number'
+        && typeof body.nextCursor.id === 'string'
+        ? body.nextCursor
+        : null;
+      setImages(current => {
+        if (reset) return nextItems;
+        const existing = new Set(current.map(item => item.messageId));
+        return [...current, ...nextItems.filter(item => !existing.has(item.messageId))];
+      });
+      historyCursorRef.current = nextCursor;
+      setHasMoreHistory(Boolean(nextCursor));
+    } finally {
+      setLoadingMoreHistory(false);
+    }
   }, [fr]);
 
   const loadPair = useCallback(async (messageId: string, preserveSelection = false) => {
@@ -277,10 +304,10 @@ export const ComparisonView = ({
 
   useEffect(() => {
     if (!source) return;
-    const hasActiveComparison = comparisons.some(item => ['pending', 'processing'].includes(item.status || ''));
+    const hasActiveComparison = comparisons.some(item => ['pending', 'preparing', 'processing'].includes(item.status || ''));
     const timer = window.setInterval(() => {
       void loadPair(source.messageId, true).then(data => {
-        const stillActive = data.comparisons.some((item: ComparisonImage) => ['pending', 'processing'].includes(item.status || ''));
+        const stillActive = data.comparisons.some((item: ComparisonImage) => ['pending', 'preparing', 'processing'].includes(item.status || ''));
         if (hasActiveComparison && !stillActive) void loadImages();
       }).catch(() => undefined);
     }, hasActiveComparison ? 1800 : 5000);
@@ -288,7 +315,7 @@ export const ComparisonView = ({
   }, [comparisons, loadImages, loadPair, source]);
 
   useEffect(() => {
-    if (!comparisons.some(item => item.status === 'processing')) return;
+    if (!comparisons.some(item => item.status === 'preparing' || item.status === 'processing')) return;
     setTimerNow(Date.now());
     const timer = window.setInterval(() => setTimerNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
@@ -300,7 +327,7 @@ export const ComparisonView = ({
   }, [currentFavoriteIndex, source]);
 
   const isFinishedVersion = (item?: ComparisonImage | null) => Boolean(
-    item?.imageUrl && !['pending', 'processing', 'failed'].includes(item.status || '')
+    item?.imageUrl && !['pending', 'preparing', 'processing', 'failed'].includes(item.status || '')
   );
   const canUseSlider = Boolean(
     leftVersion
@@ -829,6 +856,16 @@ export const ComparisonView = ({
         })}
       </div>
       {!images.length && <div className="comparison-empty">{fr ? 'Aucune comparaison générée pour le moment.' : 'No generated comparison yet.'}</div>}
+      {hasMoreHistory && (
+        <button
+          type="button"
+          className="comparison-load-more"
+          disabled={loadingMoreHistory}
+          onClick={() => void loadImages(false)}
+        >
+          {loadingMoreHistory ? '…' : (fr ? 'Charger plus' : 'Load more')}
+        </button>
+      )}
 
       {selectedImageIds.size > 0 && (
         <div className="comparison-batch-bar">
@@ -901,7 +938,7 @@ export const ComparisonView = ({
   const currentModelNeedsFavorite = selectedFavorite === '__current__';
   const busy = launching || !serviceAvailable || (queueRemaining ?? 0) > 0;
   const selectableVersions = versions.filter(isFinishedVersion);
-  const activeVersions = comparisons.filter(item => ['pending', 'processing'].includes(item.status || ''));
+  const activeVersions = comparisons.filter(item => ['pending', 'preparing', 'processing'].includes(item.status || ''));
   const usesNamedPair = versions.length === 2;
   const getVersionDisplayName = (index: number) => usesNamedPair
     ? (index === 0 ? (fr ? 'Originale' : 'Original') : (fr ? 'Nouvelle' : 'New'))
@@ -998,7 +1035,7 @@ export const ComparisonView = ({
     <button
       type="button"
       className="comparison-delete-version"
-      disabled={deletingMessageId !== null || ['pending', 'processing'].includes(item.status || '')}
+      disabled={deletingMessageId !== null || ['pending', 'preparing', 'processing'].includes(item.status || '')}
       onClick={() => void deleteComparison(item)}
       title={fr ? 'Supprimer cette version' : 'Delete this version'}
       aria-label={fr ? `Supprimer la version ${item.model || ''}` : `Delete version ${item.model || ''}`}
@@ -1010,7 +1047,7 @@ export const ComparisonView = ({
   );
 
   const renderVersionCard = (item: ComparisonImage, index: number) => (
-    <article className={`comparison-card comparison-version-card ${['pending', 'processing'].includes(item.status || '') ? 'is-generating' : ''}`} key={item.messageId}>
+    <article className={`comparison-card comparison-version-card ${['pending', 'preparing', 'processing'].includes(item.status || '') ? 'is-generating' : ''}`} key={item.messageId}>
       <span className="comparison-label">
         {usesNamedPair ? (
           <em>{getVersionDisplayName(index)}</em>
@@ -1027,8 +1064,14 @@ export const ComparisonView = ({
       ) : (
         <div className="comparison-generating">
           {item.status !== 'failed' && <span />}
-          <strong>{item.status === 'failed' ? (fr ? 'Échec de la génération' : 'Generation failed') : (fr ? 'Génération en cours…' : 'Generating…')}</strong>
-          {['pending', 'processing'].includes(item.status || '') && (
+          <strong>{item.status === 'failed'
+            ? (fr ? 'Échec de la génération' : 'Generation failed')
+            : item.status === 'pending'
+              ? (fr ? 'En attente…' : 'Waiting…')
+              : item.status === 'preparing'
+                ? (fr ? 'Préparation…' : 'Preparing…')
+                : (fr ? 'Génération en cours…' : 'Generating…')}</strong>
+          {item.status === 'processing' && (
             <span className="comparison-generation-timer">
               {formatDuration(getGenerationElapsedSeconds(item.duration, item.generationStartedAt ?? undefined, timerNow))}
             </span>

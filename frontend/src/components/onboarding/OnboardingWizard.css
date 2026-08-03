@@ -1,0 +1,47 @@
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(18px);
+}
+
+.onboarding-dialog {
+  width: min(620px, 100%);
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  padding: clamp(1.5rem, 5vw, 3rem);
+  border: 1px solid var(--border);
+  border-radius: 28px;
+  background: var(--sidebar-bg, var(--bg));
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.35);
+}
+
+.onboarding-dialog h1 { margin: 0 0 0.75rem; font-size: clamp(1.6rem, 5vw, 2.35rem); }
+.onboarding-dialog > p { margin-bottom: 1.5rem; color: var(--text); opacity: 0.72; line-height: 1.55; }
+.onboarding-dialog label { display: block; margin: 1rem 0 0.45rem; font-weight: 700; }
+.onboarding-dialog input,
+.onboarding-dialog select { width: 100%; min-height: 48px; border: 1px solid var(--border); border-radius: 12px; padding: 0 0.9rem; background: var(--input-bg, var(--bg)); color: var(--text); font: inherit; }
+.onboarding-mark { display: inline-grid; place-items: center; width: 54px; height: 54px; margin-bottom: 1rem; border-radius: 18px; color: #fff; font-size: 1.8rem; background: linear-gradient(135deg, #9f67ff, #10a37f); }
+.onboarding-progress { display: flex; gap: 0.45rem; margin-bottom: 2rem; }
+.onboarding-progress span { height: 4px; flex: 1; border-radius: 99px; background: var(--border); }
+.onboarding-progress span.active { background: var(--accent); }
+.onboarding-actions { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 2rem; }
+.onboarding-actions button { min-height: 46px; border: 0; border-radius: 12px; padding: 0.7rem 1.1rem; color: #fff; background: var(--accent); font: inherit; font-weight: 750; cursor: pointer; }
+.onboarding-actions button.secondary { color: var(--text); background: transparent; border: 1px solid var(--border); }
+.onboarding-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.onboarding-error { margin-top: 1rem; color: #ef6a75; }
+.onboarding-success { margin-top: 1rem; color: #20b486; }
+.onboarding-summary { display: grid; gap: 0.75rem; margin: 1.5rem 0 0; padding: 0; list-style: none; }
+.onboarding-summary li { display: grid; gap: 0.25rem; padding: 0.85rem 1rem; border-radius: 12px; background: color-mix(in srgb, var(--text) 5%, transparent); }
+.onboarding-summary span { overflow-wrap: anywhere; opacity: 0.72; }
+
+@media (max-width: 560px) {
+  .onboarding-overlay { align-items: end; padding: 0; }
+  .onboarding-dialog { max-height: 94dvh; border-radius: 24px 24px 0 0; padding: 1.5rem; }
+  .onboarding-actions { flex-direction: column-reverse; }
+  .onboarding-actions button { width: 100%; }
+}

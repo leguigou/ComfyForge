@@ -17,19 +17,19 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
-## What's new in 2.4.0
+## What's new in 2.5.0
 
-Version 2.4.0 focuses on faster mobile workflows, batch operations, reliable live generation feedback, and large-library performance.
+Version 2.5.0 focuses on safer upgrades, fair multi-user operation, faster large libraries, and a smoother first launch.
 
-- **Gallery multi-selection:** hold an image for one second on touch devices, or Shift-click on desktop, then regenerate, build a Lucky draw, favorite/unfavorite images, like/unlike prompts, or delete the entire selection. Selection exits automatically after an action or cancellation.
-- **Batch model comparisons:** select several comparison sources, render all eligible images with one favorite model/workflow pair, and delete completed comparison groups in a single operation while preserving favorite state on their sources.
-- **Progressive conversation loading:** recent messages open first and older pages load as the user scrolls upward, preserving the exact scroll position. Compressed JSON responses reduce transfer size for long histories.
-- **Clearer generation lifecycle:** new requests show a counter-free **Preparing** stage, queued work remains **Waiting**, and elapsed time starts only after processing is confirmed. WebSocket/HTTP reconciliation, persisted durations, immediate retries in the same card, and duplicate-message cleanup keep mobile cards stable.
-- **Live library updates:** completed background generations appear automatically in My Content, gallery images use lazy decoding, and large histories no longer need to be transferred in full.
-- **Improved mobile gestures:** long-press selection, swipe navigation, swipe-down lightbox dismissal, pinch-aware grids, and click suppression prevent accidental openings after touch gestures.
-- **Expanded lightbox actions:** create a random image from a favorite prompt with a dedicated dice action, while seed reuse now has its own distinct icon.
-- **Richer model discovery:** checkpoint, diffusion, and UNet inventories are merged across current and legacy ComfyUI endpoints, with model file sizes shown when ComfyUI exposes them.
-- **Stronger local-service reliability:** unreachable ComfyUI queues fail cleanly instead of remaining stuck, and local vision requests now distinguish LM Studio from Ollama by endpoint before provider name.
+- **Guided first run:** new installations get a keyboard-accessible wizard that checks ComfyUI, discovers installed models and workflows, loads workflow defaults, and saves a ready-to-use configuration.
+- **Fair generation queue:** queue entries have an explicit owner, configurable per-user and batch limits, and round-robin scheduling that preserves each user's FIFO order.
+- **Administrator queue view:** administrators can inspect queue ownership, age, user load, model, and workflow, then cancel work that is still pending.
+- **Faster large libraries:** gallery search uses SQLite FTS5, gallery and comparison history use stable cursor pagination, and composite indexes support the most common history queries.
+- **Safer delivery:** health and schema state are exposed through `/api/health`, frontend/backend version drift is visible to administrators, PWA updates wait for confirmation, and Docker healthchecks are included.
+- **Smaller initial download:** settings, statistics, comparisons, and onboarding are loaded only when needed; the main JavaScript chunk is kept below a 450 KiB build budget.
+- **Security and diagnostics:** request IDs, structured HTTP logs, tighter JSON limits, CSP and related browser protections, plus user-scoped WebSocket queue updates improve traceability and isolation.
+- **Backup tooling:** `npm run backup` in the backend and `scripts/backup-data.ps1` create verified SQLite backups before maintenance or migration work.
+- **Stable navigation and accessibility:** deep links cover chat, gallery, comparisons, and statistics; modal focus handling, reduced-motion support, labels, and keyboard access have been expanded.
 
 ## Feature overview
 
@@ -81,7 +81,7 @@ Version 2.4.0 focuses on faster mobile workflows, batch operations, reliable liv
 - Isolated user accounts, administrator-managed users, password changes, and per-user storage.
 - Encrypted LLM credentials in SQLite, authenticated image access, rate limiting, service URL validation, and configurable origin allowlists.
 - Searchable audit logs for ComfyUI and LLM exchanges.
-- Light and dark themes, responsive desktop/mobile layouts, PWA support, custom profile images, and customizable generation companions.
+- Light and dark themes, responsive desktop/mobile layouts, PWA support, custom profile images, and customizable generation companions whose sprite files are stored privately per user.
 - English and French interface translations.
 
 | Generation options | Mobile interface |
@@ -181,6 +181,17 @@ Persistent data lives in:
 
 Back up all three locations regularly. Never commit them to Git.
 
+On Windows, a consistent SQLite snapshot plus workflows, images, version, and
+private configuration can be created outside the repository with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\backup-data.ps1
+```
+
+The script verifies the SQLite snapshot with `PRAGMA quick_check`, records its
+SHA-256 hash, and refuses a destination inside the repository. Backups may
+contain `AUTH_SECRET` and must be stored privately.
+
 ## Configuration reference
 
 | Variable | Purpose | Default |
@@ -193,6 +204,8 @@ Back up all three locations regularly. Never commit them to Git.
 | `SERVICE_URL_ALLOWLIST` | Allowed custom ComfyUI/LLM service origins | empty |
 | `ALLOW_PRIVATE_SERVICE_URLS` | Allow literal private and loopback IP addresses | `false` |
 | `ALLOW_USER_LLM_URLS` | Allow each user to choose an arbitrary LLM URL | `false` |
+| `MAX_QUEUE_PER_USER` | Maximum pending/processing generations per user | `25` |
+| `MAX_QUEUE_BATCH` | Maximum generations accepted by one batch request | `50` |
 | `PORT` | Internal API port | `3001` |
 
 Do not change `AUTH_SECRET` after saving API keys unless you plan to enter them again: provider credentials are encrypted with a key derived from this secret.

@@ -111,6 +111,9 @@ export const Sidebar = ({
               key={s.id} 
               className={`session-item status-${s.generationStatus || 'idle'} ${currentSessionId === s.id && (view === 'chat' || view === 'archives') ? 'active' : ''}`}
               data-generation-status={s.generationStatus || 'idle'}
+              role="button"
+              tabIndex={renamingId === s.id ? -1 : 0}
+              aria-current={currentSessionId === s.id && (view === 'chat' || view === 'archives') ? 'page' : undefined}
               onClick={() => { 
                 onSessionViewed(s.id);
                 if (currentSessionId === s.id && view === 'chat') {
@@ -121,6 +124,11 @@ export const Sidebar = ({
                 setCurrentSessionId(s.id); 
                 setView('chat'); 
                 closeSidebarOnMobile();
+              }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+                event.preventDefault();
+                event.currentTarget.click();
               }}
             >
               {renamingId === s.id ? (
@@ -166,7 +174,7 @@ export const Sidebar = ({
 
         <div className="sidebar-footer-profile" ref={profileRef}>
           {profileMenuOpen && (
-            <div className="profile-popover">
+            <div id="profile-menu" className="profile-popover">
               <div className="popover-section">
                 <button className="popover-item" onClick={() => { setLang(lang === 'fr' ? 'en' : 'fr'); setProfileMenuOpen(false); }}>
                   <span>🌐</span> {lang === 'fr' ? 'English (EN)' : 'Français (FR)'}
@@ -204,6 +212,16 @@ export const Sidebar = ({
           <div 
             className={`profile-pill ${profileMenuOpen ? 'active' : ''}`} 
             onClick={() => setProfileMenuOpen(!profileMenuOpen)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              setProfileMenuOpen(open => !open);
+            }}
+            role="button"
+            tabIndex={0}
+            aria-haspopup="menu"
+            aria-controls="profile-menu"
+            aria-expanded={profileMenuOpen}
           >
             <div className="profile-avatar">
               {currentUser?.avatarUrl ? (

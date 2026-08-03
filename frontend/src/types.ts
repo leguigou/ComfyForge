@@ -16,7 +16,7 @@ export interface Message {
   sampler?: string;
   scheduler?: string;
   timestamp: number;
-  status?: 'pending' | 'processing' | 'completed' | 'failed';
+  status?: 'pending' | 'preparing' | 'processing' | 'completed' | 'failed';
   isEnhancing?: boolean;
   isStarting?: boolean;
   duration?: number;
@@ -112,7 +112,10 @@ export interface CompanionProfile {
   id: string;
   name: string;
   source: 'builtin' | 'custom';
+  spriteUrl?: string;
   spriteDataUrl?: string;
+  spriteMimeType?: 'image/png' | 'image/webp';
+  spriteBytes?: number;
   fileName?: string;
 }
 
@@ -123,6 +126,7 @@ export interface CompanionSettings {
 }
 
 export interface GenParameters {
+  onboardingCompleted?: boolean;
   width: number;
   height: number;
   steps: number;

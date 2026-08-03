@@ -5,6 +5,8 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { syncPromptTags } from './prompt-tags';
 
+export const DATABASE_SCHEMA_VERSION = 3;
+
 // Standardized path for Docker, local development, and isolated tests.
 let dbPath: string;
 if (process.env.DATABASE_PATH) {
@@ -22,7 +24,8 @@ if (process.env.DATABASE_PATH) {
   dbPath = path.join(dataDir, 'history.db');
 }
 
-const dataDir = path.dirname(dbPath);
+export const databaseDataDir = path.dirname(dbPath);
+const dataDir = databaseDataDir;
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 console.log(`[Database] Initializing at: ${dbPath}`);
@@ -103,13 +106,15 @@ export const initDatabase = () => {
     CREATE TABLE IF NOT EXISTS queue (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       messageId TEXT NOT NULL,
+      userId TEXT,
       prompt TEXT NOT NULL,
       originalPrompt TEXT,
       sessionId TEXT NOT NULL,
       params TEXT NOT NULL,
       status TEXT DEFAULT 'pending',
       createdAt INTEGER NOT NULL,
-      FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE
+      FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -172,8 +177,10 @@ export const initDatabase = () => {
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_userId ON sessions(userId);
+    CREATE INDEX IF NOT EXISTS idx_sessions_library ON sessions(userId, isArchived, updatedAt DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_sessionId ON messages(sessionId);
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_messages_session_timestamp ON messages(sessionId, timestamp DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_comparison_preferences_source ON comparison_preferences(userId, sourceMessageId);
     CREATE INDEX IF NOT EXISTS idx_queue_sessionId ON queue(sessionId);
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
@@ -205,6 +212,10 @@ export const initDatabase = () => {
       console.log(`[Migration] Added column ${col} to messages table`);
     }
   });
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_comparison_status
+      ON messages(comparisonSourceId, status, timestamp DESC);
+  `);
 
   // Direction was added after bidirectional comparison links. Recover older
   // generated comparison rows from their internal queue parameter.
@@ -237,6 +248,63 @@ export const initDatabase = () => {
   } catch (e) {
     db.exec('ALTER TABLE users ADD COLUMN avatarUrl TEXT');
     console.log('[Migration] Added avatarUrl column to users table');
+  }
+
+  let currentSchemaVersion = Number(db.pragma('user_version', { simple: true })) || 0;
+  if (currentSchemaVersion < 2) {
+    db.transaction(() => {
+      try {
+        db.prepare('SELECT userId FROM queue LIMIT 1').get();
+      } catch {
+        db.exec('ALTER TABLE queue ADD COLUMN userId TEXT');
+      }
+      db.exec(`
+        UPDATE queue
+        SET userId = (
+          SELECT sessions.userId FROM sessions WHERE sessions.id = queue.sessionId
+        )
+        WHERE userId IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_queue_user_status_created
+          ON queue(userId, status, createdAt);
+      `);
+      db.pragma('user_version = 2');
+    })();
+    currentSchemaVersion = 2;
+  }
+
+  if (currentSchemaVersion < 3) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
+          messageId UNINDEXED,
+          generationPrompt,
+          prompt,
+          text
+        );
+
+        DELETE FROM message_search;
+        INSERT INTO message_search (messageId, generationPrompt, prompt, text)
+        SELECT id, COALESCE(generationPrompt, ''), COALESCE(prompt, ''), COALESCE(text, '')
+        FROM messages;
+
+        CREATE TRIGGER IF NOT EXISTS messages_search_insert AFTER INSERT ON messages BEGIN
+          INSERT INTO message_search (messageId, generationPrompt, prompt, text)
+          VALUES (new.id, COALESCE(new.generationPrompt, ''), COALESCE(new.prompt, ''), COALESCE(new.text, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_search_update
+        AFTER UPDATE OF generationPrompt, prompt, text ON messages BEGIN
+          DELETE FROM message_search WHERE messageId = old.id;
+          INSERT INTO message_search (messageId, generationPrompt, prompt, text)
+          VALUES (new.id, COALESCE(new.generationPrompt, ''), COALESCE(new.prompt, ''), COALESCE(new.text, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_search_delete AFTER DELETE ON messages BEGIN
+          DELETE FROM message_search WHERE messageId = old.id;
+        END;
+      `);
+      db.pragma('user_version = 3');
+    })();
   }
 
   // Default Admin

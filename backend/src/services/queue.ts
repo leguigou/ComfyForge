@@ -10,10 +10,14 @@ import { imagesDir, thumbnailsDir } from './image';
 import { QueueTask, GenerationParams, ComfyHistoryEntry } from '../types';
 import { writeAuditLog } from './audit-log';
 import { resolveComfyHistoryImage, ResolvedComfyHistoryImage } from './comfy-history';
+import { getQueueLimits, selectNextFairTask } from './queue-policy';
+
+export { getQueueLimits } from './queue-policy';
 
 let isProcessingQueue = false;
 let wss: WebSocketServer | null = null;
 const websocketUsers = new WeakMap<WebSocket, string>();
+const lastServedByUser = new Map<string, number>();
 const COMFY_UNAVAILABLE_MESSAGE = 'ComfyUI est inaccessible. Toutes les générations ont été arrêtées. Vérifiez que ComfyUI est démarré et que son URL est correcte.';
 
 class ComfyUnavailableError extends Error {
@@ -34,11 +38,52 @@ export const registerWebSocketUser = (client: WebSocket, userId: string) => {
 export const getUserQueueRemaining = (userId: string) => {
   const result = db.prepare(`
     SELECT COUNT(*) AS count
-    FROM queue q
-    JOIN sessions s ON s.id = q.sessionId
-    WHERE s.userId = ? AND q.status IN ('pending', 'processing')
+    FROM queue
+    WHERE userId = ? AND status IN ('pending', 'processing')
   `).get(userId) as { count: number };
   return result.count;
+};
+
+export const getUserQueueCapacity = (userId: string) => {
+  const limits = getQueueLimits();
+  const current = getUserQueueRemaining(userId);
+  return {
+    current,
+    limit: limits.perUser,
+    remaining: Math.max(0, limits.perUser - current),
+    batchLimit: limits.batch
+  };
+};
+
+export class QueueCapacityError extends Error {
+  code = 'QUEUE_LIMIT_REACHED' as const;
+  statusCode = 429;
+
+  constructor(public capacity: ReturnType<typeof getUserQueueCapacity>, requested: number) {
+    super(`Queue limit reached: ${capacity.current}/${capacity.limit} active, ${requested} requested`);
+    this.name = 'QueueCapacityError';
+  }
+}
+
+export const assertUserQueueCapacity = (userId: string, requested = 1) => {
+  const capacity = getUserQueueCapacity(userId);
+  if (requested > capacity.batchLimit || requested > capacity.remaining) {
+    throw new QueueCapacityError(capacity, requested);
+  }
+  return capacity;
+};
+
+const getNextFairTask = (): QueueTask | null => {
+  const pending = db.prepare(`
+    SELECT q.*, COALESCE(q.userId, s.userId) AS userId
+    FROM queue q
+    JOIN sessions s ON s.id = q.sessionId
+    WHERE q.status = 'pending'
+    ORDER BY q.createdAt ASC, q.id ASC
+    LIMIT 500
+  `).all() as QueueTask[];
+
+  return selectNextFairTask(pending, lastServedByUser);
 };
 
 export const broadcastToSession = (sessionId: string, data: Record<string, unknown>) => {
@@ -67,21 +112,20 @@ export const processQueue = async () => {
 
   let task: QueueTask | null = null;
   try {
-    task = db.prepare('SELECT * FROM queue WHERE status = ? ORDER BY createdAt ASC LIMIT 1').get('pending') as QueueTask | undefined ?? null;
+    task = getNextFairTask();
     if (!task) {
       isProcessingQueue = false;
       return;
     }
     
     console.log(`[Queue] Starting task for message ${task.messageId}...`);
-    const generationStartedAt = Date.now();
+    lastServedByUser.set(task.userId, Date.now());
     db.prepare('UPDATE queue SET status = ? WHERE id = ?').run('processing', task.id);
-    db.prepare('UPDATE messages SET status = ?, generationStartedAt = ? WHERE id = ?')
-      .run('processing', generationStartedAt, task.messageId);
+    db.prepare('UPDATE messages SET status = ?, generationStartedAt = NULL WHERE id = ?')
+      .run('preparing', task.messageId);
     broadcastToSession(task.sessionId, {
       messageId: task.messageId,
-      status: 'processing',
-      generationStartedAt
+      status: 'preparing'
     });
     const sessionOwner = db.prepare('SELECT userId FROM sessions WHERE id = ?').get(task.sessionId) as { userId: string } | undefined;
 
@@ -161,6 +205,16 @@ export const processQueue = async () => {
       if (isComfyConnectionRefused(err)) throw new ComfyUnavailableError();
       throw new Error(`Submission failed: ${parseComfyError(err)}`); 
     }
+
+    const generationStartedAt = Date.now();
+    db.prepare('UPDATE messages SET status = ?, generationStartedAt = ?, duration = 0 WHERE id = ?')
+      .run('processing', generationStartedAt, task.messageId);
+    broadcastToSession(task.sessionId, {
+      messageId: task.messageId,
+      status: 'processing',
+      duration: 0,
+      generationStartedAt
+    });
 
     let completedImage: ResolvedComfyHistoryImage | undefined;
     const startTime = generationStartedAt;
@@ -356,7 +410,7 @@ export const processQueue = async () => {
 export const initQueue = (wsServer: WebSocketServer) => {
   setWss(wsServer);
   db.prepare("UPDATE queue SET status = 'pending' WHERE status = 'processing'").run();
-  db.prepare("UPDATE messages SET status = 'pending', generationStartedAt = NULL WHERE status = 'processing' AND id IN (SELECT messageId FROM queue)").run();
+  db.prepare("UPDATE messages SET status = 'pending', generationStartedAt = NULL WHERE status IN ('preparing', 'processing') AND id IN (SELECT messageId FROM queue)").run();
   processQueue();
   setInterval(processQueue, 2000);
 };

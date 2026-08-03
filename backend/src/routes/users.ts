@@ -6,6 +6,7 @@ import fs from 'fs';
 import db from '../services/database';
 import { requireAdmin, authenticate } from '../middleware/auth';
 import { imagesDir } from '../services/image';
+import { deleteCompanionAssetsForUser } from '../services/companion-assets';
 
 const router = express.Router();
 
@@ -92,10 +93,12 @@ router.post('/', requireAdmin, (req, res) => {
 });
 
 router.delete('/:id', requireAdmin, (req, res) => {
-  if (req.params.id === (req as any).user.id) {
+  const userId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  if (userId === (req as any).user.id) {
     return res.status(400).json({ error: 'Cannot delete yourself' });
   }
-  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  deleteCompanionAssetsForUser(userId);
   res.json({ success: true });
 });
 

@@ -5,6 +5,7 @@ declare global {
   namespace Express {
     interface Request {
       user?: Pick<User, 'id' | 'username' | 'isAdmin' | 'avatarUrl'>;
+      requestId?: string;
     }
   }
 }

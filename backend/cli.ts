@@ -6,6 +6,7 @@ import fs from 'fs';
 
 // Exhaustive search for the database file to handle any Docker/Dokploy folder structure
 const possiblePaths = [
+  ...(process.env.DATABASE_PATH ? [path.resolve(process.env.DATABASE_PATH)] : []),
   path.join(__dirname, 'data', 'history.db'),
   path.join(__dirname, '..', 'data', 'history.db'),
   '/app/data/history.db',
@@ -40,6 +41,8 @@ Usage:
   node cli.js delete <user>                 - Delete a user
   node cli.js reset-password <user> <pass>  - Reset a user's password
   node cli.js make-admin <user>             - Grant admin rights
+  node cli.js backup <destination.db>        - Create and verify a live SQLite snapshot
+  node cli.js verify-backup <backup.db>      - Verify an existing SQLite snapshot
 `;
 
 const args = process.argv.slice(2);
@@ -129,10 +132,59 @@ async function run() {
       break;
     }
 
+    case 'backup': {
+      const destinationArg = args[1];
+      if (!destinationArg) {
+        console.error('Error: backup destination is required.');
+        process.exitCode = 1;
+        break;
+      }
+      const destination = path.resolve(destinationArg);
+      if (destination === path.resolve(dbPath) || path.extname(destination).toLowerCase() !== '.db') {
+        console.error('Error: destination must be a different .db file.');
+        process.exitCode = 1;
+        break;
+      }
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      await db.backup(destination);
+      const snapshot = new Database(destination, { readonly: true, fileMustExist: true });
+      try {
+        const quickCheck = snapshot.pragma('quick_check', { simple: true });
+        if (quickCheck !== 'ok') throw new Error(`SQLite quick_check returned: ${quickCheck}`);
+      } finally {
+        snapshot.close();
+      }
+      console.log(`[CLI] Verified database backup: ${destination}`);
+      break;
+    }
+
+    case 'verify-backup': {
+      const backupArg = args[1];
+      if (!backupArg || !fs.existsSync(path.resolve(backupArg))) {
+        console.error('Error: backup file not found.');
+        process.exitCode = 1;
+        break;
+      }
+      const snapshot = new Database(path.resolve(backupArg), { readonly: true, fileMustExist: true });
+      try {
+        const quickCheck = snapshot.pragma('quick_check', { simple: true });
+        if (quickCheck !== 'ok') throw new Error(`SQLite quick_check returned: ${quickCheck}`);
+        console.log(`[CLI] Backup is valid: ${path.resolve(backupArg)}`);
+      } finally {
+        snapshot.close();
+      }
+      break;
+    }
+
     default:
       console.log(usage);
       break;
   }
 }
 
-run();
+run()
+  .catch(error => {
+    console.error(`[CLI] ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  })
+  .finally(() => db.close());

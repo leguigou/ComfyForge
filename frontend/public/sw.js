@@ -29,9 +29,10 @@ self.addEventListener('activate', (event) => {
       .then(() => self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
       .then((clients) => {
         clients.forEach((client) => {
-          if (client.url && 'navigate' in client) {
-            client.navigate(client.url);
-          }
+          client.postMessage({
+            type: 'COMFYFORGE_UPDATE_READY',
+            version: '__APP_VERSION__'
+          });
         });
       })
   );

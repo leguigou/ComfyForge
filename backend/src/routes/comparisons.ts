@@ -4,7 +4,13 @@ import fs from 'fs';
 import path from 'path';
 import db from '../services/database';
 import { authenticate } from '../middleware/auth';
-import { broadcastToSession, processQueue } from '../services/queue';
+import {
+  assertUserQueueCapacity,
+  broadcastToSession,
+  getUserQueueCapacity,
+  processQueue,
+  QueueCapacityError
+} from '../services/queue';
 import { getTargetComfyUrl } from '../services/comfy';
 import { deleteFiles } from '../services/image';
 
@@ -79,40 +85,60 @@ const getUserSettings = (userId: string) => {
 
 router.get('/', authenticate, (req, res) => {
   const user = (req as any).user;
-  const rows = db.prepare(`
-    SELECT ${imageProjection},
-      (
-        SELECT COUNT(*) + 1
-        FROM messages version
-        WHERE version.comparisonSourceId = m.id
-          AND version.imageUrl IS NOT NULL
-          AND version.status = 'completed'
-      ) AS comparisonVersionCount,
-      (
-        SELECT MAX(version.timestamp)
-        FROM messages version
-        WHERE version.comparisonSourceId = m.id
-          AND version.imageUrl IS NOT NULL
-          AND version.status = 'completed'
-      ) AS latestComparisonAt
-    FROM messages m JOIN sessions s ON s.id = m.sessionId
-    WHERE s.userId = ? AND m.role = 'bot' AND m.imageUrl IS NOT NULL
-      AND m.status = 'completed'
-      AND m.comparisonSourceId IS NULL
-      AND EXISTS (
-        SELECT 1 FROM messages version
-        WHERE version.comparisonSourceId = m.id
-          AND version.imageUrl IS NOT NULL
-          AND version.status = 'completed'
-      )
-    ORDER BY latestComparisonAt DESC LIMIT 500
-  `).all(user.id);
-  res.json(rows);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(String(req.query.limit || ''), 10) || 40));
+  const cursorLatestAt = Number(req.query.cursorLatestAt);
+  const cursorId = typeof req.query.cursorId === 'string' ? req.query.cursorId.trim() : '';
+  const hasCursor = Number.isFinite(cursorLatestAt) && cursorLatestAt > 0 && Boolean(cursorId);
+  const fetchedRows = db.prepare(`
+    WITH comparison_sources AS (
+      SELECT ${imageProjection},
+        (
+          SELECT COUNT(*) + 1
+          FROM messages version
+          WHERE version.comparisonSourceId = m.id
+            AND version.imageUrl IS NOT NULL
+            AND version.status = 'completed'
+        ) AS comparisonVersionCount,
+        (
+          SELECT MAX(version.timestamp)
+          FROM messages version
+          WHERE version.comparisonSourceId = m.id
+            AND version.imageUrl IS NOT NULL
+            AND version.status = 'completed'
+        ) AS latestComparisonAt
+      FROM messages m JOIN sessions s ON s.id = m.sessionId
+      WHERE s.userId = ? AND m.role = 'bot' AND m.imageUrl IS NOT NULL
+        AND m.status = 'completed'
+        AND m.comparisonSourceId IS NULL
+        AND EXISTS (
+          SELECT 1 FROM messages version
+          WHERE version.comparisonSourceId = m.id
+            AND version.imageUrl IS NOT NULL
+            AND version.status = 'completed'
+        )
+    )
+    SELECT * FROM comparison_sources
+    ${hasCursor ? 'WHERE latestComparisonAt < ? OR (latestComparisonAt = ? AND messageId < ?)' : ''}
+    ORDER BY latestComparisonAt DESC, messageId DESC
+    LIMIT ?
+  `).all(...(hasCursor
+    ? [user.id, cursorLatestAt, cursorLatestAt, cursorId, limit + 1]
+    : [user.id, limit + 1])) as Array<Record<string, unknown> & { messageId: string; latestComparisonAt: number }>;
+  const hasMore = fetchedRows.length > limit;
+  const rows = fetchedRows.slice(0, limit);
+  const last = rows[rows.length - 1];
+  res.json({
+    items: rows,
+    nextCursor: hasMore && last
+      ? { latestAt: last.latestComparisonAt, id: last.messageId }
+      : null
+  });
 });
 
-router.get('/status/availability', authenticate, (_req, res) => {
-  const active = db.prepare("SELECT COUNT(*) AS count FROM queue WHERE status IN ('pending', 'processing')").get() as { count: number };
-  res.json({ available: active.count === 0, activeGenerations: active.count });
+router.get('/status/availability', authenticate, (req, res) => {
+  const user = (req as any).user;
+  const capacity = getUserQueueCapacity(user.id);
+  res.json({ available: capacity.remaining > 0, activeGenerations: capacity.current, capacity });
 });
 
 router.post('/batch/generate', authenticate, (req, res) => {
@@ -159,7 +185,7 @@ router.post('/batch/generate', authenticate, (req, res) => {
     const existingRows = db.prepare(`
       SELECT comparisonSourceId, model FROM messages
       WHERE comparisonSourceId IN (${sourcePlaceholders})
-        AND status IN ('pending', 'processing', 'completed')
+        AND status IN ('pending', 'preparing', 'processing', 'completed')
     `).all(...sourceIds) as Array<{ comparisonSourceId: string; model?: string }>;
     const alreadyProcessed = new Set(existingRows
       .filter(item => normalizeModelKey(item.model) === requestedModelKey)
@@ -167,6 +193,7 @@ router.post('/batch/generate', authenticate, (req, res) => {
     const eligibleSources = sources.filter(source => (
       normalizeModelKey(source.model) !== requestedModelKey && !alreadyProcessed.has(source.id)
     ));
+    if (eligibleSources.length) assertUserQueueCapacity(user.id, eligibleSources.length);
 
     const defaults = { ...(favorite.generationDefaults || {}), ...getWorkflowDefaults(favorite.workflowFile) };
     const created: Array<{ messageId: string; sourceMessageId: string }> = [];
@@ -207,9 +234,9 @@ router.post('/batch/generate', authenticate, (req, res) => {
         );
         db.prepare('UPDATE messages SET comparisonMessageId = ? WHERE id = ?').run(messageId, source.id);
         db.prepare(`
-          INSERT INTO queue (messageId, prompt, originalPrompt, sessionId, params, status, createdAt)
-          VALUES (?, ?, ?, ?, ?, 'pending', ?)
-        `).run(messageId, executionPrompt, source.prompt, source.sessionId, JSON.stringify(params), timestamp);
+          INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+        `).run(messageId, user.id, executionPrompt, source.prompt, source.sessionId, JSON.stringify(params), timestamp);
         db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, source.sessionId);
         created.push({ messageId, sourceMessageId: source.id });
       });
@@ -227,6 +254,11 @@ router.post('/batch/generate', authenticate, (req, res) => {
       messageIds: created.map(item => item.messageId)
     });
   } catch (error: any) {
+    if (error instanceof QueueCapacityError) return res.status(error.statusCode).json({
+      code: error.code,
+      error: 'La file de génération de cet utilisateur est pleine',
+      capacity: error.capacity
+    });
     return res.status(500).json({ error: error.message || 'Impossible de lancer les comparaisons par lot' });
   }
 });
@@ -252,7 +284,7 @@ router.delete('/batch', authenticate, (req, res) => {
       SELECT m.* FROM messages m JOIN sessions s ON s.id = m.sessionId
       WHERE s.userId = ? AND m.comparisonSourceId IN (${sourcePlaceholders}) AND m.role = 'bot'
     `).all(user.id, ...sourceIds) as any[];
-    if (comparisons.some(item => ['pending', 'processing'].includes(item.status))) {
+    if (comparisons.some(item => ['pending', 'preparing', 'processing'].includes(item.status))) {
       return res.status(409).json({ error: 'Attendez la fin des générations avant de supprimer la sélection' });
     }
     db.transaction(() => {
@@ -405,10 +437,7 @@ router.post('/:messageId', authenticate, (req, res) => {
       : requested;
     if (!source) return res.status(404).json({ error: 'Image originale introuvable' });
 
-    // ComfyUI is shared by the queue: a comparison can only be accepted once
-    // every render (for every user) is fully finished.
-    const active = db.prepare("SELECT COUNT(*) AS count FROM queue WHERE status IN ('pending', 'processing')").get() as { count: number };
-    if (active.count > 0) return res.status(409).json({ error: 'Attendez la fin de toutes les générations avant de comparer' });
+    assertUserQueueCapacity(user.id);
 
     const requestedModel = String(req.body?.model || '');
     const requestedType = req.body?.modelType === 'diffusion' ? 'diffusion' : 'checkpoint';
@@ -427,7 +456,7 @@ router.post('/:messageId', authenticate, (req, res) => {
     }
     const existingModel = (db.prepare(`
       SELECT id, model FROM messages
-      WHERE comparisonSourceId = ? AND status IN ('pending', 'processing', 'completed')
+      WHERE comparisonSourceId = ? AND status IN ('pending', 'preparing', 'processing', 'completed')
     `).all(source.id) as Array<{ id: string; model?: string }>).find(item => (
       normalizeModelKey(item.model) === requestedModelKey
     ));
@@ -481,9 +510,9 @@ router.post('/:messageId', authenticate, (req, res) => {
       );
       db.prepare('UPDATE messages SET comparisonMessageId = ? WHERE id = ?').run(messageId, source.id);
       db.prepare(`
-        INSERT INTO queue (messageId, prompt, originalPrompt, sessionId, params, status, createdAt)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?)
-      `).run(messageId, executionPrompt, source.prompt, source.sessionId, JSON.stringify(params), timestamp);
+        INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+      `).run(messageId, user.id, executionPrompt, source.prompt, source.sessionId, JSON.stringify(params), timestamp);
       db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, source.sessionId);
     })();
 
@@ -491,6 +520,11 @@ router.post('/:messageId', authenticate, (req, res) => {
     processQueue();
     return res.status(202).json({ success: true, messageId });
   } catch (error: any) {
+    if (error instanceof QueueCapacityError) return res.status(error.statusCode).json({
+      code: error.code,
+      error: 'La file de génération de cet utilisateur est pleine',
+      capacity: error.capacity
+    });
     return res.status(500).json({ error: error.message || 'Impossible de lancer la comparaison' });
   }
 });
@@ -505,7 +539,7 @@ router.delete('/:messageId', authenticate, (req, res) => {
     if (!comparison?.comparisonSourceId) {
       return res.status(400).json({ error: 'Seule une image de comparaison peut être supprimée ici' });
     }
-    if (['pending', 'processing'].includes(comparison.status)) {
+    if (['pending', 'preparing', 'processing'].includes(comparison.status)) {
       return res.status(409).json({ error: 'Attendez la fin de la génération avant de supprimer cette image' });
     }
 
