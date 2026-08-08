@@ -18,6 +18,7 @@ let isProcessingQueue = false;
 let wss: WebSocketServer | null = null;
 const websocketUsers = new WeakMap<WebSocket, string>();
 const lastServedByUser = new Map<string, number>();
+const COMFY_HISTORY_POLL_INTERVAL_MS = 250;
 const COMFY_UNAVAILABLE_MESSAGE = 'ComfyUI est inaccessible. Toutes les générations ont été arrêtées. Vérifiez que ComfyUI est démarré et que son URL est correcte.';
 
 class ComfyUnavailableError extends Error {
@@ -47,10 +48,14 @@ export const getUserQueueRemaining = (userId: string) => {
 export const getUserQueueCapacity = (userId: string) => {
   const limits = getQueueLimits();
   const current = getUserQueueRemaining(userId);
+  const user = db.prepare('SELECT queueLimit FROM users WHERE id = ?').get(userId) as {
+    queueLimit: number | null;
+  } | undefined;
+  const limit = user?.queueLimit ?? null;
   return {
     current,
-    limit: limits.perUser,
-    remaining: Math.max(0, limits.perUser - current),
+    limit,
+    remaining: limit === null ? null : Math.max(0, limit - current),
     batchLimit: limits.batch
   };
 };
@@ -60,14 +65,14 @@ export class QueueCapacityError extends Error {
   statusCode = 429;
 
   constructor(public capacity: ReturnType<typeof getUserQueueCapacity>, requested: number) {
-    super(`Queue limit reached: ${capacity.current}/${capacity.limit} active, ${requested} requested`);
+    super(`Queue limit reached: ${capacity.current}/${capacity.limit ?? 'unlimited'} active, ${requested} requested`);
     this.name = 'QueueCapacityError';
   }
 }
 
 export const assertUserQueueCapacity = (userId: string, requested = 1) => {
   const capacity = getUserQueueCapacity(userId);
-  if (requested > capacity.batchLimit || requested > capacity.remaining) {
+  if (requested > capacity.batchLimit || (capacity.remaining !== null && requested > capacity.remaining)) {
     throw new QueueCapacityError(capacity, requested);
   }
   return capacity;
@@ -219,19 +224,23 @@ export const processQueue = async () => {
     let completedImage: ResolvedComfyHistoryImage | undefined;
     const startTime = generationStartedAt;
     const POLLING_TIMEOUT = 5 * 60 * 1000; 
+    let lastReportedDuration = 0;
 
     while (!completedImage) {
       if (Date.now() - startTime > POLLING_TIMEOUT) throw new Error('Generation timed out after 5 minutes.');
       
       const currentDuration = Math.floor((Date.now() - startTime) / 1000);
-      db.prepare('UPDATE messages SET duration = ? WHERE id = ?')
-        .run(currentDuration, task.messageId);
-      broadcastToSession(task.sessionId, {
-        messageId: task.messageId,
-        status: 'processing',
-        duration: currentDuration,
-        generationStartedAt
-      });
+      if (currentDuration > lastReportedDuration) {
+        lastReportedDuration = currentDuration;
+        db.prepare('UPDATE messages SET duration = ? WHERE id = ?')
+          .run(currentDuration, task.messageId);
+        broadcastToSession(task.sessionId, {
+          messageId: task.messageId,
+          status: 'processing',
+          duration: currentDuration,
+          generationStartedAt
+        });
+      }
 
       let hResp;
       try { 
@@ -266,11 +275,9 @@ export const processQueue = async () => {
       }
       
       if (!completedImage) {
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, COMFY_HISTORY_POLL_INTERVAL_MS));
         const stillExists = db.prepare('SELECT id FROM queue WHERE id = ?').get(task.id);
         if (!stillExists) { 
-          isProcessingQueue = false; 
-          setTimeout(processQueue, 100); 
           return; 
         }
       }
@@ -315,8 +322,15 @@ export const processQueue = async () => {
     const fullWebpName = `${baseName}.webp`;
     const thumbWebpName = `${baseName}_thumb.webp`;
     
-    await sharp(imgResp.data).webp({ quality: 85 }).toFile(path.join(userImagesDir, fullWebpName));
-    await sharp(imgResp.data).resize(400, 400, { fit: 'inside', withoutEnlargement: true }).webp({ quality: 70 }).toFile(path.join(userThumbnailsDir, thumbWebpName));
+    await Promise.all([
+      sharp(imgResp.data)
+        .webp({ quality: 85 })
+        .toFile(path.join(userImagesDir, fullWebpName)),
+      sharp(imgResp.data)
+        .resize(400, 400, { fit: 'inside', withoutEnlargement: true })
+        .webp({ quality: 70 })
+        .toFile(path.join(userThumbnailsDir, thumbWebpName))
+    ]);
     
     const imageUrl = `/api/image-files/${userId}/${fullWebpName}`;
     const thumbnailUrl = `/api/image-files/thumbnails/${userId}/${thumbWebpName}`;
@@ -403,7 +417,7 @@ export const processQueue = async () => {
     }
   } finally { 
     isProcessingQueue = false; 
-    setTimeout(processQueue, 500); 
+    setImmediate(() => void processQueue());
   }
 };
 

@@ -22,6 +22,13 @@ interface Props {
 }
 
 const VISION_TTL_OPTIONS = [15, 30, 60, 120] as const;
+const VISION_DETAIL_LABEL_KEYS = [
+  'visionDetailConcise',
+  'visionDetailFocused',
+  'visionDetailDetailed',
+  'visionDetailVeryDetailed',
+  'visionDetailExhaustive',
+] as const;
 
 const request = async (path: string, init?: RequestInit) => {
   const response = await fetch(`${API_BASE}/api/llm${path}`, {
@@ -54,6 +61,8 @@ export const LLMProvidersPanel = ({ params, setParams, t, beforeVision }: Props)
     ? params.visionModelTtlMinutes
     : 30;
   const visionTtlIndex = VISION_TTL_OPTIONS.indexOf(visionTtlMinutes as typeof VISION_TTL_OPTIONS[number]);
+  const visionDetailLevel = Math.min(5, Math.max(1, Math.round(params.visionDetailLevel || 5)));
+  const visionDetailLabel = t[VISION_DETAIL_LABEL_KEYS[visionDetailLevel - 1]] || String(visionDetailLevel);
 
   const loadProviders = useCallback(async () => {
     const data = await request('/providers');
@@ -363,6 +372,33 @@ export const LLMProvidersPanel = ({ params, setParams, t, beforeVision }: Props)
           </label>
         </div>
         <p className="vision-provider-note">{t.visionModelNote || 'Only choose a multimodal model with image input support.'}</p>
+        <div className="vision-detail-control">
+          <div className="vision-ttl-heading">
+            <div>
+              <strong>{t.visionDetailTitle || 'Reproduction accuracy'}</strong>
+              <small>{t.visionDetailHelp || 'Controls the length and amount of visual detail in the generated prompt.'}</small>
+            </div>
+            <output>{visionDetailLevel} · {visionDetailLabel}</output>
+          </div>
+          <input
+            type="range"
+            min="1"
+            max="5"
+            step="1"
+            value={visionDetailLevel}
+            onChange={event => setParams(current => ({
+              ...current,
+              visionDetailLevel: Number(event.target.value),
+            }))}
+            aria-label={t.visionDetailTitle || 'Reproduction accuracy'}
+            aria-valuetext={visionDetailLabel}
+          />
+          <div className="vision-detail-ticks" aria-hidden="true">
+            <span>{t.visionDetailConcise || 'Concise'}</span>
+            <span>{t.visionDetailDetailed || 'Detailed'}</span>
+            <span>{t.visionDetailExhaustive || 'Exhaustive'}</span>
+          </div>
+        </div>
         <div className="vision-ttl-control">
           <div className="vision-ttl-heading">
             <div>

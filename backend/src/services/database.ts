@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { syncPromptTags } from './prompt-tags';
 
-export const DATABASE_SCHEMA_VERSION = 4;
+export const DATABASE_SCHEMA_VERSION = 5;
 
 // Standardized path for Docker, local development, and isolated tests.
 let dbPath: string;
@@ -43,6 +43,7 @@ export const initDatabase = () => {
       password TEXT NOT NULL,
       isAdmin INTEGER DEFAULT 0,
       avatarUrl TEXT,
+      queueLimit INTEGER,
       createdAt INTEGER NOT NULL
     );
 
@@ -345,6 +346,27 @@ export const initDatabase = () => {
       `);
       db.pragma('user_version = 4');
     })();
+    currentSchemaVersion = 4;
+  }
+
+  if (currentSchemaVersion < 5) {
+    db.transaction(() => {
+      try {
+        db.prepare('SELECT queueLimit FROM users LIMIT 1').get();
+      } catch {
+        db.exec('ALTER TABLE users ADD COLUMN queueLimit INTEGER');
+      }
+
+      // Preserve the previous global behavior for existing accounts. Once the
+      // migration is complete, NULL is reserved for an explicitly unlimited
+      // per-user quota.
+      const configuredDefault = Number.parseInt(process.env.MAX_QUEUE_PER_USER || '', 10);
+      const defaultQueueLimit = Number.isFinite(configuredDefault) && configuredDefault > 0
+        ? Math.min(configuredDefault, 500)
+        : 25;
+      db.prepare('UPDATE users SET queueLimit = ? WHERE queueLimit IS NULL').run(defaultQueueLimit);
+      db.pragma('user_version = 5');
+    })();
   }
 
   // Default Admin
@@ -358,8 +380,12 @@ export const initDatabase = () => {
     console.log('[Migration] Creating default admin user...');
     const adminId = uuidv4();
     const passwordHash = bcrypt.hashSync(APP_PASSWORD.trim(), 10);
-    db.prepare('INSERT INTO users (id, username, password, isAdmin, createdAt) VALUES (?, ?, ?, ?, ?)')
-      .run(adminId, 'admin', passwordHash, 1, Date.now());
+    const configuredDefault = Number.parseInt(process.env.MAX_QUEUE_PER_USER || '', 10);
+    const defaultQueueLimit = Number.isFinite(configuredDefault) && configuredDefault > 0
+      ? Math.min(configuredDefault, 500)
+      : 25;
+    db.prepare('INSERT INTO users (id, username, password, isAdmin, queueLimit, createdAt) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(adminId, 'admin', passwordHash, 1, defaultQueueLimit, Date.now());
     
     db.prepare('UPDATE sessions SET userId = ? WHERE userId IS NULL').run(adminId);
     console.log('[Migration] Default admin user created and sessions migrated.');

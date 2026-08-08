@@ -291,7 +291,8 @@ router.post('/retry-incomplete', authenticate, (req, res) => {
 
     const capacity = getUserQueueCapacity(user.id);
     if (capacity.remaining === 0) throw new QueueCapacityError(capacity, 1);
-    const messages = retryableMessages.slice(0, Math.min(capacity.remaining, capacity.batchLimit));
+    const availableSlots = capacity.remaining ?? capacity.batchLimit;
+    const messages = retryableMessages.slice(0, Math.min(availableSlots, capacity.batchLimit));
 
     const now = Date.now();
     const transaction = db.transaction(() => {

@@ -1,4 +1,8 @@
-const CACHE_NAME = 'comfyforge-v__APP_VERSION__';
+const APP_VERSION = '__APP_VERSION__';
+const BUILD_ID = '__BUILD_ID__';
+const CACHE_PREFIX = 'comfyforge-v';
+const CACHE_NAME = `${CACHE_PREFIX}${APP_VERSION}-${BUILD_ID}`;
+const IS_PRODUCTION_BUILD = !APP_VERSION.startsWith('__') && !BUILD_ID.startsWith('__');
 const ASSETS_TO_CACHE = [
   '/manifest.json',
   '/favicon.svg',
@@ -7,6 +11,11 @@ const ASSETS_TO_CACHE = [
 
 // Install event: cache core assets
 self.addEventListener('install', (event) => {
+  if (!IS_PRODUCTION_BUILD) {
+    event.waitUntil(self.skipWaiting());
+    return;
+  }
+
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => cache.addAll(ASSETS_TO_CACHE))
@@ -16,11 +25,23 @@ self.addEventListener('install', (event) => {
 
 // Activate event: cleanup old caches
 self.addEventListener('activate', (event) => {
+  if (!IS_PRODUCTION_BUILD) {
+    event.waitUntil(
+      caches.keys()
+        .then((cacheNames) => Promise.all(
+          cacheNames.filter((cacheName) => cacheName.startsWith(CACHE_PREFIX)).map((cacheName) => caches.delete(cacheName))
+        ))
+        .then(() => self.registration.unregister())
+        .then(() => self.clients.claim())
+    );
+    return;
+  }
+
   event.waitUntil(
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME) {
+          if (cacheName.startsWith(CACHE_PREFIX) && cacheName !== CACHE_NAME) {
             return caches.delete(cacheName);
           }
         })
@@ -31,7 +52,8 @@ self.addEventListener('activate', (event) => {
         clients.forEach((client) => {
           client.postMessage({
             type: 'COMFYFORGE_UPDATE_READY',
-            version: '__APP_VERSION__'
+            version: APP_VERSION,
+            buildId: BUILD_ID
           });
         });
       })
@@ -40,6 +62,8 @@ self.addEventListener('activate', (event) => {
 
 // Fetch event: never intercept API, network-first for app assets.
 self.addEventListener('fetch', (event) => {
+  if (!IS_PRODUCTION_BUILD) return;
+
   const url = new URL(event.request.url);
 
   if (

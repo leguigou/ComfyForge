@@ -33,3 +33,29 @@ export const getFullImageUrl = (url: string) => {
   if (url.startsWith('http')) return url;
   return `${API_BASE}${url}`;
 };
+
+export const getAvatarThumbnailUrl = (url: string | null | undefined) => {
+  if (!url || url.startsWith('http')) return url || '';
+
+  const path = url.split(/[?#]/, 1)[0];
+  const prefix = '/api/image-files/';
+  if (!path.startsWith(prefix)) return url;
+
+  const segments = path.slice(prefix.length).split('/').filter(Boolean);
+  if (
+    segments.length === 0
+    || segments.length > 2
+    || segments[0] === 'thumbnails'
+    || segments[0] === 'imports'
+  ) {
+    return url;
+  }
+
+  const filename = segments.at(-1)!;
+  if (!filename.endsWith('.webp') || filename.endsWith('_thumb.webp')) return url;
+
+  const thumbnailFilename = `${filename.slice(0, -'.webp'.length)}_thumb.webp`;
+  return segments.length === 2
+    ? `${prefix}thumbnails/${segments[0]}/${thumbnailFilename}`
+    : `${prefix}thumbnails/${thumbnailFilename}`;
+};

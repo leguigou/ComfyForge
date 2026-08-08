@@ -245,6 +245,126 @@ describe('API security boundaries', () => {
     }
   });
 
+  it('applies limited and unlimited generation queue quotas per user', async () => {
+    const messageId = 'queue-quota-test-message';
+    const original = db.prepare('SELECT queueLimit FROM users WHERE id = ?').get(adminId) as { queueLimit: number | null };
+    try {
+      db.prepare(`
+        INSERT INTO messages (id, sessionId, role, text, prompt, timestamp, status)
+        VALUES (?, ?, 'bot', '', 'Quota prompt', ?, 'pending')
+      `).run(messageId, adminSessionId, Date.now());
+      db.prepare(`
+        INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt)
+        VALUES (?, ?, 'Quota prompt', 'Quota prompt', ?, '{}', 'pending', ?)
+      `).run(messageId, adminId, adminSessionId, Date.now());
+
+      const limitedResponse = await request(`/api/users/${adminId}/queue-limit`, {
+        method: 'PATCH',
+        cookie: adminCookie,
+        body: JSON.stringify({ queueLimit: 1 })
+      });
+      const limited = await json(limitedResponse);
+      expect(limitedResponse.status).toBe(200);
+      expect(limited.capacity).toMatchObject({ current: 1, limit: 1, remaining: 0 });
+
+      const queue = await import('../services/queue');
+      expect(() => queue.assertUserQueueCapacity(adminId)).toThrow(queue.QueueCapacityError);
+
+      const invalidResponse = await request(`/api/users/${adminId}/queue-limit`, {
+        method: 'PATCH',
+        cookie: adminCookie,
+        body: JSON.stringify({ queueLimit: 0 })
+      });
+      expect(invalidResponse.status).toBe(400);
+
+      const unlimitedResponse = await request(`/api/users/${adminId}/queue-limit`, {
+        method: 'PATCH',
+        cookie: adminCookie,
+        body: JSON.stringify({ queueLimit: null })
+      });
+      const unlimited = await json(unlimitedResponse);
+      expect(unlimitedResponse.status).toBe(200);
+      expect(unlimited.capacity).toMatchObject({ current: 1, limit: null, remaining: null });
+      expect(() => queue.assertUserQueueCapacity(adminId)).not.toThrow();
+
+      const usersResponse = await request('/api/users', { cookie: adminCookie });
+      const users = await usersResponse.json() as Array<{ id: string; queueLimit: number | null; activeQueueCount: number }>;
+      expect(users.find(user => user.id === adminId)).toMatchObject({ queueLimit: null, activeQueueCount: 1 });
+    } finally {
+      db.prepare('DELETE FROM queue WHERE messageId = ?').run(messageId);
+      db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
+      db.prepare('UPDATE users SET queueLimit = ? WHERE id = ?').run(original.queueLimit, adminId);
+    }
+  });
+
+  it('updates every editable user account field through the administration endpoint', async () => {
+    const suffix = `${process.pid}-${Date.now()}`;
+    const originalUsername = `user-${suffix}`;
+    const updatedUsername = `edited-${suffix}`;
+    let userId = '';
+
+    try {
+      const createResponse = await request('/api/users', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: JSON.stringify({
+          username: originalUsername,
+          password: 'initial-password',
+          isAdmin: false,
+          queueLimit: 5
+        })
+      });
+      const created = await json(createResponse);
+      expect(createResponse.status).toBe(200);
+      userId = created.id;
+
+      const updateResponse = await request(`/api/users/${userId}`, {
+        method: 'PATCH',
+        cookie: adminCookie,
+        body: JSON.stringify({
+          username: updatedUsername,
+          password: 'updated-password',
+          isAdmin: true,
+          avatarUrl: '/api/image-files/example/avatar.webp',
+          queueLimit: null
+        })
+      });
+      const updated = await json(updateResponse);
+      expect(updateResponse.status).toBe(200);
+      expect(updated.user).toMatchObject({
+        id: userId,
+        username: updatedUsername,
+        isAdmin: true,
+        avatarUrl: '/api/image-files/example/avatar.webp',
+        queueLimit: null
+      });
+
+      const loginResponse = await request('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username: updatedUsername, password: 'updated-password' })
+      });
+      expect(loginResponse.status).toBe(200);
+
+      const usersResponse = await request('/api/users', { cookie: adminCookie });
+      const users = await usersResponse.json() as Array<Record<string, unknown>>;
+      expect(users.find(user => user.id === userId)).toMatchObject({
+        username: updatedUsername,
+        isAdmin: 1,
+        avatarUrl: '/api/image-files/example/avatar.webp',
+        queueLimit: null
+      });
+
+      const selfDemotionResponse = await request(`/api/users/${adminId}`, {
+        method: 'PATCH',
+        cookie: adminCookie,
+        body: JSON.stringify({ isAdmin: false })
+      });
+      expect(selfDemotionResponse.status).toBe(400);
+    } finally {
+      if (userId) db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    }
+  });
+
   it('rejects a cross-origin request instead of reflecting arbitrary origins', async () => {
     const response = await request('/api/auth/logout', {
       method: 'POST',
@@ -589,12 +709,17 @@ describe('API security boundaries', () => {
           providerId,
           model: 'vision-test-model',
           recoveryId,
+          detailLevel: 2,
           mimeType: 'image/png',
           image: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
         }),
       });
       expect(response.status).toBe(200);
       expect((await json(response)).prompt).toBe('Recovered vision prompt');
+      const providerRequest = postSpy.mock.calls[0][1] as any;
+      expect(providerRequest.max_tokens).toBe(640);
+      expect(providerRequest.messages[1].content[0].text).toContain('Detail level: 2/5');
+      expect(providerRequest.messages[1].content[0].text).toContain('100 to 160 words');
 
       const saved = db.prepare(`
         SELECT status, prompt FROM vision_prompt_recoveries WHERE id = ? AND userId = ?
@@ -612,6 +737,32 @@ describe('API security boundaries', () => {
       postSpy.mockRestore();
       db.prepare('DELETE FROM llm_providers WHERE id = ?').run(providerId);
     }
+  });
+
+  it('allows an authenticated user to cancel their pending vision analysis', async () => {
+    const recoveryId = 'vision-cancel-00000000-0000-4000-8000-000000000001';
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO vision_prompt_recoveries (
+        id, userId, status, prompt, importUrl, width, height, error, createdAt, updatedAt
+      ) VALUES (?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, ?, ?)
+    `).run(recoveryId, adminId, now, now);
+
+    expect((await request(`/api/llm/vision-recoveries/${recoveryId}`, {
+      method: 'DELETE',
+    })).status).toBe(401);
+
+    const response = await request(`/api/llm/vision-recoveries/${recoveryId}`, {
+      method: 'DELETE',
+      cookie: adminCookie,
+    });
+    expect(response.status).toBe(200);
+    expect((await json(response)).cancelled).toBe(true);
+
+    const recovery = db.prepare(`
+      SELECT status FROM vision_prompt_recoveries WHERE id = ? AND userId = ?
+    `).get(recoveryId, adminId) as { status: string };
+    expect(recovery.status).toBe('cancelled');
   });
 
   it('isolates admin logs by administrator account', async () => {

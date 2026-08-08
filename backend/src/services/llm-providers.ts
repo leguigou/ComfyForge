@@ -238,6 +238,8 @@ export const completeVisionWithProvider = async (
   prompt: string,
   systemMessage: string,
   ttlSeconds = 1800,
+  maxOutputTokens = 4096,
+  signal?: AbortSignal,
 ) => {
   const baseUrl = provider.baseUrl.replace(/\/$/, '');
   const selectedModel = model.trim();
@@ -266,6 +268,7 @@ export const completeVisionWithProvider = async (
     let responseData: unknown;
     const localEngine = detectLocalProviderEngine(provider);
     const normalizedTtlSeconds = Math.min(7200, Math.max(900, Math.round(ttlSeconds)));
+    const normalizedMaxOutputTokens = Math.min(4096, Math.max(256, Math.round(maxOutputTokens)));
     if (localEngine === 'ollama') {
       const response = await axios.post(`${nativeServiceOrigin(provider)}/api/chat`, {
         model: selectedModel,
@@ -275,8 +278,8 @@ export const completeVisionWithProvider = async (
         ],
         stream: false,
         keep_alive: `${normalizedTtlSeconds}s`,
-        options: { temperature: 0.2 },
-      }, { headers: authHeaders(provider), timeout: 120000 });
+        options: { temperature: 0.2, num_predict: normalizedMaxOutputTokens },
+      }, { headers: authHeaders(provider), timeout: 120000, signal });
       responseData = response.data;
       if (response.data?.error) {
         const providerError = typeof response.data.error === 'string'
@@ -288,7 +291,7 @@ export const completeVisionWithProvider = async (
     } else if (provider.type === 'anthropic') {
       const response = await axios.post(`${baseUrl}/v1/messages`, {
         model: selectedModel,
-        max_tokens: 4096,
+        max_tokens: normalizedMaxOutputTokens,
         temperature: 0.2,
         system: systemMessage,
         messages: [{
@@ -298,7 +301,7 @@ export const completeVisionWithProvider = async (
             { type: 'text', text: prompt },
           ],
         }],
-      }, { headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 120000 });
+      }, { headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 120000, signal });
       responseData = response.data;
       content = response.data.content?.map((part: any) => part.text || '').join('') || '';
     } else if (provider.type === 'google') {
@@ -312,8 +315,8 @@ export const completeVisionWithProvider = async (
             { text: prompt },
           ],
         }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 4096 },
-      }, { params: { key }, timeout: 120000 });
+        generationConfig: { temperature: 0.2, maxOutputTokens: normalizedMaxOutputTokens },
+      }, { params: { key }, timeout: 120000, signal });
       responseData = response.data;
       content = response.data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('') || '';
     } else {
@@ -330,8 +333,9 @@ export const completeVisionWithProvider = async (
           },
         ],
         temperature: 0.2,
+        max_tokens: normalizedMaxOutputTokens,
         ...(localEngine === 'lmstudio' ? { ttl: normalizedTtlSeconds } : {}),
-      }, { headers: authHeaders(provider), timeout: 120000 });
+      }, { headers: authHeaders(provider), timeout: 120000, signal });
       responseData = response.data;
       content = response.data.choices?.[0]?.message?.content || '';
     }
@@ -348,13 +352,16 @@ export const completeVisionWithProvider = async (
     });
     return content.trim();
   } catch (error: any) {
+    const cancelled = Boolean(signal?.aborted) || axios.isCancel(error);
     writeAuditLog({
-      level: 'error',
+      level: cancelled ? 'info' : 'error',
       source: 'llm',
       direction: 'inbound',
-      event: 'llm.vision.failed',
-      message: error.response?.data?.error?.message || error.message || 'Erreur vision',
-      status: String(error.response?.status || 'failed'),
+      event: cancelled ? 'llm.vision.cancelled' : 'llm.vision.failed',
+      message: cancelled
+        ? 'Analyse Vision annulée'
+        : error.response?.data?.error?.message || error.message || 'Erreur vision',
+      status: cancelled ? 'cancelled' : String(error.response?.status || 'failed'),
       durationMs: Date.now() - startedAt,
       userId: provider.userId,
       details: { providerId: provider.id, model: selectedModel, response: error.response?.data },

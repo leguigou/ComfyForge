@@ -30,19 +30,19 @@ router.get('/', requireAdmin, (_req, res) => {
   `).all() as Array<Record<string, unknown> & { createdAt: number }>;
 
   const perUser = db.prepare(`
-    SELECT q.userId, COALESCE(u.username, q.userId, 'unknown') AS username, COUNT(*) AS count,
+    SELECT q.userId, COALESCE(u.username, q.userId, 'unknown') AS username, u.queueLimit, COUNT(*) AS count,
       MIN(q.createdAt) AS oldestCreatedAt
     FROM queue q
     LEFT JOIN users u ON u.id = q.userId
     WHERE q.status IN ('pending', 'processing')
-    GROUP BY q.userId, u.username
+    GROUP BY q.userId, u.username, u.queueLimit
     ORDER BY oldestCreatedAt ASC
   `).all();
 
   res.json({
     items: items.map(item => ({ ...item, waitSeconds: Math.max(0, Math.floor((now - item.createdAt) / 1000)) })),
     perUser,
-    limits: getQueueLimits(),
+    limits: { batch: getQueueLimits().batch },
     checkedAt: now
   });
 });

@@ -17,6 +17,17 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.7.0
+
+Version 2.7.0 makes account administration clearer, Vision analysis more controllable, and everyday image workflows smoother across desktop and mobile.
+
+- **Complete user editor:** administrators can open any user from a cleaner table and update the username, role, avatar, password, and generation quota in one responsive dialog, with account statistics kept visible.
+- **Per-user queue quotas:** schema 5 persists a limited or unlimited quota for every account, exposes active usage to administrators, and preserves fair queue scheduling.
+- **Controllable Vision analysis:** five detail levels tune prompt length and model output, in-progress analysis can be cancelled cleanly, and imported temporary files are removed after cancellation.
+- **Smoother generation controls:** the options drawer is clearer on desktop and mobile, random-list tokens behave as complete editable units, and image placeholders reserve their final layout before loading.
+- **Polished image browsing:** mouse-wheel lightbox zoom, streamlined actions, generated avatar thumbnails, consistent vector icons, and more stable navigation reduce visual jumps.
+- **More resilient frontend updates:** lazy-module recovery, safer service-worker caching, and eagerly loaded modal shell styles avoid stale chunks and first-open positioning glitches.
+
 ## What's new in 2.6.0
 
 Version 2.6.0 makes long-running Vision analysis recoverable and restores reliable visual activity indicators across the interface.
@@ -213,7 +224,7 @@ contain `AUTH_SECRET` and must be stored privately.
 | `SERVICE_URL_ALLOWLIST` | Allowed custom ComfyUI/LLM service origins | empty |
 | `ALLOW_PRIVATE_SERVICE_URLS` | Allow literal private and loopback IP addresses | `false` |
 | `ALLOW_USER_LLM_URLS` | Allow each user to choose an arbitrary LLM URL | `false` |
-| `MAX_QUEUE_PER_USER` | Maximum pending/processing generations per user | `25` |
+| `MAX_QUEUE_PER_USER` | Initial pending/processing quota assigned to users (then editable per user, including unlimited) | `25` |
 | `MAX_QUEUE_BATCH` | Maximum generations accepted by one batch request | `50` |
 | `PORT` | Internal API port | `3001` |
 

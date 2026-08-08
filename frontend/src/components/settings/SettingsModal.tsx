@@ -1,12 +1,12 @@
-import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import './SettingsModal.css';
 import type { GenParameters, User, Language, GalleryItem, RandomPromptList, ComfyModelDetails } from '../../types';
 import { normalizeRandomSlug } from '../../utils/randomPrompts';
 import { DEFAULT_COMPANION_ID, normalizeCompanionSettings } from '../../utils/companions';
-import { RefreshIcon, XIcon } from '../ui/Icons';
+import { AlertTriangleIcon, CheckCircleIcon, CheckIcon, HeartIcon, KeyIcon, RefreshIcon, SparklesIcon, StarIcon, TrashIcon, XIcon } from '../ui/Icons';
 import { SeedyCompanion } from '../chat/SeedyCompanion';
 import { MarkdownLoader } from '../ui/MarkdownLoader';
-import { formatBytes, getFullImageUrl, API_BASE } from '../../services/api';
+import { formatBytes, getAvatarThumbnailUrl, getFullImageUrl, API_BASE } from '../../services/api';
 import toast from 'react-hot-toast';
 import { LLMProvidersPanel } from './LLMProvidersPanel';
 import { AdminLogsPanel } from './AdminLogsPanel';
@@ -86,6 +86,175 @@ const SessionActionIcon = ({ type }: { type: 'archive' | 'delete' }) => (
   </svg>
 );
 
+interface AdminUserUpdate {
+  username: string;
+  password?: string;
+  isAdmin: boolean;
+  avatarUrl: string | null;
+  queueLimit: number | null;
+}
+
+const AdminUserEditor = ({
+  user,
+  currentUsername,
+  lang,
+  t,
+  onClose,
+  onSave,
+  onDelete
+}: {
+  user: User;
+  currentUsername?: string;
+  lang: Language;
+  t: Record<string, string>;
+  onClose: () => void;
+  onSave: (id: string, updates: AdminUserUpdate) => Promise<{ success: boolean; error?: string }>;
+  onDelete: (id: string) => void;
+}) => {
+  const initialLimit = user.queueLimit === undefined ? 25 : user.queueLimit;
+  const [username, setUsername] = useState(user.username);
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState(user.avatarUrl || '');
+  const [isAdmin, setIsAdmin] = useState(user.isAdmin);
+  const [limited, setLimited] = useState(initialLimit !== null);
+  const [queueLimit, setQueueLimit] = useState(String(initialLimit ?? 25));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const isCurrentUser = user.username === currentUsername;
+
+  const parsedLimit = Number(queueLimit);
+  const validLimit = !limited || (Number.isInteger(parsedLimit) && parsedLimit >= 1 && parsedLimit <= 10_000);
+  const validPassword = !password || password === confirmPassword;
+  const canSave = Boolean(username.trim()) && validLimit && validPassword && !saving;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!canSave) return;
+    setSaving(true);
+    setError('');
+    const result = await onSave(user.id, {
+      username: username.trim(),
+      ...(password ? { password } : {}),
+      isAdmin,
+      avatarUrl: avatarUrl.trim() || null,
+      queueLimit: limited ? parsedLimit : null
+    });
+    setSaving(false);
+    if (!result.success) {
+      setError(result.error || t.userUpdateFailed);
+      return;
+    }
+    toast.success(t.userUpdated);
+    onClose();
+  };
+
+  return (
+    <div className="admin-user-modal-overlay" onClick={onClose}>
+      <form
+        className="admin-user-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="admin-user-modal-title"
+        onSubmit={submit}
+        onClick={event => event.stopPropagation()}
+      >
+        <header className="admin-user-modal-header">
+          <div className="admin-user-identity">
+            <div className="admin-user-avatar" aria-hidden="true">
+              {avatarUrl ? <img src={getFullImageUrl(getAvatarThumbnailUrl(avatarUrl))} alt="" /> : username.charAt(0).toUpperCase()}
+            </div>
+            <div>
+              <span>{t.editUser}</span>
+              <h3 id="admin-user-modal-title">{user.username}</h3>
+            </div>
+          </div>
+          <button type="button" className="admin-user-modal-close" onClick={onClose} aria-label={t.close}>
+            <XIcon size={20} />
+          </button>
+        </header>
+
+        <div className="admin-user-modal-body">
+          <section className="admin-user-form-section">
+            <h4>{t.accountInformation}</h4>
+            <div className="admin-user-form-grid">
+              <label>
+                <span>{t.username}</span>
+                <input value={username} onChange={event => setUsername(event.target.value)} autoFocus maxLength={100} />
+              </label>
+              <label>
+                <span>{t.role}</span>
+                <select value={isAdmin ? 'admin' : 'user'} onChange={event => setIsAdmin(event.target.value === 'admin')} disabled={isCurrentUser}>
+                  <option value="user">{t.user}</option>
+                  <option value="admin">{t.admin}</option>
+                </select>
+                {isCurrentUser && <small>{t.cannotDemoteSelf}</small>}
+              </label>
+              <label className="admin-user-field-wide">
+                <span>{t.avatarUrl}</span>
+                <input value={avatarUrl} onChange={event => setAvatarUrl(event.target.value)} placeholder="/api/image-files/..." />
+              </label>
+            </div>
+          </section>
+
+          <section className="admin-user-form-section">
+            <h4>{t.security}</h4>
+            <div className="admin-user-form-grid">
+              <label>
+                <span>{t.newPassword}</span>
+                <input type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="new-password" placeholder={t.leaveBlankPassword} maxLength={200} />
+              </label>
+              <label>
+                <span>{t.confirmPassword}</span>
+                <input type="password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} autoComplete="new-password" />
+                {!validPassword && <small className="admin-user-field-error">{t.passwordMismatch}</small>}
+              </label>
+            </div>
+          </section>
+
+          <section className="admin-user-form-section">
+            <h4>{t.generationQueue}</h4>
+            <div className="admin-user-queue-row">
+              <label>
+                <span>{t.queueQuota}</span>
+                <select value={limited ? 'limited' : 'unlimited'} onChange={event => setLimited(event.target.value === 'limited')}>
+                  <option value="limited">{t.limited}</option>
+                  <option value="unlimited">{t.unlimited}</option>
+                </select>
+              </label>
+              <label>
+                <span>{t.queueQuotaValue}</span>
+                <input type="number" min="1" max="10000" step="1" value={queueLimit} disabled={!limited} onChange={event => setQueueLimit(event.target.value)} />
+                {!validLimit && <small className="admin-user-field-error">1–10 000</small>}
+              </label>
+            </div>
+          </section>
+
+          <section className="admin-user-stats" aria-label={t.userInformation}>
+            <div><span>{t.images}</span><strong>{user.imageCount || 0}</strong></div>
+            <div><span>{t.diskUsage}</span><strong>{formatBytes(user.diskUsage || 0)}</strong></div>
+            <div><span>{t.activeQueue}</span><strong>{user.activeQueueCount || 0}</strong></div>
+            <div><span>{t.createdAt}</span><strong>{user.createdAt ? new Intl.DateTimeFormat(lang, { dateStyle: 'medium' }).format(user.createdAt) : '—'}</strong></div>
+          </section>
+
+          <div className="admin-user-id"><span>ID</span><code>{user.id}</code></div>
+          {error && <div className="admin-user-save-error" role="alert">{error}</div>}
+        </div>
+
+        <footer className="admin-user-modal-footer">
+          <button type="button" className="admin-user-delete" disabled={isCurrentUser} onClick={() => { onDelete(user.id); onClose(); }}>
+            <TrashIcon size={17} /> {t.deleteUser}
+          </button>
+          <div>
+            <button type="button" className="admin-user-cancel" onClick={onClose}>{t.cancel}</button>
+            <button type="submit" className="admin-user-save" disabled={!canSave}>{saving ? t.saving : t.save}</button>
+          </div>
+        </footer>
+      </form>
+    </div>
+  );
+};
+
 interface SettingsModalProps {
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
@@ -109,16 +278,12 @@ interface SettingsModalProps {
   availableWorkflows: string[];
   fetchWorkflows: () => void;
   adminUsers: User[];
-  newUser: { username: string; password: string; isAdmin: boolean };
-  setNewUser: (user: { username: string; password: string; isAdmin: boolean }) => void;
+  newUser: { username: string; password: string; isAdmin: boolean; queueLimit: number | null };
+  setNewUser: (user: { username: string; password: string; isAdmin: boolean; queueLimit: number | null }) => void;
   handleAddUser: () => void;
   isAdminLoading: boolean;
   deleteUser: (id: string) => void;
-  resetPasswordId: string | null;
-  setResetPasswordId: (id: string | null) => void;
-  newPasswordValue: string;
-  setNewPasswordValue: (val: string) => void;
-  handleResetPassword: (id: string) => void;
+  updateAdminUser: (id: string, updates: AdminUserUpdate) => Promise<{ success: boolean; error?: string }>;
   requestArchiveAll: () => void;
   requestDeleteAll: () => void;
   updateProfile: (params: { username?: string; password?: string; avatarUrl?: string | null }) => Promise<{ success: boolean; error?: string }>;
@@ -154,11 +319,7 @@ export const SettingsModal = ({
   handleAddUser,
   isAdminLoading,
   deleteUser,
-  resetPasswordId,
-  setResetPasswordId,
-  newPasswordValue,
-  setNewPasswordValue,
-  handleResetPassword,
+  updateAdminUser,
   requestArchiveAll,
   requestDeleteAll,
   updateProfile,
@@ -172,6 +333,7 @@ export const SettingsModal = ({
   const [showImagePicker, setShowImagePicker] = useState(false);
   const [isUnloadingLlm, setIsUnloadingLlm] = useState(false);
   const [isFreeingComfyMemory, setIsFreeingComfyMemory] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
 
   // Local states for textareas to allow manual save
   const [localNegativePrompt, setLocalNegativePrompt] = useState(params.negativePrompt);
@@ -289,21 +451,33 @@ export const SettingsModal = ({
     }).catch(error => console.error('Error hydrating model defaults:', error));
   }, [showSettings, params, setParams]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!showSettings) return;
-    const frame = window.requestAnimationFrame(() => {
-      activeTabButtonRef.current?.scrollIntoView({ block: 'nearest', inline: 'center' });
-    });
-    return () => window.cancelAnimationFrame(frame);
+    const button = activeTabButtonRef.current;
+    const tabList = button?.parentElement;
+    if (!button || !tabList) return;
+
+    const isHorizontal = window.getComputedStyle(tabList).flexDirection === 'row';
+    if (isHorizontal) {
+      tabList.scrollLeft = Math.max(0, button.offsetLeft - (tabList.clientWidth - button.offsetWidth) / 2);
+    } else if (button.offsetTop < tabList.scrollTop) {
+      tabList.scrollTop = button.offsetTop;
+    } else if (button.offsetTop + button.offsetHeight > tabList.scrollTop + tabList.clientHeight) {
+      tabList.scrollTop = button.offsetTop + button.offsetHeight - tabList.clientHeight;
+    }
   }, [activeTab, showSettings]);
 
   useEffect(() => {
     if (!showSettings) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    const frame = window.requestAnimationFrame(() => activeTabButtonRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => activeTabButtonRef.current?.focus({ preventScroll: true }));
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
+        if (editingUser) {
+          setEditingUser(null);
+          return;
+        }
         setShowSettings(false);
         return;
       }
@@ -328,7 +502,7 @@ export const SettingsModal = ({
       document.removeEventListener('keydown', handleKeyDown);
       previouslyFocused?.focus();
     };
-  }, [setShowSettings, showSettings]);
+  }, [editingUser, setShowSettings, showSettings]);
 
   if (!showSettings) return null;
 
@@ -775,7 +949,7 @@ export const SettingsModal = ({
                     <h4>{t.luckySettingsTitle}</h4>
                     <p>{t.luckySettingsHelp}</p>
                   </div>
-                  <span className="lucky-settings-badge" aria-hidden="true">✨</span>
+                  <span className="lucky-settings-badge" aria-hidden="true"><SparklesIcon size={21} /></span>
                 </div>
                 <div className="lucky-settings-controls">
                   <label className="lucky-slider">
@@ -941,7 +1115,7 @@ export const SettingsModal = ({
                         />
                         <small>{companion.source === 'builtin' ? t.builtinCompanion : companion.fileName}</small>
                       </div>
-                      <span className="companion-selected-mark" aria-hidden="true">{isActive ? '✓' : ''}</span>
+                      <span className="companion-selected-mark" aria-hidden="true">{isActive && <CheckIcon size={16} />}</span>
                       {companion.source === 'custom' && (
                         <button
                           type="button"
@@ -1027,7 +1201,7 @@ export const SettingsModal = ({
               <section className="avatar-edit-container">
                 <button type="button" className="avatar-preview-wrapper" onClick={openAvatarPicker} aria-label={t.changeAvatar}>
                   {currentUser?.avatarUrl ? (
-                    <img src={getFullImageUrl(currentUser.avatarUrl)} alt="Avatar" className="avatar-preview-img" />
+                    <img src={getFullImageUrl(getAvatarThumbnailUrl(currentUser.avatarUrl))} alt="Avatar" className="avatar-preview-img" />
                   ) : (
                     <div className="avatar-preview-initial">{userInitial}</div>
                   )}
@@ -1095,7 +1269,7 @@ export const SettingsModal = ({
                             onClick={() => handleSelectAvatar(item.imageUrl)}
                           >
                             <img src={getFullImageUrl(item.thumbnailUrl || item.imageUrl)} alt="Option" />
-                            {item.isFavorite === 1 && <span className="picker-favorite-badge">❤️</span>}
+                            {item.isFavorite === 1 && <span className="picker-favorite-badge"><HeartIcon size={16} filled /></span>}
                           </div>
                         ))
                       ) : (
@@ -1274,7 +1448,7 @@ export const SettingsModal = ({
                 <div className="favorite-model-library">
                   <div className="favorite-model-library-header">
                     <div>
-                      <strong>★ {t.favoriteModels}</strong>
+                      <strong><StarIcon size={16} filled /> {t.favoriteModels}</strong>
                       <span>{t.favoriteModelsHelp}</span>
                     </div>
                     <span className="favorite-count">{favoriteModels.length}</span>
@@ -1333,7 +1507,7 @@ export const SettingsModal = ({
                             title={t.removeFromFavorites}
                             aria-label={`${t.removeFromFavorites}: ${favorite.model}`}
                           >
-                            ★
+                            <StarIcon size={18} filled />
                           </button>
                         </div>
                       ))}
@@ -1411,7 +1585,7 @@ export const SettingsModal = ({
                             title={isFavorite ? t.removeFromFavorites : t.addToFavorites}
                             aria-label={`${isFavorite ? t.removeFromFavorites : t.addToFavorites}: ${model}`}
                           >
-                            {isFavorite ? '★' : '☆'}
+                            <StarIcon size={18} filled={isFavorite} />
                           </button>
                         </div>
                       );
@@ -1586,6 +1760,29 @@ export const SettingsModal = ({
                 <div className="add-user-form">
                   <input type="text" placeholder={t.username} value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} />
                   <input type="password" placeholder={t.password} value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
+                  <div className="new-user-queue-quota">
+                    <select
+                      aria-label={t.queueQuota}
+                      value={newUser.queueLimit === null ? 'unlimited' : 'limited'}
+                      onChange={event => setNewUser({
+                        ...newUser,
+                        queueLimit: event.target.value === 'unlimited' ? null : (newUser.queueLimit ?? 25)
+                      })}
+                    >
+                      <option value="limited">{t.limited}</option>
+                      <option value="unlimited">{t.unlimited}</option>
+                    </select>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      step="1"
+                      aria-label={t.queueQuotaValue}
+                      value={newUser.queueLimit ?? 25}
+                      disabled={newUser.queueLimit === null}
+                      onChange={event => setNewUser({ ...newUser, queueLimit: Math.max(1, Math.min(10_000, Number(event.target.value) || 1)) })}
+                    />
+                  </div>
                   <div className="admin-checkbox-wrapper">
                     <label className="admin-toggle-label">
                       <span>{t.admin}</span>
@@ -1613,48 +1810,62 @@ export const SettingsModal = ({
                         <th>{t.role}</th>
                         <th>{t.images}</th>
                         <th>{t.diskUsage}</th>
+                        <th>{t.queueQuota}</th>
                         <th>{t.actions}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {adminUsers.map(u => (
-                        <tr key={u.id}>
-                          <td>{u.username}</td>
+                        <tr
+                          key={u.id}
+                          className="user-table-row"
+                          tabIndex={0}
+                          onClick={() => setEditingUser(u)}
+                          onKeyDown={event => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              setEditingUser(u);
+                            }
+                          }}
+                          aria-label={`${t.editUser}: ${u.username}`}
+                        >
+                          <td>
+                            <div className="user-table-identity">
+                              <span className="user-table-avatar" aria-hidden="true">
+                                {u.avatarUrl ? <img src={getFullImageUrl(getAvatarThumbnailUrl(u.avatarUrl))} alt="" /> : u.username.charAt(0).toUpperCase()}
+                              </span>
+                              <strong>{u.username}</strong>
+                            </div>
+                          </td>
                           <td>{u.isAdmin ? t.admin : t.user}</td>
                           <td>{u.imageCount || 0}</td>
                           <td>{formatBytes(u.diskUsage || 0)}</td>
+                          <td>
+                            <span className="user-queue-summary">
+                              {u.queueLimit === null ? t.unlimited : (u.queueLimit ?? 25)}
+                              <small>{u.activeQueueCount || 0} {t.active}</small>
+                            </span>
+                          </td>
                           <td className="user-actions-cell">
-                            {resetPasswordId === u.id ? (
-                              <div className="reset-password-inline">
-                                <input 
-                                  type="password" 
-                                  placeholder="Nouveau mdp" 
-                                  value={newPasswordValue} 
-                                  onChange={(e) => setNewPasswordValue(e.target.value)} 
-                                  autoFocus
-                                />
-                                <button className="confirm-reset-btn" onClick={() => handleResetPassword(u.id)}>✅</button>
-                                <button className="cancel-reset-btn" onClick={() => setResetPasswordId(null)}>❌</button>
-                              </div>
-                            ) : (
-                              <div className="action-buttons-wrapper">
-                                <button 
-                                  className="reset-user-btn" 
-                                  onClick={() => setResetPasswordId(u.id)}
-                                  title="Modifier le mot de passe"
-                                >
-                                  🔑
-                                </button>
-                                <button 
-                                  className="delete-user-btn" 
-                                  onClick={() => deleteUser(u.id)}
-                                  disabled={u.username === currentUser?.username}
-                                  title="Supprimer l'utilisateur"
-                                >
-                                  🗑️
-                                </button>
-                              </div>
-                            )}
+                            <div className="action-buttons-wrapper">
+                              <button
+                                className="reset-user-btn"
+                                onClick={event => { event.stopPropagation(); setEditingUser(u); }}
+                                title={t.editUser}
+                                aria-label={`${t.editUser}: ${u.username}`}
+                              >
+                                <KeyIcon size={17} />
+                              </button>
+                              <button
+                                className="delete-user-btn"
+                                onClick={event => { event.stopPropagation(); deleteUser(u.id); }}
+                                disabled={u.username === currentUser?.username}
+                                title={t.deleteUser}
+                                aria-label={`${t.deleteUser}: ${u.username}`}
+                              >
+                                <TrashIcon size={17} />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1662,6 +1873,19 @@ export const SettingsModal = ({
                   </table>
                 </div>
               </div>
+
+              {editingUser && (
+                <AdminUserEditor
+                  key={editingUser.id}
+                  user={editingUser}
+                  currentUsername={currentUser?.username}
+                  lang={lang}
+                  t={t}
+                  onClose={() => setEditingUser(null)}
+                  onSave={updateAdminUser}
+                  onDelete={deleteUser}
+                />
+              )}
 
             </div>
           )}
@@ -1742,15 +1966,15 @@ const UpdateTab = ({ t }: { t: Record<string, string> }) => {
 
             {updateInfo.updateAvailable ? (
               <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-                <p style={{ color: 'var(--accent)', fontWeight: 'bold', marginBottom: '1rem' }}>✨ Une mise à jour est disponible !</p>
+                <p style={{ color: 'var(--accent)', fontWeight: 'bold', marginBottom: '1rem' }}><SparklesIcon size={18} /> Une mise à jour est disponible !</p>
                 <a href={updateInfo.releaseUrl} target="_blank" rel="noopener noreferrer" className="action-btn-large" style={{ textDecoration: 'none', display: 'inline-block' }}>
                   Voir sur GitHub
                 </a>
               </div>
             ) : updateInfo.latestVersion ? (
-              <p style={{ textAlign: 'center', opacity: 0.7, margin: '1rem 0 0' }}>✅ Vous utilisez la dernière version.</p>
+              <p style={{ textAlign: 'center', opacity: 0.7, margin: '1rem 0 0' }}><CheckCircleIcon size={18} /> Vous utilisez la dernière version.</p>
             ) : updateInfo.error ? (
-              <p style={{ textAlign: 'center', color: '#ff4b4b', margin: '1rem 0 0' }}>⚠️ {updateInfo.error}</p>
+              <p style={{ textAlign: 'center', color: '#ff4b4b', margin: '1rem 0 0' }}><AlertTriangleIcon size={18} /> {updateInfo.error}</p>
             ) : null}
           </div>
         )}

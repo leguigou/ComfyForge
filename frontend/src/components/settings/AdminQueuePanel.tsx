@@ -19,8 +19,8 @@ type QueueItem = {
 
 type QueueResponse = {
   items: QueueItem[];
-  perUser: Array<{ userId?: string; username: string; count: number; oldestCreatedAt: number }>;
-  limits: { perUser: number; batch: number };
+  perUser: Array<{ userId?: string; username: string; queueLimit: number | null; count: number; oldestCreatedAt: number }>;
+  limits: { batch: number };
 };
 
 export const AdminQueuePanel = ({ lang }: { lang: Language }) => {
@@ -90,7 +90,7 @@ export const AdminQueuePanel = ({ lang }: { lang: Language }) => {
         <div className="admin-queue-summary">
           <span><strong>{data.items.length}</strong>{fr ? ' tâches actives' : ' active tasks'}</span>
           <span><strong>{data.perUser.length}</strong>{fr ? ' utilisateurs' : ' users'}</span>
-          <span>{fr ? 'Limite' : 'Limit'} <strong>{data.limits.perUser}</strong> / {fr ? 'utilisateur' : 'user'}</span>
+          <span>{fr ? 'Quotas gérés par utilisateur' : 'Per-user quotas enabled'}</span>
           <span>{fr ? 'Batch max.' : 'Max batch'} <strong>{data.limits.batch}</strong></span>
         </div>
       )}

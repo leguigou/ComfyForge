@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { API_BASE } from '../../services/api';
 import type { Language } from '../../types';
 import './StatisticsDashboard.css';
+import { CheckIcon, EyeIcon, SparklesIcon } from '../ui/Icons';
 
 type Period = 'week' | 'month' | 'year';
 type ChartMode = 'activity' | 'models' | 'llm' | 'favorites';
@@ -261,7 +262,7 @@ export const StatisticsDashboard = ({ lang }: { lang: Language }) => {
           <div className="metric-grid">
             <article className="metric-card accent"><div className="metric-icon">▧</div><span>{t.generated}</span><strong>{data.overview.images.toLocaleString(lang)}</strong><Trend current={data.overview.images} previous={data.overview.previousImages} label={t.vsPrevious} /></article>
             <article className="metric-card"><div className="metric-icon violet">◷</div><span>{t.avgTime}</span><strong>{formatSeconds(data.overview.averageDuration)}</strong><Trend current={data.overview.averageDuration} previous={data.overview.previousAverageDuration} inverse label={t.vsPrevious} /></article>
-            <article className="metric-card"><div className="metric-icon blue">✓</div><span>{t.success}</span><strong>{(data.overview.successRate * 100).toFixed(1)}%</strong><small>{data.overview.failed} {t.failures.toLowerCase()} · {data.overview.attempts} {t.attempts}</small></article>
+            <article className="metric-card"><div className="metric-icon blue"><CheckIcon size={17} /></div><span>{t.success}</span><strong>{(data.overview.successRate * 100).toFixed(1)}%</strong><small>{data.overview.failed} {t.failures.toLowerCase()} · {data.overview.attempts} {t.attempts}</small></article>
             <article className="metric-card"><div className="metric-icon amber">⌁</div><span>{t.conversations}</span><strong>{data.overview.conversations.toLocaleString(lang)}</strong><small>{data.overview.attempts} {t.attempts}</small></article>
           </div>
 
@@ -287,7 +288,7 @@ export const StatisticsDashboard = ({ lang }: { lang: Language }) => {
             </article>
             <article className="dashboard-card llm-card">
               <div className="card-heading"><div><h2>{t.llm}</h2><p>{t.llmHelp}</p></div><span className="llm-total">{llmCalls}</span></div>
-              {data.llm.length ? <div className="llm-list">{data.llm.map(item => <div className="llm-row" key={`${item.kind}-${item.model}`}><div className={`llm-kind ${item.kind}`}>{item.kind === 'vision' ? '◉' : '✦'}</div><div><strong>{item.kind === 'vision' ? t.vision : t.prompt}</strong><span>{item.model}</span></div><div><strong>{item.calls}</strong><span>{formatSeconds((item.averageDurationMs || 0) / 1000)}</span></div></div>)}</div> : <div className="stats-empty">{t.noData}</div>}
+              {data.llm.length ? <div className="llm-list">{data.llm.map(item => <div className="llm-row" key={`${item.kind}-${item.model}`}><div className={`llm-kind ${item.kind}`}>{item.kind === 'vision' ? <EyeIcon size={17} /> : <SparklesIcon size={17} />}</div><div><strong>{item.kind === 'vision' ? t.vision : t.prompt}</strong><span>{item.model}</span></div><div><strong>{item.calls}</strong><span>{formatSeconds((item.averageDurationMs || 0) / 1000)}</span></div></div>)}</div> : <div className="stats-empty">{t.noData}</div>}
               <p className="coverage-note">ⓘ {t.coverage} {new Intl.DateTimeFormat(lang, { dateStyle: 'medium' }).format(data.range.llmCoverageStart)}</p>
               {data.workflows.length > 0 && <div className="workflow-strip"><span>{t.workflows}</span>{data.workflows.slice(0, 3).map(workflow => <span className="workflow-chip" key={workflow.name} title={workflow.name}>{workflow.name} · {workflow.uses}</span>)}</div>}
             </article>

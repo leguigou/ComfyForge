@@ -46,6 +46,12 @@
   40% { transform: scale(1); }
 }
 
+.flat-icon {
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: -0.125em;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .bounce1,
   .bounce2,

@@ -18,3 +18,4 @@ backend/.test-runtime/
 .gemini/agents/
 .codex-remote-attachments/
 .visual-runtime/
+frontend/src/components/settings/SettingsModal.tsx.old
