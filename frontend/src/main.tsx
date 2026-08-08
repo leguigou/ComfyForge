@@ -2,19 +2,27 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { reloadStaleClient } from './utils/moduleRecovery.ts'
+import { installCsrfFetchProtection } from './services/csrf.ts'
+
+installCsrfFetchProtection();
+
+window.addEventListener('vite:preloadError', (event) => {
+  if (reloadStaleClient()) event.preventDefault();
+});
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', (event) => {
     if (event.data?.type === 'COMFYFORGE_UPDATE_READY') {
       window.dispatchEvent(new CustomEvent('comfyforge:update-ready', {
-        detail: { version: event.data.version }
+        detail: { version: event.data.version, buildId: event.data.buildId }
       }));
     }
   });
 
   window.addEventListener('load', () => {
     if (import.meta.env.PROD) {
-      navigator.serviceWorker.register('/sw.js')
+      navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
         .then(reg => console.log('SW Registered!', reg))
         .catch(err => console.log('SW Reg error:', err));
     } else {

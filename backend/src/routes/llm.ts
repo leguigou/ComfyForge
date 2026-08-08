@@ -131,7 +131,26 @@ Describe every visible visual attribute that materially affects reproduction: su
 If the reference is a screenshot or contains an editor, browser, social-media viewer, gallery, or application interface around the actual image, treat all interface chrome as irrelevant overlay. Completely ignore and never mention or reproduce buttons, menus, toolbars, icons, status bars, navigation, captions, usernames, timestamps, filenames, counters, watermarks, selection frames, crop handles, or any other UI text or controls that are not physically part of the depicted scene. Describe text only when it exists inside the photographed or illustrated scene itself and is visually essential, such as a real sign or lettering on an object.
 Preserve spatial relationships. When a detail is ambiguous, choose the most visually plausible description.
 Write in precise, dense natural English optimized for a text-to-image model. Do not mention the reference image, analysis, uncertainty, or these instructions. Do not add headings, bullet points, markdown, commentary, a negative prompt, or quotation marks. Return only the final positive prompt.`;
-const VISION_USER_MESSAGE = 'Create an exceptionally detailed prompt that can reproduce this image as closely as possible. Prioritize exact composition, subject geometry, lighting, materials, colors, camera language, and small distinctive details.';
+const VISION_DETAIL_LEVELS = [
+  { words: '60 to 90', maxTokens: 384, guidance: 'Be concise. Keep only the dominant subject, composition, lighting, palette, and style.' },
+  { words: '100 to 160', maxTokens: 640, guidance: 'Be focused. Include the main subject, spatial arrangement, lighting, materials, palette, and camera language.' },
+  { words: '180 to 260', maxTokens: 1024, guidance: 'Be detailed. Cover all important visible elements and the distinctive details needed for a faithful reconstruction.' },
+  { words: '300 to 450', maxTokens: 1536, guidance: 'Be very detailed. Describe precise geometry, relationships, textures, lighting behavior, optics, and secondary details.' },
+  { words: '500 to 750', maxTokens: 2304, guidance: 'Be exhaustive without repetition. Capture every reproducible visual detail, including subtle materials, spatial cues, light transitions, optics, and small distinctive features.' },
+] as const;
+
+const getVisionDetailRequest = (rawLevel: unknown) => {
+  const numericLevel = Number(rawLevel);
+  const level = Number.isFinite(numericLevel)
+    ? Math.min(5, Math.max(1, Math.round(numericLevel)))
+    : 5;
+  const preset = VISION_DETAIL_LEVELS[level - 1];
+  return {
+    level,
+    maxTokens: preset.maxTokens,
+    prompt: `Create a standalone image-generation prompt that reproduces this image as closely as possible. Detail level: ${level}/5. ${preset.guidance} Aim for ${preset.words} words. Prioritize exact composition, subject geometry, lighting, materials, colors, camera language, and distinctive details. Return only the final prompt.`,
+  };
+};
 const allowedVisionMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/avif']);
 const visionExtensions: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -147,6 +166,7 @@ const sharpFormatMimeTypes: Record<string, string> = {
 };
 const visionRecoveryIdPattern = /^[a-zA-Z0-9-]{16,80}$/;
 const VISION_RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const activeVisionAnalyses = new Map<string, AbortController>();
 
 const getProvider = (userId: string, providerId?: unknown) => {
   if (typeof providerId === 'string' && providerId) {
@@ -536,9 +556,45 @@ router.get('/vision-recoveries/:recoveryId', authenticate, (req, res) => {
   return res.json(recovery);
 });
 
+router.delete('/vision-recoveries/:recoveryId', authenticate, async (req, res) => {
+  const userId = (req as any).user.id;
+  const recoveryId = String(req.params.recoveryId || '');
+  if (!visionRecoveryIdPattern.test(recoveryId)) {
+    return res.status(400).json({ error: 'Invalid vision recovery identifier' });
+  }
+
+  const key = `${userId}:${recoveryId}`;
+  const controller = activeVisionAnalyses.get(key);
+  const recovery = db.prepare(`
+    SELECT status, importUrl
+    FROM vision_prompt_recoveries
+    WHERE id = ? AND userId = ?
+  `).get(recoveryId, userId) as { status: string; importUrl: string | null } | undefined;
+
+  if (!controller && !recovery) return res.status(404).json({ error: 'Vision analysis not found' });
+  controller?.abort();
+  const cancelled = db.prepare(`
+    UPDATE vision_prompt_recoveries
+    SET status = 'cancelled', prompt = NULL, error = NULL, updatedAt = ?
+    WHERE id = ? AND userId = ? AND status = 'pending'
+  `).run(Date.now(), recoveryId, userId).changes > 0;
+
+  if ((cancelled || controller) && recovery?.importUrl) {
+    const filename = path.basename(decodeURIComponent(recovery.importUrl.split('/').pop() || ''));
+    if (filename) {
+      await fs.promises.unlink(path.join(importsDir, userId, filename)).catch(() => undefined);
+    }
+  }
+
+  return res.json({ success: true, cancelled: cancelled || Boolean(controller) });
+});
+
 router.post('/analyze-image', authenticate, async (req, res) => {
   let recoveryId = '';
   let recoveryUserId = '';
+  let analysisKey = '';
+  let analysisController: AbortController | null = null;
+  let importedImagePath = '';
   try {
     const userId = (req as any).user.id;
     const provider = getProvider(userId, req.body.providerId);
@@ -550,6 +606,9 @@ router.post('/analyze-image', authenticate, async (req, res) => {
     }
     recoveryId = requestedRecoveryId || uuidv4();
     recoveryUserId = userId;
+    analysisKey = `${userId}:${recoveryId}`;
+    analysisController = new AbortController();
+    activeVisionAnalyses.set(analysisKey, analysisController);
 
     const model = typeof req.body.model === 'string' ? req.body.model.trim() : '';
     const requestedTtlSeconds = Number(req.body.ttlSeconds);
@@ -559,6 +618,7 @@ router.post('/analyze-image', authenticate, async (req, res) => {
     const systemMessage = typeof req.body.systemMessage === 'string' && req.body.systemMessage.trim()
       ? req.body.systemMessage.trim().slice(0, 20_000)
       : VISION_SYSTEM_MESSAGE;
+    const visionDetail = getVisionDetailRequest(req.body.detailLevel);
     const mimeType = typeof req.body.mimeType === 'string' ? req.body.mimeType.toLowerCase() : '';
     const encoded = typeof req.body.image === 'string'
       ? req.body.image.replace(/^data:[^;]+;base64,/, '').replace(/\s/g, '')
@@ -576,6 +636,7 @@ router.post('/analyze-image', authenticate, async (req, res) => {
       return res.status(413).json({ error: 'Image must be smaller than 15 MB' });
     }
     const metadata = await sharp(buffer).metadata();
+    if (analysisController.signal.aborted) throw new Error('Vision analysis cancelled');
     if (!metadata.width || !metadata.height || metadata.width * metadata.height > 40_000_000) {
       return res.status(400).json({ error: 'Invalid image or image dimensions are too large' });
     }
@@ -588,6 +649,7 @@ router.post('/analyze-image', authenticate, async (req, res) => {
     await fs.promises.mkdir(userImportsDir, { recursive: true });
     const filename = `${Date.now()}-${uuidv4()}.${visionExtensions[detectedMimeType]}`;
     const importPath = path.join(userImportsDir, filename);
+    importedImagePath = importPath;
     await fs.promises.writeFile(importPath, buffer, { flag: 'wx' });
     const importUrl = `/api/image-files/imports/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
     const now = Date.now();
@@ -600,23 +662,27 @@ router.post('/analyze-image', authenticate, async (req, res) => {
         ) VALUES (?, ?, 'pending', NULL, ?, ?, ?, NULL, ?, ?)
       `).run(recoveryId, userId, importUrl, metadata.width, metadata.height, now, now);
     })();
+    if (analysisController.signal.aborted) throw new Error('Vision analysis cancelled');
 
     const content = await completeVisionWithProvider(
       provider,
       model,
       { data: encoded, mimeType: detectedMimeType as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/avif' },
-      VISION_USER_MESSAGE,
+      visionDetail.prompt,
       systemMessage,
       ttlSeconds,
+      visionDetail.maxTokens,
+      analysisController.signal,
     );
     const result = parseEnhancedContent(content);
     const prompt = result.positive.trim();
     if (!prompt) throw new Error('The vision model returned an empty prompt');
-    db.prepare(`
+    const completion = db.prepare(`
       UPDATE vision_prompt_recoveries
       SET status = 'completed', prompt = ?, error = NULL, updatedAt = ?
-      WHERE id = ? AND userId = ?
+      WHERE id = ? AND userId = ? AND status = 'pending'
     `).run(prompt, Date.now(), recoveryId, userId);
+    if (completion.changes === 0) throw new Error('Vision analysis cancelled');
 
     return res.json({
       prompt,
@@ -626,18 +692,33 @@ router.post('/analyze-image', authenticate, async (req, res) => {
       height: metadata.height,
     });
   } catch (error: any) {
+    const wasCancelled = Boolean(analysisController?.signal.aborted);
     const errorMessage = error.response?.data?.error?.message || error.message || 'Image analysis failed';
     if (recoveryId && recoveryUserId) {
       db.prepare(`
         UPDATE vision_prompt_recoveries
-        SET status = 'failed', error = ?, updatedAt = ?
+        SET status = ?, error = ?, updatedAt = ?
         WHERE id = ? AND userId = ? AND status = 'pending'
-      `).run(String(errorMessage).slice(0, 2000), Date.now(), recoveryId, recoveryUserId);
+      `).run(
+        wasCancelled ? 'cancelled' : 'failed',
+        wasCancelled ? null : String(errorMessage).slice(0, 2000),
+        Date.now(),
+        recoveryId,
+        recoveryUserId,
+      );
     }
+    if (wasCancelled && importedImagePath) {
+      await fs.promises.unlink(importedImagePath).catch(() => undefined);
+    }
+    if (wasCancelled) return res.status(499).json({ recoveryId, cancelled: true });
     return res.status(502).json({
       recoveryId: recoveryId || undefined,
       error: 'Vision Error: ' + errorMessage,
     });
+  } finally {
+    if (analysisKey && activeVisionAnalyses.get(analysisKey) === analysisController) {
+      activeVisionAnalyses.delete(analysisKey);
+    }
   }
 });
 

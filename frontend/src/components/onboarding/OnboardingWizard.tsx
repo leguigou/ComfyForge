@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import type { GenParameters, Language, NodeMapping } from '../../types';
 import { API_BASE } from '../../services/api';
 import './OnboardingWizard.css';
+import { CheckIcon, SparklesIcon } from '../ui/Icons';
 
 type Props = {
   lang: Language;
@@ -165,7 +166,7 @@ export const OnboardingWizard = ({ lang, params, setParams, onComplete, onDismis
 
         {step === 0 && (
           <>
-            <span className="onboarding-mark" aria-hidden="true">✦</span>
+            <span className="onboarding-mark" aria-hidden="true"><SparklesIcon size={28} /></span>
             <h1 id="onboarding-title">{fr ? 'Bienvenue dans ComfyForge' : 'Welcome to ComfyForge'}</h1>
             <p>{fr
               ? 'Quelques vérifications suffisent pour relier votre installation ComfyUI et préparer une première création.'
@@ -189,7 +190,7 @@ export const OnboardingWizard = ({ lang, params, setParams, onComplete, onDismis
               placeholder="http://127.0.0.1:8188"
               autoFocus
             />
-            {connectionReady && <p className="onboarding-success" role="status">✓ {fr ? 'Connexion réussie' : 'Connection successful'}</p>}
+            {connectionReady && <p className="onboarding-success" role="status"><CheckIcon size={18} /> {fr ? 'Connexion réussie' : 'Connection successful'}</p>}
             {error && <p className="onboarding-error" role="alert">{error}</p>}
             <div className="onboarding-actions">
               <button type="button" className="secondary" onClick={() => setStep(0)}>{fr ? 'Retour' : 'Back'}</button>

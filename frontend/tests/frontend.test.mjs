@@ -18,6 +18,7 @@ let promptEnhancement;
 let slashCommands;
 let config;
 let webSocketHelpers;
+let moduleRecovery;
 
 before(async () => {
   vite = await createServer({
@@ -35,6 +36,7 @@ before(async () => {
   promptEnhancement = await vite.ssrLoadModule('/src/utils/promptEnhancement.ts');
   slashCommands = await vite.ssrLoadModule('/src/utils/slashCommands.ts');
   webSocketHelpers = await vite.ssrLoadModule('/src/hooks/useWebSocket.ts');
+  moduleRecovery = await vite.ssrLoadModule('/src/utils/moduleRecovery.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
   ({ MessageText } = await vite.ssrLoadModule('/src/components/chat/MessageText.tsx'));
   ({ SeedyCompanion } = await vite.ssrLoadModule('/src/components/chat/SeedyCompanion.tsx'));
@@ -75,6 +77,119 @@ test('truncates long message text while keeping short text intact', () => {
 test('uses the root VERSION file as the frontend version', () => {
   const rootVersion = readFileSync('../VERSION', 'utf8').trim();
   assert.equal(config.APP_CONFIG.VERSION, rootVersion);
+});
+
+test('recognizes stale dynamic module failures without hiding application errors', () => {
+  assert.equal(moduleRecovery.isModuleLoadError(new TypeError('Failed to fetch dynamically imported module: /assets/SettingsModal-old.js')), true);
+  assert.equal(moduleRecovery.isModuleLoadError(new Error('Unable to preload CSS for /assets/SettingsModal-old.css')), true);
+  assert.equal(moduleRecovery.isModuleLoadError(new Error('Settings validation failed')), false);
+});
+
+test('keeps development service workers from caching uninjected build placeholders', () => {
+  const serviceWorker = readFileSync('public/sw.js', 'utf8');
+
+  assert.match(serviceWorker, /const IS_PRODUCTION_BUILD = !APP_VERSION\.startsWith\('__'\) && !BUILD_ID\.startsWith\('__'\)/);
+  assert.match(serviceWorker, /self\.registration\.unregister\(\)/);
+  assert.match(serviceWorker, /cacheName\.startsWith\(CACHE_PREFIX\)/);
+});
+
+test('serves hashed production assets with long-lived caching and real 404 responses', () => {
+  const nginx = readFileSync('nginx.conf', 'utf8');
+
+  assert.match(nginx, /location \/assets\/\s*\{[\s\S]*?try_files \$uri =404;/);
+  assert.match(nginx, /location \/assets\/\s*\{[\s\S]*?expires 1y;/);
+  assert.match(nginx, /location = \/sw\.js\s*\{[\s\S]*?expires -1;/);
+});
+
+test('uses generated thumbnails for profile avatars', () => {
+  assert.equal(
+    api.getAvatarThumbnailUrl('/api/image-files/user-1/portrait.webp'),
+    '/api/image-files/thumbnails/user-1/portrait_thumb.webp'
+  );
+  assert.equal(
+    api.getAvatarThumbnailUrl('/api/image-files/legacy.webp'),
+    '/api/image-files/thumbnails/legacy_thumb.webp'
+  );
+  assert.equal(
+    api.getAvatarThumbnailUrl('/api/image-files/thumbnails/user-1/portrait_thumb.webp'),
+    '/api/image-files/thumbnails/user-1/portrait_thumb.webp'
+  );
+  assert.equal(
+    api.getAvatarThumbnailUrl('/api/image-files/imports/user-1/source.webp'),
+    '/api/image-files/imports/user-1/source.webp'
+  );
+});
+
+test('loads confirmation dialog styles without opening settings', () => {
+  const appCss = readFileSync('src/App.css', 'utf8');
+  assert.match(appCss, /\.settings-modal-overlay\s*\{/);
+  assert.match(appCss, /\.confirm-modal\s*\{/);
+  assert.match(appCss, /\.confirm-btn\.delete\s*\{/);
+});
+
+test('shows the generation counter from two remaining through the final generation', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /if \(queueRemaining >= 2\)/);
+  assert.match(appSource, /else if \(queueRemaining <= 0\)/);
+  assert.match(appSource, /showQueueIndicator && \(queueRemaining \?\? 0\) >= 1/);
+});
+
+test('shows random lists from an empty prompt and closes them when existing text is cleared', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+
+  assert.match(chatSource, /const hasPromptText = input\.trim\(\)\.length > 0/);
+  assert.match(chatSource, /\{!hasPromptText && \([\s\S]*?ref=\{optionsToggleRef\}/);
+  assert.match(chatSource, /\{hasPromptText && \([\s\S]*?ref=\{optionsToggleRef\}/);
+  assert.match(chatSource, /\{availableRandomPromptLists\.length > 0 && \(/);
+  assert.match(chatSource, /\{showRandomPrompts && \(/);
+  assert.match(chatSource, /const hadPromptText = hadPromptTextRef\.current/);
+  assert.match(chatSource, /showRandomPrompts && hadPromptText && !hasPromptText/);
+});
+
+test('reserves image dimensions behind a dashed loading placeholder', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+
+  assert.match(chatSource, /const reservedImageWidth = msg\.width \|\| params\.width \|\| 512/);
+  assert.match(chatSource, /const reservedImageHeight = msg\.height \|\| params\.height \|\| 512/);
+  assert.match(chatSource, /aspectRatio: `\$\{reservedImageWidth\}\/\$\{reservedImageHeight\}`/);
+  assert.match(chatSource, /width=\{reservedImageWidth\}[\s\S]*?height=\{reservedImageHeight\}/);
+  assert.match(chatSource, /className=\{`image-loading-placeholder \$\{isLoaded \? 'is-loaded' : ''\}`\}/);
+  assert.match(chatSource, /const isLoaded = loadedSrc === src/);
+  assert.match(chatSource, /onLoad=\{\(\) => setLoadedSrc\(src\)\}/);
+  assert.match(chatCss, /\.image-loading-placeholder\s*\{[\s\S]*?border:\s*2px dashed[\s\S]*?background:/);
+  assert.match(chatCss, /\.image-loading-spinner\s*\{[\s\S]*?animation:\s*reserved-image-spin 0\.8s linear infinite/);
+  assert.doesNotMatch(chatCss, /content-visibility:\s*auto/);
+});
+
+test('wires vision detail, centered cancellation, stable settings, and exact chat navigation', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const providerSource = readFileSync('src/components/settings/LLMProvidersPanel.tsx', 'utf8');
+  const settingsSource = readFileSync('src/components/settings/SettingsModal.tsx', 'utf8');
+
+  assert.match(appSource, /import '\.\/components\/settings\/SettingsModal\.css'/);
+  assert.match(appSource, /visionDetailLevel:\s*5/);
+  assert.match(chatSource, /detailLevel:\s*params\.visionDetailLevel/);
+  assert.match(chatSource, /className="cancel-gen-btn vision-analysis-cancel"/);
+  assert.match(providerSource, /className="vision-detail-control"/);
+  assert.match(providerSource, /min="1"[\s\S]*?max="5"/);
+  assert.match(settingsSource, /focus\(\{ preventScroll: true \}\)/);
+  assert.doesNotMatch(settingsSource, /scrollIntoView/);
+  assert.match(appSource, /fetchSessionDetails\(sessionId, \{ all: true, reset: true \}\)/);
+  assert.match(appSource, /performance\.now\(\) - startedAt < 15000/);
+});
+
+test('keeps fullscreen image navigation available and supports mouse-wheel zoom', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /const handleLightboxWheel = useCallback/);
+  assert.match(appSource, /Math\.exp\(-e\.deltaY \* 0\.0015\)/);
+  assert.match(appSource, /Math\.min\(4, Math\.max\(1, zoomScale \* factor\)\)/);
+  assert.match(appSource, /onWheel=\{handleLightboxWheel\}/);
+  assert.match(appSource, /className="lightbox-btn go-to-chat"[\s\S]*?goToImage\(activeLightbox\.sessionId, activeLightbox\.messageId\)/);
+  assert.match(appSource, /onTouchStart=\{handleLightboxTouchStart\}[\s\S]*?onTouchMove=\{handleLightboxTouchMove\}/);
 });
 
 test('keeps large settings data out of generation requests', () => {

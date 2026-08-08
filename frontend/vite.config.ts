@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -18,8 +19,18 @@ export default defineConfig({
       name: 'inject-app-version',
       closeBundle() {
         const serviceWorkerPath = fileURLToPath(new URL('./dist/sw.js', import.meta.url))
+        const indexPath = fileURLToPath(new URL('./dist/index.html', import.meta.url))
+        const buildId = createHash('sha256')
+          .update(readFileSync(indexPath))
+          .digest('hex')
+          .slice(0, 12)
         const serviceWorker = readFileSync(serviceWorkerPath, 'utf8')
-        writeFileSync(serviceWorkerPath, serviceWorker.replaceAll('__APP_VERSION__', appVersion))
+        writeFileSync(
+          serviceWorkerPath,
+          serviceWorker
+            .replaceAll('__APP_VERSION__', appVersion)
+            .replaceAll('__BUILD_ID__', buildId),
+        )
       },
     },
     {

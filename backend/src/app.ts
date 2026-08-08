@@ -24,13 +24,14 @@ import { configureProviderEncryption } from './services/llm-providers';
 import { startAuditLogRetention } from './services/audit-log';
 import { compressJsonResponses } from './middleware/response-compression';
 import { requestContext } from './middleware/request-context';
+import { createCsrfProtection } from './security/csrf';
 
 const corsOptions = (req: Request): CorsOptions => ({
   origin: isAllowedRequestOrigin(req),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-  exposedHeaders: ['X-Request-ID', 'X-ComfyForge-Settings-Source'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID', 'X-CSRF-Token'],
+  exposedHeaders: ['X-Request-ID', 'X-ComfyForge-Settings-Source', 'X-CSRF-Token'],
 });
 
 const apiRateLimiter = rateLimit({
@@ -87,6 +88,7 @@ export const createApp = (authSecret: string) => {
   });
   app.use(express.json({ limit: '2mb' }));
   app.use(cookieParser(authSecret));
+  app.use(createCsrfProtection(authSecret));
   app.use(compressJsonResponses);
 
   const apiRouter = express.Router();

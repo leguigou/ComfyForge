@@ -34,7 +34,7 @@
 .onboarding-actions button.secondary { color: var(--text); background: transparent; border: 1px solid var(--border); }
 .onboarding-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 .onboarding-error { margin-top: 1rem; color: #ef6a75; }
-.onboarding-success { margin-top: 1rem; color: #20b486; }
+.onboarding-success { display: flex; align-items: center; justify-content: center; gap: 0.4rem; margin-top: 1rem; color: #20b486; }
 .onboarding-summary { display: grid; gap: 0.75rem; margin: 1.5rem 0 0; padding: 0; list-style: none; }
 .onboarding-summary li { display: grid; gap: 0.25rem; padding: 0.85rem 1rem; border-radius: 12px; background: color-mix(in srgb, var(--text) 5%, transparent); }
 .onboarding-summary span { overflow-wrap: anywhere; opacity: 0.72; }

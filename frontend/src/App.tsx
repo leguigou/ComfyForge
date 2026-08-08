@@ -1,5 +1,8 @@
 import { lazy, Suspense, useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import './App.css';
+// Keep the shell styles in the initial bundle so the lazy settings modal is
+// centered on its very first painted frame.
+import './components/settings/SettingsModal.css';
 import { translations } from './i18n';
 import type { 
   GalleryItem, 
@@ -24,21 +27,22 @@ import { useSessions } from './hooks/useSessions';
 import { useGeneration } from './hooks/useGeneration';
 import { useWebSocket } from './hooks/useWebSocket';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
-import { ComposeIcon, DiceIcon, HashIcon, InfoIcon, MoreVerticalIcon, RefreshIcon, ThumbUpIcon, XIcon } from './components/ui/Icons';
+import { ChatIcon, ComposeIcon, DiceIcon, DownloadIcon, HashIcon, HeartIcon, InfoIcon, MoonIcon, MoreVerticalIcon, RefreshIcon, SunIcon, ThumbUpIcon, TrashIcon, XIcon } from './components/ui/Icons';
 import toast, { Toaster } from 'react-hot-toast';
 import NoSleep from 'nosleep.js';
-import comfyForgeLogo from './assets/comfyforge-logo-v2.png';
+import comfyForgeLogo from './assets/comfyforge-logo-v2.webp';
+import { importWithRecovery } from './utils/moduleRecovery';
 
-const SettingsModal = lazy(() => import('./components/settings/SettingsModal').then(module => ({
+const SettingsModal = lazy(() => importWithRecovery(() => import('./components/settings/SettingsModal')).then(module => ({
   default: module.SettingsModal
 })));
-const StatisticsDashboard = lazy(() => import('./components/statistics/StatisticsDashboard').then(module => ({
+const StatisticsDashboard = lazy(() => importWithRecovery(() => import('./components/statistics/StatisticsDashboard')).then(module => ({
   default: module.StatisticsDashboard
 })));
-const ComparisonView = lazy(() => import('./components/comparison/ComparisonView').then(module => ({
+const ComparisonView = lazy(() => importWithRecovery(() => import('./components/comparison/ComparisonView')).then(module => ({
   default: module.ComparisonView
 })));
-const OnboardingWizard = lazy(() => import('./components/onboarding/OnboardingWizard').then(module => ({
+const OnboardingWizard = lazy(() => importWithRecovery(() => import('./components/onboarding/OnboardingWizard')).then(module => ({
   default: module.OnboardingWizard
 })));
 
@@ -81,6 +85,7 @@ const createDefaultGenParameters = (): GenParameters => ({
   visionProviderId: '',
   visionModel: '',
   visionSystemMessage: DEFAULT_VISION_SYSTEM_MESSAGE,
+  visionDetailLevel: 5,
   visionModelTtlMinutes: 30,
   luckyTemperature: 0.95,
   luckyFavoriteCount: 6,
@@ -129,6 +134,7 @@ function App() {
     isLoginLoading, 
     login, 
     logout,
+    checkAuth,
     updateProfile
   } = useAuth();
 
@@ -478,7 +484,7 @@ function App() {
     if (queueRemaining >= 2) {
       setShowQueueIndicator(true);
       sessionStorage.setItem('comfyforge.queueIndicatorLatched', 'true');
-    } else {
+    } else if (queueRemaining <= 0) {
       setShowQueueIndicator(false);
       sessionStorage.removeItem('comfyforge.queueIndicatorLatched');
     }
@@ -499,6 +505,7 @@ function App() {
   const [isModifyingImage, setIsModifyingImage] = useState(false);
   const [isGeneratingRandomFavorite, setIsGeneratingRandomFavorite] = useState(false);
   const lightboxChatWasNavigatedRef = useRef(false);
+  const lightboxMenuRef = useRef<HTMLDivElement>(null);
 
   const closeLightbox = useCallback(() => {
     const lightbox = activeLightbox;
@@ -581,6 +588,38 @@ function App() {
       y: Math.max(-maxY, Math.min(maxY, offset.y))
     };
   }, []);
+
+  const handleLightboxWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+
+    const bounds = e.currentTarget.getBoundingClientRect();
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const nextScale = Math.min(4, Math.max(1, zoomScale * factor));
+    const boundedScale = nextScale < 1.01 ? 1 : nextScale;
+
+    if (boundedScale === 1) {
+      setZoomScale(1);
+      setZoomOffset({ x: 0, y: 0 });
+      return;
+    }
+
+    const pointFromCenter = {
+      x: e.clientX - (bounds.left + bounds.width / 2),
+      y: e.clientY - (bounds.top + bounds.height / 2)
+    };
+
+    setZoomOffset(current => {
+      const imagePoint = {
+        x: (pointFromCenter.x - current.x) / zoomScale,
+        y: (pointFromCenter.y - current.y) / zoomScale
+      };
+      return clampLightboxOffset({
+        x: pointFromCenter.x - imagePoint.x * boundedScale,
+        y: pointFromCenter.y - imagePoint.y * boundedScale
+      }, boundedScale);
+    });
+    setZoomScale(boundedScale);
+  }, [clampLightboxOffset, zoomScale]);
 
   useEffect(() => {
     if (zoomScale > 1) return;
@@ -713,10 +752,10 @@ function App() {
   };
 
   const [adminUsers, setAdminUsers] = useState<User[]>([]);
-  const [newUser, setNewUser] = useState({ username: '', password: '', isAdmin: false });
+  const [newUser, setNewUser] = useState<{ username: string; password: string; isAdmin: boolean; queueLimit: number | null }>({
+    username: '', password: '', isAdmin: false, queueLimit: 25
+  });
   const [isAdminLoading, setIsAdminLoading] = useState(false);
-  const [resetPasswordId, setResetPasswordId] = useState<string | null>(null);
-  const [newPasswordValue, setNewPasswordValue] = useState('');
 
   const fetchAdminUsers = useCallback(async () => {
     if (!currentUser?.isAdmin) return;
@@ -738,7 +777,7 @@ function App() {
         credentials: 'include'
       });
       if (res.ok) {
-        setNewUser({ username: '', password: '', isAdmin: false });
+        setNewUser({ username: '', password: '', isAdmin: false, queueLimit: 25 });
         fetchAdminUsers();
       } else {
         const data = await res.json();
@@ -756,25 +795,29 @@ function App() {
     } catch (err) { console.error('Error deleting user:', err); }
   }, [t.confirmDeleteUser, fetchAdminUsers]);
 
-  const handleResetPassword = useCallback(async (id: string) => {
-    if (!newPasswordValue.trim()) return;
+  const handleUpdateAdminUser = useCallback(async (
+    id: string,
+    updates: { username: string; password?: string; isAdmin: boolean; avatarUrl: string | null; queueLimit: number | null }
+  ) => {
     try {
-      const res = await fetch(`${API_BASE}/api/users/${id}/password`, {
+      const previousUsername = adminUsers.find(user => user.id === id)?.username;
+      const res = await fetch(`${API_BASE}/api/users/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: newPasswordValue.trim() }),
+        body: JSON.stringify(updates),
         credentials: 'include'
       });
-      if (res.ok) {
-        alert(lang === 'fr' ? 'Mot de passe mis à jour !' : 'Password updated successfully!');
-        setResetPasswordId(null);
-        setNewPasswordValue('');
-      } else {
-        const data = await res.json();
-        alert(data.error || 'Failed to update password');
-      }
-    } catch (err) { console.error('Error resetting password:', err); }
-  }, [newPasswordValue, lang]);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update user');
+      setAdminUsers(users => users.map(user => user.id === id
+        ? { ...user, ...data.user }
+        : user));
+      if (previousUsername === currentUser?.username) await checkAuth();
+      return { success: true as const };
+    } catch (error) {
+      return { success: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  }, [adminUsers, checkAuth, currentUser?.username]);
 
   useEffect(() => {
     if (activeTab === 'admin') {
@@ -978,12 +1021,23 @@ function App() {
       return;
     }
 
+    if (showLightboxMenu) {
+      setShowLightboxMenu(false);
+      return;
+    }
+
     closeLightbox();
-  }, [closeLightbox]);
+  }, [closeLightbox, showLightboxMenu]);
 
   const handleLightboxImageClick = useCallback((e: React.MouseEvent) => {
     if (suppressLightboxClickRef.current) {
       suppressLightboxClickRef.current = false;
+      e.stopPropagation();
+      return;
+    }
+
+    if (showLightboxMenu) {
+      setShowLightboxMenu(false);
       e.stopPropagation();
       return;
     }
@@ -1007,7 +1061,7 @@ function App() {
         clickTimeoutRef.current = null;
       }, 350);
     }
-  }, [activeLightbox, closeLightbox, messages, galleryItems, toggleFavorite]);
+  }, [activeLightbox, closeLightbox, galleryItems, messages, showLightboxMenu, toggleFavorite]);
 
   const [comfyModels, setComfyModels] = useState<string[]>([]);
   const [diffusionModels, setDiffusionModels] = useState<string[]>([]);
@@ -1083,18 +1137,19 @@ function App() {
     olderMessagesLoadRef.current = true;
     const previousHeight = container.scrollHeight;
     const previousTop = container.scrollTop;
+    const previousOverflowAnchor = container.style.overflowAnchor;
+    container.style.overflowAnchor = 'none';
     const loaded = await loadOlderMessages();
 
     window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        const currentContainer = containerRef.current;
-        if (currentContainer && loaded > 0) {
-          isProgrammaticScrollRef.current = true;
-          currentContainer.scrollTop = previousTop + currentContainer.scrollHeight - previousHeight;
-          isProgrammaticScrollRef.current = false;
-        }
-        olderMessagesLoadRef.current = false;
-      });
+      const currentContainer = containerRef.current;
+      if (currentContainer === container && loaded > 0) {
+        isProgrammaticScrollRef.current = true;
+        currentContainer.scrollTop = previousTop + currentContainer.scrollHeight - previousHeight;
+        isProgrammaticScrollRef.current = false;
+      }
+      container.style.overflowAnchor = previousOverflowAnchor;
+      olderMessagesLoadRef.current = false;
     });
   }, [hasMoreMessages, loadOlderMessages]);
 
@@ -1217,6 +1272,9 @@ function App() {
               || data.visionSystemMessage === PREVIOUS_DEFAULT_VISION_SYSTEM_MESSAGE
               ? DEFAULT_VISION_SYSTEM_MESSAGE
               : data.visionSystemMessage,
+            visionDetailLevel: typeof data.visionDetailLevel === 'number'
+              ? Math.min(5, Math.max(1, Math.round(data.visionDetailLevel)))
+              : 5,
             visionModelTtlMinutes: [15, 30, 60, 120].includes(data.visionModelTtlMinutes)
               ? data.visionModelTtlMinutes
               : 30
@@ -1695,7 +1753,7 @@ function App() {
       const container = containerRef.current;
 
       if (!element || !container) {
-        if (performance.now() - startedAt < 5000) {
+        if (performance.now() - startedAt < 15000) {
           frame = window.requestAnimationFrame(locateAndAlign);
         } else {
           finish();
@@ -1732,7 +1790,7 @@ function App() {
       }
 
       window.requestAnimationFrame(alignImage);
-      finishTimeout = window.setTimeout(finish, 2500);
+      finishTimeout = window.setTimeout(finish, 4000);
     };
 
     frame = window.requestAnimationFrame(locateAndAlign);
@@ -2073,7 +2131,9 @@ function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (showLightboxModify) {
+        if (showLightboxMenu) {
+          setShowLightboxMenu(false);
+        } else if (showLightboxModify) {
           if (!isModifyingImage) setShowLightboxModify(false);
         } else if (showLightboxPrompt) {
           setShowLightboxPrompt(false);
@@ -2088,7 +2148,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeLightbox, closeLightbox, isModifyingImage, navigateLightbox, showLightboxModify, showLightboxPrompt]);
+  }, [activeLightbox, closeLightbox, isModifyingImage, navigateLightbox, showLightboxMenu, showLightboxModify, showLightboxPrompt]);
 
   const [showSessionMenu, setShowSessionMenu] = useState(false);
   const sessionMenuRef = useRef<HTMLDivElement>(null);
@@ -2248,10 +2308,17 @@ function App() {
 
   if (!isAuthenticated) return (
     <div className={`login-screen ${theme}`}>
-      <div className="theme-toggle-corner"><button className="theme-btn" aria-label={theme === 'dark' ? (lang === 'fr' ? 'Activer le thème clair' : 'Use light theme') : (lang === 'fr' ? 'Activer le thème sombre' : 'Use dark theme')} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☀️' : '🌙'}</button></div>
+      <div className="theme-toggle-corner"><button className="theme-btn" aria-label={theme === 'dark' ? (lang === 'fr' ? 'Activer le thème clair' : 'Use light theme') : (lang === 'fr' ? 'Activer le thème sombre' : 'Use dark theme')} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <SunIcon size={21} /> : <MoonIcon size={21} />}</button></div>
       <form className="login-form" onSubmit={(e) => { e.preventDefault(); login(loginUsername, loginPassword).then(r => !r.success && alert(r.error)); }}>
         <div className="login-header">
-          <img className="login-logo" src={comfyForgeLogo} alt={`${t.title} — Connectez-vous pour commencer`} />
+          <img
+            className="login-logo"
+            src={comfyForgeLogo}
+            width="800"
+            height="378"
+            fetchPriority="high"
+            alt={`${t.title} — Connectez-vous pour commencer`}
+          />
         </div>
         <div className="input-group"><label htmlFor="login-username">{t.username}</label><input id="login-username" name="username" autoComplete="username" type="text" autoFocus value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} className={loginError ? 'error' : ''} /></div>
         <div className="input-group"><label htmlFor="login-password">{t.password}</label><input id="login-password" name="password" autoComplete="current-password" type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className={loginError ? 'error' : ''} aria-describedby={loginError ? 'login-error' : undefined} />{loginError && <p id="login-error" className="error-msg" role="alert">{t.incorrectLogin}</p>}</div>
@@ -2383,12 +2450,12 @@ function App() {
         )}
         {activeLightbox && (
         <div className={`lightbox ${zoomScale > 1 ? 'zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={lang === 'fr' ? 'Aperçu de l’image' : 'Image preview'} onClick={handleLightboxBackdropClick} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd} onTouchCancel={handleLightboxTouchEnd}>
-          <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick}>
+          <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick} onWheel={handleLightboxWheel}>
             {activeLightbox.thumbnailUrl && !isAlreadyLoaded && (
               <img src={getFullImageUrl(activeLightbox.thumbnailUrl)} alt="Loading..." className="lightbox-thumb" style={{ filter: 'blur(10px)', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: hdLoaded === activeLightbox.messageId ? 0 : 1, transition: 'opacity 0.3s ease-out' }} />
             )}
             <img ref={lightboxImageRef} src={getFullImageUrl(activeLightbox.url)} alt="Fullscreen" className="lightbox-hd" style={{ position: 'relative', zIndex: 2, opacity: (hdLoaded === activeLightbox.messageId || isAlreadyLoaded) ? 1 : 0, transition: isAlreadyLoaded ? 'none' : 'opacity 0.4s ease-in', transform: `translate(${zoomOffset.x}px, ${zoomOffset.y}px) scale(${zoomScale})` }} onLoad={() => { setHdLoaded(activeLightbox.messageId); setLoadedHdImages(prev => new Set(prev).add(activeLightbox.messageId)); }} />
-            {favoritedId === activeLightbox.messageId && <div className="image-overlay-heart" style={{ fontSize: '8rem' }}>❤️</div>}
+            {favoritedId === activeLightbox.messageId && <div className="image-overlay-heart"><HeartIcon size={128} filled /></div>}
           </div>
           {showLightboxPrompt && (
             <section
@@ -2482,10 +2549,15 @@ function App() {
               </div>
             </form>
           )}
-          <div className="lightbox-actions" onClick={(e) => e.stopPropagation()}>
+          <div className="lightbox-actions" onClick={(e) => {
+            e.stopPropagation();
+            if (showLightboxMenu && !lightboxMenuRef.current?.contains(e.target as Node)) {
+              setShowLightboxMenu(false);
+            }
+          }}>
             <div className="lightbox-toolbar">
-              <button className="lightbox-btn" onClick={() => { goToImage(activeLightbox.sessionId, activeLightbox.messageId); setActiveLightbox(null); }} title={t.viewInChat} aria-label={t.viewInChat}>💬</button>
-              <button className={`lightbox-btn favorite ${currentLightboxItem?.isFavorite ? 'active' : ''}`} onClick={() => toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, currentLightboxItem?.isFavorite)} title={t.favorites} aria-label={t.favorites}>{currentLightboxItem?.isFavorite ? '❤️' : '🤍'}</button>
+              <button className="lightbox-btn go-to-chat" onClick={() => { goToImage(activeLightbox.sessionId, activeLightbox.messageId); setActiveLightbox(null); }} title={t.viewInChat} aria-label={t.viewInChat}><ChatIcon size={20} /></button>
+              <button className={`lightbox-btn favorite ${currentLightboxItem?.isFavorite ? 'active' : ''}`} onClick={() => toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, currentLightboxItem?.isFavorite)} title={t.favorites} aria-label={t.favorites}><HeartIcon size={20} filled={Boolean(currentLightboxItem?.isFavorite)} /></button>
               <button
                 className={`lightbox-btn prompt-like ${currentLightboxItem?.isPromptFavorite ? 'active' : ''}`}
                 onClick={() => togglePromptFavorite(activeLightbox.sessionId, activeLightbox.messageId, currentLightboxItem?.isPromptFavorite)}
@@ -2495,7 +2567,7 @@ function App() {
               >
                 <ThumbUpIcon />
               </button>
-              <div className="lightbox-menu-wrap">
+              <div className="lightbox-menu-wrap" ref={lightboxMenuRef}>
                 {showLightboxMenu && (
                   <div className="lightbox-menu" role="menu" aria-label={t.actions}>
                     <button
@@ -2507,7 +2579,7 @@ function App() {
                         void downloadImage(getFullImageUrl(activeLightbox.url), `img-${activeLightbox.messageId}.png`);
                       }}
                     >
-                      <span className="lightbox-menu-icon" aria-hidden="true">↓</span>
+                      <span className="lightbox-menu-icon" aria-hidden="true"><DownloadIcon size={18} /></span>
                       <span>{t.download}</span>
                     </button>
                     <button
@@ -2663,8 +2735,7 @@ function App() {
             comfyStatus={comfyStatus} testComfyConnection={testComfyConnection} isCheckingComfy={isCheckingComfy} comfyCheckStatus={comfyCheckStatus}
             availableWorkflows={availableWorkflows} fetchWorkflows={fetchWorkflows}
             adminUsers={adminUsers} newUser={newUser} setNewUser={setNewUser} handleAddUser={handleAddUser} isAdminLoading={isAdminLoading}
-            deleteUser={internalDeleteUser} resetPasswordId={resetPasswordId} setResetPasswordId={setResetPasswordId} newPasswordValue={newPasswordValue}
-            setNewPasswordValue={setNewPasswordValue} handleResetPassword={handleResetPassword}
+            deleteUser={internalDeleteUser} updateAdminUser={handleUpdateAdminUser}
             requestArchiveAll={() => setMassActionType('archiveAll')} requestDeleteAll={() => setMassActionType('deleteAll')}
             updateProfile={updateProfile} galleryItems={galleryItems} fetchGallery={fetchGallery}
           />
@@ -2747,7 +2818,7 @@ function App() {
           </div>
 
           {view !== 'statistics' && view !== 'comparison' && <div className="header-right">
-            {showQueueIndicator && (queueRemaining ?? 0) >= 2 && (
+            {showQueueIndicator && (queueRemaining ?? 0) >= 1 && (
               <button
                 type="button"
                 className="queue-status-indicator"
@@ -2778,11 +2849,11 @@ function App() {
                 {showSessionMenu && currentSessionId && (
                   <div className="session-dropdown">
                     <button className="dropdown-item" onClick={() => { setRenamingId(currentSessionId); setRenameValue(sessions.find(s => s.id === currentSessionId)?.title || ''); setShowSessionMenu(false); setSidebarOpen(true); }}>
-                      <span>✎</span> {t.rename}
+                      <span><ComposeIcon size={17} /></span> {t.rename}
                     </button>
 
                     <button className="dropdown-item delete" onClick={(e) => { deleteSession(e, currentSessionId); setShowSessionMenu(false); }}>
-                      <span>🗑️</span> {t.delete}
+                      <span><TrashIcon size={17} /></span> {t.delete}
                     </button>
                   </div>
                 )}
@@ -2825,7 +2896,7 @@ function App() {
           gallerySearch={gallerySearch} setGallerySearch={setGallerySearch} openPromptTag={openPromptTag}
           showArchivedInGallery={showArchivedInGallery} setShowArchivedInGallery={setShowArchivedInGallery}
           setHasMoreGallery={setHasMoreGallery} lastImageElementRef={lastImageElementRef} containerRef={containerRef} textareaRef={textareaRef}
-          messagesEndRef={messagesEndRef} params={params} setParams={setParams} smoothScrollTo={smoothScrollTo} handleScroll={handleScroll} downloadImage={downloadImage}
+          messagesEndRef={messagesEndRef} params={params} setParams={setParams} smoothScrollTo={smoothScrollTo} handleScroll={handleScroll}
           showScrollBottom={showScrollBottom} onScrollToBottom={onScrollToBottom}
           openOptionsRequest={openOptionsRequest}
         />}

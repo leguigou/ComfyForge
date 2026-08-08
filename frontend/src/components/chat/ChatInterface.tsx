@@ -1,10 +1,10 @@
-import React, { useState, useLayoutEffect, useEffect, useRef } from 'react';
+import React, { useState, useLayoutEffect, useEffect, useRef, useCallback } from 'react';
 import './ChatInterface.css';
 import type { Message, Language, GalleryItem, GenParameters, PromptTag } from '../../types';
 import { WelcomeScreen } from './WelcomeScreen';
 import { MessageText } from './MessageText';
 import { SeedyCompanion } from './SeedyCompanion';
-import { InfoIcon, RefreshIcon, SendIcon, ChatIcon, PlusIcon, XIcon, ChevronDownIcon, ThumbUpIcon, ComposeIcon, MagicWandIcon, CameraIcon } from '../ui/Icons';
+import { AlertTriangleIcon, CameraIcon, ChatIcon, ChevronDownIcon, ComposeIcon, DiceIcon, HeartIcon, InfoIcon, LockIcon, MagicWandIcon, PlusIcon, RefreshIcon, SendIcon, ThumbUpIcon, TrashIcon, XIcon } from '../ui/Icons';
 import { API_BASE, getFullImageUrl, formatDuration } from '../../services/api';
 import {
   getEstimatedGenerationProgress,
@@ -22,6 +22,7 @@ import {
 import toast from 'react-hot-toast';
 
 const LUCKY_PHRASE_COUNT = 5;
+const VISION_SCAN_PHRASE_COUNT = 5;
 const MIN_GALLERY_COLUMNS = 1;
 const MAX_GALLERY_COLUMNS = 6;
 const GALLERY_PINCH_STEP = 1.16;
@@ -66,6 +67,52 @@ const getTouchDistance = (touches: React.TouchList) => {
   const [first, second] = [touches.item(0), touches.item(1)];
   if (!first || !second) return 0;
   return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+};
+
+interface ReservedImageProps {
+  src: string;
+  alt: string;
+  className?: string;
+  loadingLabel: string;
+  objectFit?: React.CSSProperties['objectFit'];
+  width?: number;
+  height?: number;
+}
+
+const ReservedImage = ({
+  src,
+  alt,
+  className,
+  loadingLabel,
+  objectFit = 'contain',
+  width,
+  height,
+}: ReservedImageProps) => {
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const isLoaded = loadedSrc === src;
+
+  return (
+    <>
+      <div
+        className={`image-loading-placeholder ${isLoaded ? 'is-loaded' : ''}`}
+        role="status"
+        aria-label={loadingLabel}
+      >
+        <span className="image-loading-spinner" aria-hidden="true" />
+      </div>
+      <img
+        src={src}
+        alt={alt}
+        className={`${className || ''} reserved-image ${isLoaded ? 'is-loaded' : ''}`.trim()}
+        loading="lazy"
+        decoding="async"
+        width={width}
+        height={height}
+        style={{ objectFit }}
+        onLoad={() => setLoadedSrc(src)}
+      />
+    </>
+  );
 };
 
 const GenerationProgress = React.memo(({ message }: { message: Message }) => {
@@ -219,7 +266,6 @@ interface ChatInterfaceProps {
   setParams: React.Dispatch<React.SetStateAction<GenParameters>>;
   smoothScrollTo: (id: string) => void;
   handleScroll: (isUserScroll?: boolean | React.UIEvent) => void;
-  downloadImage: (url: string, filename: string) => void;
   showScrollBottom?: boolean;
   onScrollToBottom?: () => void;
   openOptionsRequest?: number;
@@ -282,12 +328,13 @@ export const ChatInterface = ({
   setParams,
   smoothScrollTo,
   handleScroll,
-  downloadImage,
   showScrollBottom,
   onScrollToBottom,
   openOptionsRequest = 0
 }: ChatInterfaceProps) => {
+  const hasPromptText = input.trim().length > 0;
   const [showOptions, setShowOptions] = useState(false);
+  const [showRandomPrompts, setShowRandomPrompts] = useState(false);
   const [timerNow, setTimerNow] = useState(() => Date.now());
   const [isRetryingAll, setIsRetryingAll] = useState(false);
   const [showRetryAllConfirm, setShowRetryAllConfirm] = useState(false);
@@ -297,6 +344,7 @@ export const ChatInterface = ({
   const [isResolvingSlashCommand, setIsResolvingSlashCommand] = useState(false);
   const [isPromptFocused, setIsPromptFocused] = useState(false);
   const [isAnalyzingImage, setIsAnalyzingImage] = useState(false);
+  const [visionScanPhraseIndex, setVisionScanPhraseIndex] = useState(0);
   const [analysisStartedAt, setAnalysisStartedAt] = useState(0);
   const [analysisPreview, setAnalysisPreview] = useState<{ url: string } | null>(null);
   const [pendingVisionRecoveryId, setPendingVisionRecoveryId] = useState<string | null>(() =>
@@ -319,10 +367,21 @@ export const ChatInterface = ({
   const [selectedGalleryIds, setSelectedGalleryIds] = useState<Set<string>>(() => new Set());
   const [galleryBatchMenuOpen, setGalleryBatchMenuOpen] = useState(false);
   const [galleryBatchBusy, setGalleryBatchBusy] = useState(false);
+  const hadPromptTextRef = useRef(hasPromptText);
   const promptHighlightRef = useRef<HTMLDivElement>(null);
   const imageImportRef = useRef<HTMLInputElement>(null);
+  const visionAnalysisAbortRef = useRef<AbortController | null>(null);
+  const activeVisionRecoveryIdRef = useRef<string | null>(pendingVisionRecoveryId);
   const optionsDrawerRef = useRef<HTMLDivElement>(null);
   const optionsToggleRef = useRef<HTMLButtonElement>(null);
+  const optionsDragRef = useRef<{
+    pointerId: number;
+    startY: number;
+    currentY: number;
+    startedAt: number;
+  } | null>(null);
+  const [optionsDragOffset, setOptionsDragOffset] = useState(0);
+  const [isDraggingOptions, setIsDraggingOptions] = useState(false);
   const wasCreatingLuckyPromptRef = useRef(false);
   const galleryPinchRef = useRef({ startDistance: 0, startColumns: galleryColumns, changed: false });
   const suppressGalleryClickRef = useRef(false);
@@ -340,8 +399,17 @@ export const ChatInterface = ({
   }, [galleryColumns]);
 
   useEffect(() => {
-    if (openOptionsRequest > 0) setShowOptions(true);
+    if (openOptionsRequest > 0) {
+      setShowRandomPrompts(false);
+      setShowOptions(true);
+    }
   }, [openOptionsRequest]);
+
+  useEffect(() => {
+    const hadPromptText = hadPromptTextRef.current;
+    hadPromptTextRef.current = hasPromptText;
+    if (showRandomPrompts && hadPromptText && !hasPromptText) setShowRandomPrompts(false);
+  }, [hasPromptText, showRandomPrompts]);
 
   useEffect(() => () => {
     if (galleryLongPressRef.current) window.clearTimeout(galleryLongPressRef.current.timer);
@@ -387,9 +455,13 @@ export const ChatInterface = ({
     setAnalysisStartedAt(startedAt);
     setTimerNow(startedAt);
     setIsAnalyzingImage(true);
+    activeVisionRecoveryIdRef.current = pendingVisionRecoveryId;
 
     const finishRecovery = () => {
       window.localStorage.removeItem(VISION_RECOVERY_STORAGE_KEY);
+      if (activeVisionRecoveryIdRef.current === pendingVisionRecoveryId) {
+        activeVisionRecoveryIdRef.current = null;
+      }
       setPendingVisionRecoveryId(null);
       setIsAnalyzingImage(false);
       setAnalysisPreview(null);
@@ -425,6 +497,10 @@ export const ChatInterface = ({
           finishRecovery();
           return;
         }
+        if (response.ok && data.status === 'cancelled') {
+          finishRecovery();
+          return;
+        }
         if (response.status === 400 || (response.status === 404 && Date.now() >= deadline)) {
           finishRecovery();
           return;
@@ -441,6 +517,29 @@ export const ChatInterface = ({
       if (pollTimer !== undefined) window.clearTimeout(pollTimer);
     };
   }, [lang, pendingVisionRecoveryId, setInput, t.visionAnalysisReady, textareaRef]);
+
+  const cancelVisionAnalysis = useCallback(() => {
+    const recoveryId = activeVisionRecoveryIdRef.current
+      || pendingVisionRecoveryId
+      || window.localStorage.getItem(VISION_RECOVERY_STORAGE_KEY);
+
+    visionAnalysisAbortRef.current?.abort();
+    visionAnalysisAbortRef.current = null;
+    activeVisionRecoveryIdRef.current = null;
+    window.localStorage.removeItem(VISION_RECOVERY_STORAGE_KEY);
+    setPendingVisionRecoveryId(null);
+    setIsAnalyzingImage(false);
+    setAnalysisPreview(null);
+    if (imageImportRef.current) imageImportRef.current.value = '';
+
+    if (recoveryId) {
+      void fetch(`${API_BASE}/api/llm/vision-recoveries/${encodeURIComponent(recoveryId)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      }).catch(() => undefined);
+    }
+    toast.success(t.visionAnalysisCancelled || (lang === 'fr' ? 'Analyse annulée' : 'Analysis cancelled'));
+  }, [lang, pendingVisionRecoveryId, t.visionAnalysisCancelled]);
 
   const analyzeImportedImage = async (file: File) => {
     if (!params.visionProviderId || !params.visionModel) {
@@ -466,6 +565,10 @@ export const ChatInterface = ({
     window.setTimeout(() => smoothScrollTo('vision-analysis-post'), 60);
 
     const recoveryId = createVisionRecoveryId();
+    const analysisController = new AbortController();
+    visionAnalysisAbortRef.current?.abort();
+    visionAnalysisAbortRef.current = analysisController;
+    activeVisionRecoveryIdRef.current = recoveryId;
     window.localStorage.setItem(VISION_RECOVERY_STORAGE_KEY, recoveryId);
     let requestSent = false;
     let definitiveFailure = false;
@@ -477,6 +580,7 @@ export const ChatInterface = ({
         reader.onerror = () => reject(reader.error || new Error('Unable to read image'));
         reader.readAsDataURL(file);
       });
+      if (analysisController.signal.aborted) throw new DOMException('Analysis cancelled', 'AbortError');
       requestSent = true;
       const response = await fetch(`${API_BASE}/api/llm/analyze-image`, {
         method: 'POST',
@@ -486,31 +590,41 @@ export const ChatInterface = ({
           providerId: params.visionProviderId,
           model: params.visionModel,
           systemMessage: params.visionSystemMessage,
+          detailLevel: params.visionDetailLevel,
           ttlSeconds: (params.visionModelTtlMinutes || 30) * 60,
           mimeType: file.type,
           image,
           recoveryId,
         }),
+        signal: analysisController.signal,
       });
       const data = await response.json().catch(() => ({}));
       definitiveFailure = !response.ok;
       if (!response.ok || !data.prompt) throw new Error(data.error || 'Image analysis failed');
       setInput(data.prompt.trim());
       window.localStorage.removeItem(VISION_RECOVERY_STORAGE_KEY);
+      activeVisionRecoveryIdRef.current = null;
       toast.success(t.visionAnalysisReady || 'Detailed prompt ready');
       window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
     } catch (error) {
-      if (requestSent && !definitiveFailure) {
+      if (analysisController.signal.aborted) {
+        window.localStorage.removeItem(VISION_RECOVERY_STORAGE_KEY);
+      } else if (requestSent && !definitiveFailure) {
         recoveryPending = true;
+        activeVisionRecoveryIdRef.current = recoveryId;
         setPendingVisionRecoveryId(recoveryId);
         toast(t.visionRecoveryPending || (lang === 'fr'
           ? 'Connexion interrompue : récupération automatique du prompt en cours…'
           : 'Connection interrupted: recovering the prompt automatically…'));
       } else {
         window.localStorage.removeItem(VISION_RECOVERY_STORAGE_KEY);
+        activeVisionRecoveryIdRef.current = null;
         toast.error(error instanceof Error ? error.message : String(error));
       }
     } finally {
+      if (visionAnalysisAbortRef.current === analysisController) {
+        visionAnalysisAbortRef.current = null;
+      }
       if (!recoveryPending) {
         setIsAnalyzingImage(false);
         setAnalysisPreview(null);
@@ -648,28 +762,77 @@ export const ChatInterface = ({
     }
   };
 
+  const closeOptions = useCallback(() => {
+    optionsDragRef.current = null;
+    setOptionsDragOffset(0);
+    setIsDraggingOptions(false);
+    setShowRandomPrompts(false);
+    setShowOptions(false);
+  }, []);
+
   useEffect(() => {
     if (!showOptions) return;
-
-    const closeOptionsOnOutsidePress = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (
-        optionsDrawerRef.current?.contains(target)
-        || optionsToggleRef.current?.contains(target)
-        || textareaRef.current?.contains(target)
-      ) return;
-      setShowOptions(false);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeOptions();
     };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [closeOptions, showOptions]);
 
-    document.addEventListener('pointerdown', closeOptionsOnOutsidePress);
-    return () => document.removeEventListener('pointerdown', closeOptionsOnOutsidePress);
-  }, [showOptions, textareaRef]);
+  const startOptionsDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    optionsDragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      currentY: event.clientY,
+      startedAt: performance.now()
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsDraggingOptions(true);
+    setOptionsDragOffset(0);
+  };
 
-  const enabledRandomSlugs = new Set(
-    params.randomPromptLists
-      .filter(list => list.enabled && list.slug && list.values.some(value => value.trim()))
-      .map(list => list.slug.toLowerCase())
+  const moveOptionsDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = optionsDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.currentY = event.clientY;
+    setOptionsDragOffset(Math.max(0, event.clientY - drag.startY));
+  };
+
+  const finishOptionsDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = optionsDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const distance = Math.max(0, drag.currentY - drag.startY);
+    const duration = Math.max(1, performance.now() - drag.startedAt);
+    const velocity = distance / duration;
+    optionsDragRef.current = null;
+    setIsDraggingOptions(false);
+    if (distance >= 96 || (distance >= 28 && velocity >= 0.65)) {
+      closeOptions();
+      return;
+    }
+    setOptionsDragOffset(0);
+  };
+
+  const toggleOptions = () => {
+    if (showRandomPrompts) {
+      setShowRandomPrompts(false);
+      window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+      return;
+    }
+    if (showOptions) closeOptions();
+    else setShowOptions(true);
+  };
+
+  const availableRandomPromptLists = params.randomPromptLists
+    .filter(list => list.enabled && list.slug && list.values.some(value => value.trim()));
+  const optionsToggleLabel = showRandomPrompts
+    ? (lang === 'fr' ? 'Fermer les listes aléatoires' : 'Close random lists')
+    : t.options;
+  const knownRandomSlugs = new Set(
+    params.randomPromptLists.filter(list => list.slug).map(list => list.slug.toLowerCase()),
   );
+  const enabledRandomSlugs = new Set(availableRandomPromptLists.map(list => list.slug.toLowerCase()));
   const promptParts = input.split(/(\[[a-zA-Z0-9_-]+\])/g);
   const hasRandomCodes = promptParts.some(part => (
     part.startsWith('[')
@@ -792,7 +955,53 @@ export const ChatInterface = ({
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
+  const removeTouchedRandomTags = (
+    textarea: HTMLTextAreaElement,
+    direction: 'backward' | 'forward',
+  ) => {
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    let deletionStart = selectionStart;
+    let deletionEnd = selectionEnd;
+
+    if (selectionStart === selectionEnd) {
+      if (direction === 'backward') deletionStart = Math.max(0, selectionStart - 1);
+      else deletionEnd = Math.min(input.length, selectionEnd + 1);
+    }
+    if (deletionStart === deletionEnd) return false;
+
+    const touchedTags: Array<{ start: number; end: number }> = [];
+    const randomTagPattern = /\[([a-zA-Z0-9_-]+)\]/g;
+    let match: RegExpExecArray | null;
+    while ((match = randomTagPattern.exec(input)) !== null) {
+      if (!knownRandomSlugs.has(match[1].toLowerCase())) continue;
+      const tagStart = match.index;
+      const tagEnd = tagStart + match[0].length;
+      if (deletionStart < tagEnd && deletionEnd > tagStart) {
+        touchedTags.push({ start: tagStart, end: tagEnd });
+      }
+    }
+    if (touchedTags.length === 0) return false;
+
+    const removeStart = Math.min(deletionStart, ...touchedTags.map(tag => tag.start));
+    const removeEnd = Math.max(deletionEnd, ...touchedTags.map(tag => tag.end));
+    setInput(`${input.slice(0, removeStart)}${input.slice(removeEnd)}`);
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(removeStart, removeStart);
+    });
+    return true;
+  };
+
   const handlePromptKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      (event.key === 'Backspace' || event.key === 'Delete')
+      && removeTouchedRandomTags(event.currentTarget, event.key === 'Backspace' ? 'backward' : 'forward')
+    ) {
+      event.preventDefault();
+      return;
+    }
+
     if (showSlashCommandMenu) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
@@ -819,6 +1028,13 @@ export const ChatInterface = ({
       event.preventDefault();
       void executePromptInput();
     }
+  };
+
+  const handlePromptBeforeInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
+    const inputType = (event.nativeEvent as InputEvent).inputType;
+    if (!inputType?.startsWith('delete')) return;
+    const direction = inputType.toLowerCase().includes('forward') ? 'forward' : 'backward';
+    if (removeTouchedRandomTags(event.currentTarget, direction)) event.preventDefault();
   };
   const firstFailedMessageId = messages.find(message => message.role === 'bot' && message.status === 'failed')?.id;
   const normalizedGallerySearch = normalizeSearchValue(gallerySearch.trim());
@@ -883,6 +1099,14 @@ export const ChatInterface = ({
     t.luckyMagic5,
   ];
 
+  const visionScanPhrases = [
+    t.visionScanStep1,
+    t.visionScanStep2,
+    t.visionScanStep3,
+    t.visionScanStep4,
+    t.visionScanStep5,
+  ];
+
   useEffect(() => {
     if (!isCreatingLuckyPrompt) {
       setLuckyPhraseIndex(0);
@@ -893,6 +1117,17 @@ export const ChatInterface = ({
     }, 1800);
     return () => window.clearInterval(interval);
   }, [isCreatingLuckyPrompt, lang]);
+
+  useEffect(() => {
+    if (!isAnalyzingImage) {
+      setVisionScanPhraseIndex(0);
+      return;
+    }
+    const interval = window.setInterval(() => {
+      setVisionScanPhraseIndex(index => (index + 1) % VISION_SCAN_PHRASE_COUNT);
+    }, 1800);
+    return () => window.clearInterval(interval);
+  }, [isAnalyzingImage, lang]);
 
   useEffect(() => {
     if (!isCreatingLuckyPrompt) return;
@@ -933,6 +1168,15 @@ export const ChatInterface = ({
       textarea?.focus();
       textarea?.setSelectionRange(nextCursor, nextCursor);
     });
+  };
+
+  const showRandomPromptsAboveInput = () => {
+    optionsDragRef.current = null;
+    setOptionsDragOffset(0);
+    setIsDraggingOptions(false);
+    setShowOptions(false);
+    setShowRandomPrompts(true);
+    window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
   };
 
   useEffect(() => {
@@ -1011,6 +1255,8 @@ export const ChatInterface = ({
                 || msg.randomSelections?.length
                 || (msg.role === 'bot' && (msg.status === 'pending' || msg.status === 'preparing' || msg.status === 'processing' || msg.status === 'failed'))
               );
+              const reservedImageWidth = msg.width || params.width || 512;
+              const reservedImageHeight = msg.height || params.height || 512;
               if (!shouldShowText && !hasNonTextContent) return null;
               
               return (
@@ -1097,7 +1343,7 @@ export const ChatInterface = ({
 
                   {msg.role === 'bot' && msg.status === 'failed' && (
                     <div className="generation-error-container">
-                      <div className="error-icon">⚠️</div>
+                      <div className="error-icon"><AlertTriangleIcon size={24} /></div>
                       <div className="error-content">
                         <p className="error-title">{t.genFailed}</p>
                         <p className="error-details">{msg.text}</p>
@@ -1131,8 +1377,8 @@ export const ChatInterface = ({
                   {msg.imageUrl && (
                     <div id={`img-${msg.id}`} className="image-wrapper"
                       style={{
-                        aspectRatio: (msg.width && msg.height) ? `${msg.width}/${msg.height}` : 'auto',
-                        minHeight: '100px'
+                        width: `${reservedImageWidth}px`,
+                        aspectRatio: `${reservedImageWidth}/${reservedImageHeight}`,
                       }}
                       onClick={() => handleImageClick({ 
                         url: msg.imageUrl!, 
@@ -1143,23 +1389,22 @@ export const ChatInterface = ({
                         source: 'chat' 
                       })}
                     >
-                      <img 
+                      <ReservedImage
                         src={getFullImageUrl(msg.thumbnailUrl || msg.imageUrl!)} 
                         alt="Generated" 
                         className="clickable-image" 
-                        loading="lazy"
-                        decoding="async"
-                        style={{ width: '100%', height: 'auto', display: 'block' }}
-                        // Removed onLoad scroll to prevent jumps during polling
+                        loadingLabel={t.loading}
+                        width={reservedImageWidth}
+                        height={reservedImageHeight}
                       />
                       <button 
                         className={`image-fav-btn ${msg.isFavorite ? 'active' : ''}`}
                         onClick={(e) => { e.stopPropagation(); toggleFavorite(currentSessionId!, msg.id, msg.isFavorite); }}
                         title={t.favorites}
                       >
-                        {msg.isFavorite ? '❤️' : '🤍'}
+                        <HeartIcon size={20} filled={Boolean(msg.isFavorite)} />
                       </button>
-                      {favoritedId === msg.id && <div className="image-overlay-heart">❤️</div>}
+                      {favoritedId === msg.id && <div className="image-overlay-heart"><HeartIcon size={64} filled /></div>}
                       {msg.comparisonMessageId && (
                         <button
                           className="image-comparison-badge"
@@ -1183,7 +1428,7 @@ export const ChatInterface = ({
                       } else {
                         handleEdit(textToEdit);
                       }
-                    }} title={editablePendingMessage ? t.editPendingPrompt : (msg.role === 'bot' ? t.reusePrompt : t.edit)}>✎</button>
+                    }} title={editablePendingMessage ? t.editPendingPrompt : (msg.role === 'bot' ? t.reusePrompt : t.edit)}><ComposeIcon size={18} /></button>
                     {canRegenerateDynamicPrompt && (
                       <button
                         className="action-btn-icon regenerate"
@@ -1220,7 +1465,6 @@ export const ChatInterface = ({
                         <button className="action-btn-icon info" onClick={(e) => { e.stopPropagation(); setActiveInfoId(activeInfoId === msg.id ? null : msg.id); }} title="Info">
                           <InfoIcon />
                         </button>
-                        <button className="action-btn-icon download" onClick={(e) => { e.stopPropagation(); downloadImage(getFullImageUrl(msg.imageUrl!), `img-${msg.id}.png`); }} title={t.download}>💾</button>
                         <button
                           className="action-btn-icon regenerate"
                           onClick={(e) => {
@@ -1242,7 +1486,7 @@ export const ChatInterface = ({
                         </button>
                       </>
                     )}
-                    <button className="action-btn-icon delete" onClick={(e) => { e.stopPropagation(); setMessageToDelete(msg.id); }} title={t.delete}>🗑️</button>
+                    <button className="action-btn-icon delete" onClick={(e) => { e.stopPropagation(); setMessageToDelete(msg.id); }} title={t.delete}><TrashIcon size={19} /></button>
                   </div>
                   {activeInfoId === msg.id && msg.role === 'bot' && (
                     <div className="generation-info-panel">
@@ -1302,7 +1546,9 @@ export const ChatInterface = ({
                     <div className="vision-analysis-copy">
                       <SeedyCompanion state="magic" settings={params.companionSettings} />
                       <div>
-                        <strong>{t.visionAnalysisInProgress || 'Analyse visuelle en cours'}</strong>
+                        <strong key={visionScanPhraseIndex} className="vision-scan-phrase">
+                          {visionScanPhrases[visionScanPhraseIndex] || t.visionAnalysisInProgress || 'Analyse visuelle en cours'}
+                        </strong>
                         <span>
                           {t.visionAnalysisDetail || 'Composition · lumière · textures · optique'}
                           {' · '}
@@ -1311,6 +1557,10 @@ export const ChatInterface = ({
                       </div>
                       <i className="vision-live-dot" aria-hidden="true" />
                     </div>
+                    <button type="button" className="cancel-gen-btn vision-analysis-cancel" onClick={cancelVisionAnalysis}>
+                      <div className="stop-icon-small" aria-hidden="true" />
+                      <span>{t.cancel}</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1423,7 +1673,7 @@ export const ChatInterface = ({
                   )}
                 </div>
                 <button className={`gallery-filter-fav ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly(!favoritesOnly)} aria-pressed={favoritesOnly}>
-                  {favoritesOnly ? '❤️' : '🤍'} {t.favorites}
+                  <HeartIcon size={18} filled={favoritesOnly} /> {t.favorites}
                 </button>
                 <div className="control-group">
                   <button className={`control-pill ${!showArchivedInGallery ? 'active' : ''}`} onClick={() => setShowArchivedInGallery(false)}>
@@ -1487,12 +1737,11 @@ export const ChatInterface = ({
                     });
                   }}
                 >
-                  <img 
+                  <ReservedImage
                     src={getFullImageUrl(item.thumbnailUrl || item.imageUrl)} 
                     alt={item.prompt} 
-                    loading="lazy"
-                    decoding="async"
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    loadingLabel={t.loading}
+                    objectFit="cover"
                   />
                   {galleryColumns < 3 && selectedGalleryIds.size === 0 && (
                     <div className="gallery-item-actions">
@@ -1516,7 +1765,7 @@ export const ChatInterface = ({
                       </button>
                     </div>
                   )}
-                  {item.isFavorite === 1 && <div className="gallery-item-favorite">❤️</div>}
+                  {item.isFavorite === 1 && <div className="gallery-item-favorite"><HeartIcon size={22} filled /></div>}
                   {item.isPromptFavorite === 1 && (
                     <div className="gallery-item-prompt-favorite" title={t.likePrompt}>
                       <ThumbUpIcon size={18} />
@@ -1574,7 +1823,7 @@ export const ChatInterface = ({
                       () => batchSetGalleryFavorites(selectedGalleryItems, selectedAreAllFavorites ? 0 : 1),
                       selectedAreAllFavorites ? t.batchFavoritesRemoved : t.batchFavoritesAdded
                     )} disabled={galleryBatchBusy}>
-                      <span className="gallery-batch-menu-icon gallery-batch-heart" aria-hidden="true">{selectedAreAllFavorites ? '♡' : '♥'}</span>
+                      <span className="gallery-batch-menu-icon gallery-batch-heart" aria-hidden="true"><HeartIcon size={20} filled={!selectedAreAllFavorites} /></span>
                       <span><strong>{selectedAreAllFavorites ? t.batchRemoveFavorites : t.batchAddFavorites}</strong><small>{t.batchFavoritesHelp}</small></span>
                     </button>
                     <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
@@ -1607,7 +1856,46 @@ export const ChatInterface = ({
       {view === 'chat' && (
         <div className="input-container">
           {showOptions && (
-            <div ref={optionsDrawerRef} className="generation-options-drawer fadeIn">
+            <div
+              className="generation-options-overlay"
+              onPointerDown={(event) => {
+                if (event.target === event.currentTarget) closeOptions();
+              }}
+            >
+              <section
+                ref={optionsDrawerRef}
+                className={`generation-options-drawer ${isDraggingOptions ? 'is-dragging' : ''}`}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="generation-options-title"
+                style={{ transform: `translateY(${optionsDragOffset}px)` }}
+              >
+                <div
+                  className="generation-options-drag-zone"
+                  onPointerDown={startOptionsDrag}
+                  onPointerMove={moveOptionsDrag}
+                  onPointerUp={finishOptionsDrag}
+                  onPointerCancel={finishOptionsDrag}
+                  onLostPointerCapture={finishOptionsDrag}
+                >
+                  <span className="generation-options-handle" aria-hidden="true" />
+                  <div>
+                    <h2 id="generation-options-title">
+                      {lang === 'fr' ? 'Options de génération' : 'Generation options'}
+                    </h2>
+                    <p>{lang === 'fr' ? 'Faites glisser vers le bas pour fermer' : 'Drag down to close'}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="generation-options-close"
+                  onClick={closeOptions}
+                  aria-label={lang === 'fr' ? 'Fermer les options' : 'Close options'}
+                  title={lang === 'fr' ? 'Fermer' : 'Close'}
+                >
+                  <XIcon size={20} />
+                </button>
+                <div className="generation-options-content">
               <div className="options-group lucky-prompt-group">
                 <input
                   ref={imageImportRef}
@@ -1642,7 +1930,7 @@ export const ChatInterface = ({
                       type="button"
                       className="lucky-prompt-btn"
                       onClick={() => {
-                        setShowOptions(false);
+                        closeOptions();
                         void createLuckyGeneration();
                       }}
                       disabled={isCreatingLuckyPrompt || isLoadingLuckyReferences}
@@ -1676,13 +1964,13 @@ export const ChatInterface = ({
                     className={`option-badge ${params.seedMode === 'random' ? 'active' : ''}`}
                     onClick={() => setParams({ ...params, seedMode: 'random' })}
                   >
-                    🎲 {t.random}
+                    <DiceIcon size={17} /> {t.random}
                   </button>
                   <button 
                     className={`option-badge ${params.seedMode === 'fixed' ? 'active' : ''}`}
                     onClick={() => setParams({ ...params, seedMode: 'fixed' })}
                   >
-                    🔒 {t.fixed}
+                    <LockIcon size={17} /> {t.fixed}
                   </button>
                   {params.seedMode === 'fixed' && (
                     <input 
@@ -1695,32 +1983,51 @@ export const ChatInterface = ({
                   )}
                 </div>
               </div>
-              {params.randomPromptLists.some(list => list.enabled && list.slug && list.values.some(value => value.trim())) && (
-                <div className="options-group random-prompts-options">
-                  <div className="option-label">🎲 {t.randomLists}</div>
-                  <div className="random-prompts-quickbar" role="list" aria-label={t.randomLists}>
-                    {params.randomPromptLists
-                      .filter(list => list.enabled && list.slug && list.values.some(value => value.trim()))
-                      .map(list => (
-                        <button
-                          key={list.id}
-                          type="button"
-                          className="random-prompt-chip"
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => insertRandomSlug(list.slug)}
-                          title={`${t.insertRandomSlug} [${list.slug}]`}
-                        >
-                          <span className="random-prompt-chip-name">{list.name}</span>
-                          <span className="random-prompt-chip-slug">+ [{list.slug}]</span>
-                        </button>
-                      ))}
-                  </div>
+              {availableRandomPromptLists.length > 0 && (
+                <div className="options-group random-prompts-sheet-group">
+                  <button
+                    type="button"
+                    className="random-prompts-sheet-toggle"
+                    onClick={showRandomPromptsAboveInput}
+                  >
+                    <span className="random-prompts-sheet-icon"><DiceIcon size={19} /></span>
+                    <span>
+                      <strong>{t.randomLists}</strong>
+                      <small>
+                        {availableRandomPromptLists.length} {lang === 'fr' ? 'listes disponibles' : 'lists available'}
+                      </small>
+                    </span>
+                    <span className="random-prompts-sheet-action">
+                      {lang === 'fr' ? 'Afficher' : 'Show'}
+                    </span>
+                  </button>
                 </div>
               )}
+                </div>
+              </section>
             </div>
           )}
 
           <div className="input-wrapper">
+            {showRandomPrompts && (
+              <div className="random-prompts-composer-bar">
+                <div className="random-prompts-quickbar" role="list" aria-label={t.randomLists}>
+                  {availableRandomPromptLists.map(list => (
+                    <button
+                      key={list.id}
+                      type="button"
+                      className="random-prompt-chip"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => insertRandomSlug(list.slug)}
+                      title={`${t.insertRandomSlug} [${list.slug}]`}
+                    >
+                      <span className="random-prompt-chip-name">{list.name}</span>
+                      <span className="random-prompt-chip-slug">+ [{list.slug}]</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {showScrollBottom && !showOptions && (
               <button className="scroll-bottom-btn" onClick={onScrollToBottom} title={lang === 'fr' ? 'Aller en bas' : 'Scroll to bottom'}>
                 <ChevronDownIcon size={24} />
@@ -1747,17 +2054,17 @@ export const ChatInterface = ({
                 ))}
               </div>
             )}
-            <div className={`input-box ${params.llmEnabled ? 'ai-active' : ''} ${input ? 'has-text' : ''} ${hasRandomCodes ? 'has-random-code' : ''}`}>
-              {!input && (
+            <div className={`input-box ${params.llmEnabled ? 'ai-active' : ''} ${hasPromptText ? 'has-text' : ''} ${hasRandomCodes ? 'has-random-code' : ''}`}>
+              {!hasPromptText && (
                 <button
                   ref={optionsToggleRef}
                   type="button"
-                  className={`options-toggle-btn ${showOptions ? 'active' : ''}`}
+                  className={`options-toggle-btn ${showOptions || showRandomPrompts ? 'active' : ''}`}
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setShowOptions(!showOptions)}
-                  title={t.options}
-                  aria-label={t.options}
-                  aria-expanded={showOptions}
+                  onClick={toggleOptions}
+                  title={optionsToggleLabel}
+                  aria-label={optionsToggleLabel}
+                  aria-expanded={showOptions || showRandomPrompts}
                 >
                   <PlusIcon size={20} />
                 </button>
@@ -1782,6 +2089,7 @@ export const ChatInterface = ({
                   onFocus={() => setIsPromptFocused(true)}
                   onBlur={() => setIsPromptFocused(false)}
                   onScroll={(e) => syncPromptHighlightScroll(e.currentTarget)}
+                  onBeforeInput={handlePromptBeforeInput}
                   onKeyDown={handlePromptKeyDown}
                   aria-autocomplete="list"
                   aria-controls={showSlashCommandMenu ? 'slash-command-menu' : undefined}
@@ -1791,16 +2099,16 @@ export const ChatInterface = ({
                 />
               </div>
               <div className="input-box-actions">
-                {input && (
+                {hasPromptText && (
                   <button
                     ref={optionsToggleRef}
                     type="button"
-                    className={`options-toggle-btn ${showOptions ? 'active' : ''}`}
+                    className={`options-toggle-btn ${showOptions || showRandomPrompts ? 'active' : ''}`}
                     onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => setShowOptions(!showOptions)}
-                    title={t.options}
-                    aria-label={t.options}
-                    aria-expanded={showOptions}
+                    onClick={toggleOptions}
+                    title={optionsToggleLabel}
+                    aria-label={optionsToggleLabel}
+                    aria-expanded={showOptions || showRandomPrompts}
                   >
                     <PlusIcon size={20} />
                   </button>

@@ -145,6 +145,7 @@ export interface GenParameters {
   visionProviderId?: string;
   visionModel?: string;
   visionSystemMessage: string;
+  visionDetailLevel: number;
   visionModelTtlMinutes: number;
   luckyTemperature: number;
   luckyFavoriteCount: number;
@@ -195,7 +196,10 @@ export interface User {
   id: string;
   username: string;
   isAdmin: boolean;
-  avatarUrl?: string;
+  avatarUrl?: string | null;
+  createdAt?: number;
   imageCount?: number;
   diskUsage?: number;
+  queueLimit?: number | null;
+  activeQueueCount?: number;
 }

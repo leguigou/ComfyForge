@@ -5,6 +5,7 @@ export interface User {
   isAdmin: number; // SQLite uses 0/1
   avatarUrl: string | null;
   storageLimit: number | null;
+  queueLimit: number | null;
   createdAt: number;
 }
 

@@ -138,7 +138,7 @@ router.get('/', authenticate, (req, res) => {
 router.get('/status/availability', authenticate, (req, res) => {
   const user = (req as any).user;
   const capacity = getUserQueueCapacity(user.id);
-  res.json({ available: capacity.remaining > 0, activeGenerations: capacity.current, capacity });
+  res.json({ available: capacity.remaining === null || capacity.remaining > 0, activeGenerations: capacity.current, capacity });
 });
 
 router.post('/batch/generate', authenticate, (req, res) => {

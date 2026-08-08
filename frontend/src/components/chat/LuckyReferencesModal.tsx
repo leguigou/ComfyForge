@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Language, LuckyReference, PromptTag } from '../../types';
 import { getFullImageUrl } from '../../services/api';
-import { RefreshIcon, XIcon } from '../ui/Icons';
+import { HeartIcon, RefreshIcon, XIcon } from '../ui/Icons';
 import './LuckyReferencesModal.css';
 
 interface LuckyReferencesModalProps {
@@ -199,7 +199,7 @@ export const LuckyReferencesModal = ({
                 className="lucky-reference-image"
               />
               <span className="lucky-reference-index">{index + 1}</span>
-              {reference.isFavorite === 1 && <span className="lucky-reference-favorite">♥</span>}
+              {reference.isFavorite === 1 && <span className="lucky-reference-favorite"><HeartIcon size={16} filled /></span>}
               <button
                 type="button"
                 className="lucky-reference-reroll-one"

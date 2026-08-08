@@ -1,8 +1,21 @@
 import { useState, useRef, useEffect } from 'react';
 import './Sidebar.css';
 import type { Session, Language, Theme, User, Message, AppView } from '../../types';
-import { getFullImageUrl } from '../../services/api';
+import { getAvatarThumbnailUrl, getFullImageUrl } from '../../services/api';
 import { APP_CONFIG } from '../../config';
+import {
+  AlertTriangleIcon,
+  ArchiveIcon,
+  ArchiveRestoreIcon,
+  ChatIcon,
+  GlobeIcon,
+  ImageIcon,
+  LogOutIcon,
+  MoonIcon,
+  SettingsIcon,
+  SmartphoneIcon,
+  SunIcon,
+} from '../ui/Icons';
 
 interface SidebarProps {
   sidebarOpen: boolean;
@@ -93,16 +106,16 @@ export const Sidebar = ({
       <aside className={`sidebar ${sidebarOpen ? 'open' : 'closed'}`}>
         <div className="sidebar-header">
           {sidebarOpen && <button className="close-sidebar-mobile" onClick={() => setSidebarOpen(false)}>×</button>}
-          {backendError && <div className="backend-warning" title={t.backendOffline}>⚠️</div>}
+          {backendError && <div className="backend-warning" title={t.backendOffline}><AlertTriangleIcon size={20} /></div>}
         </div>
         <button className="new-chat-btn" onClick={() => { void createNewSession(); closeSidebarOnMobile(); }}>
           <span>+</span> {t.newChat}
         </button>
         <button className={`new-chat-btn gallery-btn ${view === 'gallery' ? 'active' : ''}`} onClick={() => { setView('gallery'); fetchGallery(true); closeSidebarOnMobile(); }}>
-          <span>🖼️</span> {t.myContent}
+          <span><ImageIcon size={19} /></span> {t.myContent}
         </button>
         <button className="new-chat-btn" onClick={() => { setView(view === 'archives' ? 'chat' : 'archives'); }}>
-          <span>{view === 'archives' ? '💬' : '📦'}</span> {view === 'archives' ? t.viewActive : t.viewArchives}
+          <span>{view === 'archives' ? <ChatIcon size={19} /> : <ArchiveIcon size={19} />}</span> {view === 'archives' ? t.viewActive : t.viewArchives}
         </button>
         
         <div className="sessions-list">
@@ -162,7 +175,7 @@ export const Sidebar = ({
                   )}
                   {Boolean(s.isArchived) && (
                     <div className="session-actions">
-                      <button className="unarchive-session" onClick={(e) => { e.stopPropagation(); toggleArchive(s.id, false); }} title={t.unarchive}>📤</button>
+                      <button className="unarchive-session" onClick={(e) => { e.stopPropagation(); toggleArchive(s.id, false); }} title={t.unarchive} aria-label={t.unarchive}><ArchiveRestoreIcon size={18} /></button>
                     </div>
                   )}
                 </>
@@ -177,13 +190,13 @@ export const Sidebar = ({
             <div id="profile-menu" className="profile-popover">
               <div className="popover-section">
                 <button className="popover-item" onClick={() => { setLang(lang === 'fr' ? 'en' : 'fr'); setProfileMenuOpen(false); }}>
-                  <span>🌐</span> {lang === 'fr' ? 'English (EN)' : 'Français (FR)'}
+                  <span><GlobeIcon size={18} /></span> {lang === 'fr' ? 'English (EN)' : 'Français (FR)'}
                 </button>
                 <button className="popover-item" onClick={() => { setTheme(theme === 'dark' ? 'light' : 'dark'); setProfileMenuOpen(false); }}>
-                  <span>{theme === 'dark' ? '☀️' : '🌙'}</span> {theme === 'dark' ? (lang === 'fr' ? 'Mode Clair' : 'Light Mode') : (lang === 'fr' ? 'Mode Sombre' : 'Dark Mode')}
+                  <span>{theme === 'dark' ? <SunIcon size={18} /> : <MoonIcon size={18} />}</span> {theme === 'dark' ? (lang === 'fr' ? 'Mode Clair' : 'Light Mode') : (lang === 'fr' ? 'Mode Sombre' : 'Dark Mode')}
                 </button>
                 <button className="popover-item" onClick={() => { setKeepAwake(!keepAwake); setProfileMenuOpen(false); }}>
-                  <span>{keepAwake ? '📱' : '📱'}</span> {keepAwake ? (lang === 'fr' ? 'Écran actif (Oui)' : 'Keep Awake (On)') : (lang === 'fr' ? 'Écran actif (Non)' : 'Keep Awake (Off)')}
+                  <span><SmartphoneIcon size={18} /></span> {keepAwake ? (lang === 'fr' ? 'Écran actif (Oui)' : 'Keep Awake (On)') : (lang === 'fr' ? 'Écran actif (Non)' : 'Keep Awake (Off)')}
                 </button>
                 <button className={`popover-item ${view === 'statistics' ? 'active' : ''}`} onClick={() => { setView('statistics'); setProfileMenuOpen(false); closeSidebarOnMobile(); }}>
                   <span aria-hidden="true">
@@ -196,12 +209,12 @@ export const Sidebar = ({
                   <span aria-hidden="true">A/B</span> {lang === 'fr' ? 'Comparaison' : 'Comparison'}
                 </button>
                 <button className="popover-item" onClick={() => { setShowSettings(true); setProfileMenuOpen(false); closeSidebarOnMobile(); }}>
-                  <span>⚙️</span> {t.settings}
+                  <span><SettingsIcon size={18} /></span> {t.settings}
                 </button>
               </div>
               <div className="popover-divider" />
               <button className="popover-item logout" onClick={() => { handleLogout(); setProfileMenuOpen(false); }}>
-                <span>🚪</span> {t.logout}
+                <span><LogOutIcon size={18} /></span> {t.logout}
               </button>
               <div className="sidebar-version" aria-label={`Version ${APP_CONFIG.VERSION}`}>
                 v{APP_CONFIG.VERSION}
@@ -225,7 +238,7 @@ export const Sidebar = ({
           >
             <div className="profile-avatar">
               {currentUser?.avatarUrl ? (
-                <img src={getFullImageUrl(currentUser.avatarUrl)} alt="Avatar" className="profile-avatar-img" />
+                <img src={getFullImageUrl(getAvatarThumbnailUrl(currentUser.avatarUrl))} alt="Avatar" className="profile-avatar-img" />
               ) : (
                 userInitial
               )}

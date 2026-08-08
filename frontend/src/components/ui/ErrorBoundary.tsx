@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { AlertTriangleIcon } from './Icons';
 
 interface Props {
   children: ReactNode;
@@ -46,7 +47,7 @@ export class ErrorBoundary extends Component<Props, State> {
           textAlign: 'center',
           color: '#ececf1'
         }}>
-          <h2 style={{ color: '#ff4d4d', marginBottom: '1rem' }}>⚠️ Oups, quelque chose a mal tourné</h2>
+          <h2 style={{ color: '#ff4d4d', marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}><AlertTriangleIcon size={24} /> Oups, quelque chose a mal tourné</h2>
           <p style={{ opacity: 0.8, marginBottom: '1.5rem' }}>
             Une erreur s'est produite dans le composant <strong>{this.props.name || 'Application'}</strong>.
           </p>
