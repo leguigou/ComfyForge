@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { reloadStaleClient } from './utils/moduleRecovery.ts'
+import { installCsrfFetchProtection } from './services/csrf.ts'
+
+installCsrfFetchProtection();
 
 window.addEventListener('vite:preloadError', (event) => {
   if (reloadStaleClient()) event.preventDefault();

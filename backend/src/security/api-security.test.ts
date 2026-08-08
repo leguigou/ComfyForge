@@ -18,6 +18,16 @@ let db: typeof import('../services/database').default;
 let adminCookie: string;
 let adminId: string;
 let adminSessionId: string;
+const csrfTokens = new Map<string, string>();
+
+const authCookieFrom = (response: Response) => {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  const values = headers.getSetCookie?.() || [response.headers.get('set-cookie') || ''];
+  const cookies = values.map(value => value.split(';')[0]);
+  const authCookie = [...cookies].reverse().find(value => value.startsWith('userId=') && value !== 'userId=');
+  const csrfCookie = [...cookies].reverse().find(value => value.startsWith('csrfToken=') && value !== 'csrfToken=');
+  return [authCookie, csrfCookie].filter(Boolean).join('; ');
+};
 
 const request = async (
   pathname: string,
@@ -27,17 +37,17 @@ const request = async (
   if (options.cookie) headers.set('Cookie', options.cookie);
   if (options.origin) headers.set('Origin', options.origin);
   if (options.body) headers.set('Content-Type', 'application/json');
+  const csrfToken = options.cookie ? csrfTokens.get(options.cookie) : undefined;
+  if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
 
-  return fetch(`${baseUrl}${pathname}`, { ...options, headers });
+  const response = await fetch(`${baseUrl}${pathname}`, { ...options, headers });
+  const responseToken = response.headers.get('x-csrf-token');
+  const responseCookie = authCookieFrom(response);
+  if (responseToken && responseCookie) csrfTokens.set(responseCookie, responseToken);
+  return response;
 };
 
 const json = async (response: Response) => response.json() as Promise<Record<string, any>>;
-const authCookieFrom = (response: Response) => {
-  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
-  const values = headers.getSetCookie?.() || [response.headers.get('set-cookie') || ''];
-  const authCookie = [...values].reverse().find(value => value.startsWith('userId=') && !value.includes('Max-Age=0'));
-  return authCookie?.split(';')[0] || '';
-};
 
 beforeAll(async () => {
   fs.mkdirSync(imagesDir, { recursive: true });
@@ -374,6 +384,19 @@ describe('API security boundaries', () => {
 
     expect(response.status).toBe(403);
     expect(response.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('rejects an authenticated mutation without its CSRF token', async () => {
+    const response = await fetch(`${baseUrl}/api/auth/logout`, {
+      method: 'POST',
+      headers: {
+        Cookie: adminCookie,
+        Origin: baseUrl,
+      },
+    });
+
+    expect(response.status).toBe(403);
+    expect(await json(response)).toMatchObject({ error: 'Invalid CSRF token' });
   });
 
   it('accepts the actual same origin including its forwarded port', async () => {
