@@ -17,6 +17,14 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.7.1
+
+Version 2.7.1 streamlines account creation and adds an opt-in desktop workflow for prompts copied from other applications.
+
+- **Focused user creation:** administrators now start from a clear action above the user list and create an account in a responsive dialog with password confirmation, role selection, queue quota controls, inline errors, and keyboard focus management.
+- **Clipboard-to-generation automation:** supported Chromium browsers can watch for newly copied text, sanitize it, fill the prompt, and start a generation automatically after explicit opt-in.
+- **Clearer update status:** development builds newer than the latest published GitHub release are identified explicitly instead of being described as the latest release.
+
 ## What's new in 2.7.0
 
 Version 2.7.0 makes account administration clearer, Vision analysis more controllable, and everyday image workflows smoother across desktop and mobile.
@@ -56,6 +64,7 @@ Version 2.5.0 focuses on safer upgrades, fair multi-user operation, faster large
 ### Generation and queue management
 
 - Real-time ComfyUI progress, queue status, elapsed time, cancellation, retry, and retry-all for incomplete generations.
+- Optional desktop clipboard automation on supported Chromium browsers: copy new text to fill the prompt and start generation immediately.
 - Prompt, negative prompt, checkpoint or diffusion model, workflow, width, height, seed, steps, CFG, sampler, and scheduler controls.
 - Fixed or random seeds, reusable random prompt lists such as `[R-Color]`, and regeneration with fresh dynamic selections.
 - Pending-prompt editing before execution and synchronized status updates over WebSockets.
@@ -278,6 +287,17 @@ npm run build
 ```
 
 GitHub Actions runs these checks automatically. Dependabot monitors npm packages and GitHub Actions, and CodeQL analyzes the JavaScript and TypeScript code.
+
+### Publishing a release
+
+Pushing `main` publishes the rolling Docker images but does not create a GitHub Release. Maintainers must keep `VERSION`, both package manifests, and their lockfiles aligned, commit the release, then create and push the matching `vX.Y.Z` tag. The tag starts the Auto Release workflow and publishes the versioned Docker images:
+
+```bash
+git tag -a vX.Y.Z <release-commit> -m "Release vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+The in-app update checker reads GitHub Releases, so a version is not considered published until its tag-triggered release exists.
 
 ## Architecture
 

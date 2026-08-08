@@ -3,7 +3,7 @@ import './SettingsModal.css';
 import type { GenParameters, User, Language, GalleryItem, RandomPromptList, ComfyModelDetails } from '../../types';
 import { normalizeRandomSlug } from '../../utils/randomPrompts';
 import { DEFAULT_COMPANION_ID, normalizeCompanionSettings } from '../../utils/companions';
-import { AlertTriangleIcon, CheckCircleIcon, CheckIcon, HeartIcon, KeyIcon, RefreshIcon, SparklesIcon, StarIcon, TrashIcon, XIcon } from '../ui/Icons';
+import { AlertTriangleIcon, CheckCircleIcon, CheckIcon, ClipboardIcon, HeartIcon, KeyIcon, PlusIcon, RefreshIcon, SparklesIcon, StarIcon, TrashIcon, XIcon } from '../ui/Icons';
 import { SeedyCompanion } from '../chat/SeedyCompanion';
 import { MarkdownLoader } from '../ui/MarkdownLoader';
 import { formatBytes, getAvatarThumbnailUrl, getFullImageUrl, API_BASE } from '../../services/api';
@@ -93,6 +93,172 @@ interface AdminUserUpdate {
   avatarUrl: string | null;
   queueLimit: number | null;
 }
+
+type NewAdminUser = {
+  username: string;
+  password: string;
+  isAdmin: boolean;
+  queueLimit: number | null;
+};
+
+const CreateAdminUserModal = ({
+  user,
+  setUser,
+  t,
+  loading,
+  onClose,
+  onCreate
+}: {
+  user: NewAdminUser;
+  setUser: (user: NewAdminUser) => void;
+  t: Record<string, string>;
+  loading: boolean;
+  onClose: () => void;
+  onCreate: () => Promise<{ success: boolean; error?: string }>;
+}) => {
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [error, setError] = useState('');
+  const passwordMatches = user.password === confirmPassword;
+  const canCreate = Boolean(user.username.trim() && user.password && passwordMatches) && !loading;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!canCreate) return;
+    setError('');
+    const result = await onCreate();
+    if (!result.success) {
+      setError(result.error || t.userCreateFailed);
+      return;
+    }
+    toast.success(t.userCreated);
+    onClose();
+  };
+
+  return (
+    <div className="admin-user-modal-overlay" onClick={() => { if (!loading) onClose(); }}>
+      <form
+        className="admin-user-modal admin-user-create-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="admin-user-create-title"
+        onSubmit={submit}
+        onClick={event => event.stopPropagation()}
+      >
+        <header className="admin-user-modal-header">
+          <div className="admin-user-identity">
+            <div className="admin-user-avatar admin-user-create-avatar" aria-hidden="true">
+              <PlusIcon size={23} />
+            </div>
+            <div>
+              <span>{t.userManagement}</span>
+              <h3 id="admin-user-create-title">{t.createUser}</h3>
+            </div>
+          </div>
+          <button type="button" className="admin-user-modal-close" onClick={onClose} disabled={loading} aria-label={t.close}>
+            <XIcon size={20} />
+          </button>
+        </header>
+
+        <div className="admin-user-modal-body">
+          <p className="admin-user-create-intro">{t.createUserHelp}</p>
+
+          <section className="admin-user-form-section">
+            <h4>{t.accountInformation}</h4>
+            <div className="admin-user-form-grid">
+              <label>
+                <span>{t.username}</span>
+                <input
+                  value={user.username}
+                  onChange={event => setUser({ ...user, username: event.target.value })}
+                  autoFocus
+                  autoComplete="off"
+                  maxLength={100}
+                  placeholder={t.username}
+                />
+              </label>
+              <label>
+                <span>{t.role}</span>
+                <select value={user.isAdmin ? 'admin' : 'user'} onChange={event => setUser({ ...user, isAdmin: event.target.value === 'admin' })}>
+                  <option value="user">{t.user}</option>
+                  <option value="admin">{t.admin}</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section className="admin-user-form-section">
+            <h4>{t.security}</h4>
+            <div className="admin-user-form-grid">
+              <label>
+                <span>{t.password}</span>
+                <input
+                  type="password"
+                  value={user.password}
+                  onChange={event => setUser({ ...user, password: event.target.value })}
+                  autoComplete="new-password"
+                  maxLength={200}
+                  placeholder={t.password}
+                />
+              </label>
+              <label>
+                <span>{t.confirmPassword}</span>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={event => setConfirmPassword(event.target.value)}
+                  autoComplete="new-password"
+                  aria-label={t.confirmPassword}
+                  aria-invalid={Boolean(confirmPassword) && !passwordMatches}
+                />
+                {confirmPassword && !passwordMatches && <small className="admin-user-field-error">{t.passwordMismatch}</small>}
+              </label>
+            </div>
+          </section>
+
+          <section className="admin-user-form-section">
+            <h4>{t.generationQueue}</h4>
+            <div className="admin-user-queue-row">
+              <label>
+                <span>{t.queueQuota}</span>
+                <select
+                  value={user.queueLimit === null ? 'unlimited' : 'limited'}
+                  onChange={event => setUser({
+                    ...user,
+                    queueLimit: event.target.value === 'unlimited' ? null : (user.queueLimit ?? 25)
+                  })}
+                >
+                  <option value="limited">{t.limited}</option>
+                  <option value="unlimited">{t.unlimited}</option>
+                </select>
+              </label>
+              <label>
+                <span>{t.queueQuotaValue}</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="10000"
+                  step="1"
+                  value={user.queueLimit ?? 25}
+                  disabled={user.queueLimit === null}
+                  onChange={event => setUser({ ...user, queueLimit: Math.max(1, Math.min(10_000, Number(event.target.value) || 1)) })}
+                />
+              </label>
+            </div>
+          </section>
+
+          {error && <div className="admin-user-save-error" role="alert">{error}</div>}
+        </div>
+
+        <footer className="admin-user-modal-footer admin-user-create-footer">
+          <button type="button" className="admin-user-cancel" onClick={onClose} disabled={loading}>{t.cancel}</button>
+          <button type="submit" className="admin-user-save" disabled={!canCreate}>
+            {loading ? t.creating : <><PlusIcon size={17} /> {t.createUser}</>}
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
+};
 
 const AdminUserEditor = ({
   user,
@@ -262,6 +428,9 @@ interface SettingsModalProps {
   setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs') => void;
   params: GenParameters;
   setParams: Dispatch<SetStateAction<GenParameters>>;
+  clipboardAutoGenerateSupported: boolean;
+  isClipboardAutoGeneratePending: boolean;
+  onClipboardAutoGenerateChange: (enabled: boolean) => Promise<void>;
   lang: Language;
   t: Record<string, string>;
   currentUser: User | null;
@@ -278,9 +447,9 @@ interface SettingsModalProps {
   availableWorkflows: string[];
   fetchWorkflows: () => void;
   adminUsers: User[];
-  newUser: { username: string; password: string; isAdmin: boolean; queueLimit: number | null };
-  setNewUser: (user: { username: string; password: string; isAdmin: boolean; queueLimit: number | null }) => void;
-  handleAddUser: () => void;
+  newUser: NewAdminUser;
+  setNewUser: (user: NewAdminUser) => void;
+  handleAddUser: () => Promise<{ success: boolean; error?: string }>;
   isAdminLoading: boolean;
   deleteUser: (id: string) => void;
   updateAdminUser: (id: string, updates: AdminUserUpdate) => Promise<{ success: boolean; error?: string }>;
@@ -298,6 +467,9 @@ export const SettingsModal = ({
   setActiveTab,
   params,
   setParams,
+  clipboardAutoGenerateSupported,
+  isClipboardAutoGeneratePending,
+  onClipboardAutoGenerateChange,
   lang,
   t,
   currentUser,
@@ -334,6 +506,7 @@ export const SettingsModal = ({
   const [isUnloadingLlm, setIsUnloadingLlm] = useState(false);
   const [isFreeingComfyMemory, setIsFreeingComfyMemory] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
 
   // Local states for textareas to allow manual save
   const [localNegativePrompt, setLocalNegativePrompt] = useState(params.negativePrompt);
@@ -470,10 +643,16 @@ export const SettingsModal = ({
   useEffect(() => {
     if (!showSettings) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    const frame = window.requestAnimationFrame(() => activeTabButtonRef.current?.focus({ preventScroll: true }));
+    const frame = window.requestAnimationFrame(() => {
+      if (!editingUser && !isCreatingUser) activeTabButtonRef.current?.focus({ preventScroll: true });
+    });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
+        if (isCreatingUser) {
+          if (!isAdminLoading) setIsCreatingUser(false);
+          return;
+        }
         if (editingUser) {
           setEditingUser(null);
           return;
@@ -482,7 +661,8 @@ export const SettingsModal = ({
         return;
       }
       if (event.key !== 'Tab' || !modalRef.current) return;
-      const focusable = [...modalRef.current.querySelectorAll<HTMLElement>(
+      const focusRoot = modalRef.current.querySelector<HTMLElement>('.admin-user-modal') || modalRef.current;
+      const focusable = [...focusRoot.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
       )].filter(element => !element.hasAttribute('hidden') && element.offsetParent !== null);
       if (!focusable.length) return;
@@ -502,7 +682,7 @@ export const SettingsModal = ({
       document.removeEventListener('keydown', handleKeyDown);
       previouslyFocused?.focus();
     };
-  }, [editingUser, setShowSettings, showSettings]);
+  }, [editingUser, isAdminLoading, isCreatingUser, setShowSettings, showSettings]);
 
   if (!showSettings) return null;
 
@@ -917,6 +1097,33 @@ export const SettingsModal = ({
           <main className="tab-content">
           {activeTab === 'general' && (
             <div className="general-settings-stack">
+              <section className={`clipboard-auto-card ${params.clipboardAutoGenerate ? 'active' : ''}`}>
+                <div className="clipboard-auto-copy">
+                  <span className="clipboard-auto-icon" aria-hidden="true"><ClipboardIcon size={24} /></span>
+                  <div>
+                    <h4>{t.clipboardAutoGenerateTitle}</h4>
+                    <p>{t.clipboardAutoGenerateHelp}</p>
+                  </div>
+                </div>
+                <label className={`clipboard-auto-toggle ${params.clipboardAutoGenerate ? 'active' : ''} ${isClipboardAutoGeneratePending ? 'pending' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={params.clipboardAutoGenerate}
+                    disabled={isClipboardAutoGeneratePending || (!clipboardAutoGenerateSupported && !params.clipboardAutoGenerate)}
+                    onChange={event => void onClipboardAutoGenerateChange(event.target.checked)}
+                  />
+                  <span>{isClipboardAutoGeneratePending
+                    ? t.clipboardAutoGenerateEnabling
+                    : params.clipboardAutoGenerate
+                      ? t.clipboardAutoGenerateActive
+                      : t.clipboardAutoGenerateEnable}</span>
+                </label>
+                {!clipboardAutoGenerateSupported && (
+                  <p className="clipboard-auto-unavailable"><AlertTriangleIcon size={16} /> {t.clipboardAutoGenerateUnsupported}</p>
+                )}
+                <p className="clipboard-auto-warning"><AlertTriangleIcon size={16} /> {t.clipboardAutoGenerateWarning}</p>
+              </section>
+
               <section className="companion-general-card">
                 <div className="companion-general-copy">
                   <SeedyCompanion state="waiting" settings={{ ...companionSettings, enabled: true }} />
@@ -926,7 +1133,7 @@ export const SettingsModal = ({
                   </div>
                 </div>
                 <div className="companion-general-actions">
-                  <label className="companion-enabled">
+                  <label className={`companion-enabled ${companionSettings.enabled ? 'active' : ''}`}>
                     <input
                       type="checkbox"
                       checked={companionSettings.enabled}
@@ -1756,52 +1963,23 @@ export const SettingsModal = ({
           {activeTab === 'admin' && (
             <div className="settings-grid admin-panel">
               <div className="setting-item" style={{ gridColumn: 'span 2' }}>
-                <h3>{t.addUser}</h3>
-                <div className="add-user-form">
-                  <input type="text" placeholder={t.username} value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} />
-                  <input type="password" placeholder={t.password} value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
-                  <div className="new-user-queue-quota">
-                    <select
-                      aria-label={t.queueQuota}
-                      value={newUser.queueLimit === null ? 'unlimited' : 'limited'}
-                      onChange={event => setNewUser({
-                        ...newUser,
-                        queueLimit: event.target.value === 'unlimited' ? null : (newUser.queueLimit ?? 25)
-                      })}
-                    >
-                      <option value="limited">{t.limited}</option>
-                      <option value="unlimited">{t.unlimited}</option>
-                    </select>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10000"
-                      step="1"
-                      aria-label={t.queueQuotaValue}
-                      value={newUser.queueLimit ?? 25}
-                      disabled={newUser.queueLimit === null}
-                      onChange={event => setNewUser({ ...newUser, queueLimit: Math.max(1, Math.min(10_000, Number(event.target.value) || 1)) })}
-                    />
+                <div className="admin-users-toolbar">
+                  <div>
+                    <h3>{t.userList}</h3>
+                    <p>{t.userListHelp}</p>
                   </div>
-                  <div className="admin-checkbox-wrapper">
-                    <label className="admin-toggle-label">
-                      <span>{t.admin}</span>
-                      <div 
-                        className={`toggle-container ${newUser.isAdmin ? 'active' : ''}`} 
-                        onClick={() => setNewUser({ ...newUser, isAdmin: !newUser.isAdmin })}
-                      >
-                        <div className={`toggle-switch ${newUser.isAdmin ? 'on' : ''}`}></div>
-                      </div>
-                    </label>
-                  </div>
-                  <button className="add-user-submit-btn" onClick={handleAddUser} disabled={isAdminLoading || !newUser.username || !newUser.password}>
-                    {isAdminLoading ? '...' : t.addUser}
+                  <button
+                    type="button"
+                    className="add-user-trigger"
+                    onClick={() => {
+                      setNewUser({ username: '', password: '', isAdmin: false, queueLimit: 25 });
+                      setIsCreatingUser(true);
+                    }}
+                  >
+                    <PlusIcon size={18} />
+                    {t.addUser}
                   </button>
                 </div>
-              </div>
-              
-              <div className="setting-item" style={{ gridColumn: 'span 2' }}>
-                <h3>{t.userList}</h3>
                 <div className="user-table-wrapper">
                   <table className="user-table">
                     <thead>
@@ -1887,6 +2065,20 @@ export const SettingsModal = ({
                 />
               )}
 
+              {isCreatingUser && (
+                <CreateAdminUserModal
+                  user={newUser}
+                  setUser={setNewUser}
+                  t={t}
+                  loading={isAdminLoading}
+                  onClose={() => {
+                    setIsCreatingUser(false);
+                    setNewUser({ username: '', password: '', isAdmin: false, queueLimit: 25 });
+                  }}
+                  onCreate={handleAddUser}
+                />
+              )}
+
             </div>
           )}
 
@@ -1905,6 +2097,7 @@ interface UpdateInfo {
   currentVersion: string;
   latestVersion?: string;
   updateAvailable?: boolean;
+  localVersionAhead?: boolean;
   releaseUrl?: string;
   releaseNotes?: string;
   publishedAt?: string;
@@ -1966,13 +2159,15 @@ const UpdateTab = ({ t }: { t: Record<string, string> }) => {
 
             {updateInfo.updateAvailable ? (
               <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-                <p style={{ color: 'var(--accent)', fontWeight: 'bold', marginBottom: '1rem' }}><SparklesIcon size={18} /> Une mise à jour est disponible !</p>
+                <p style={{ color: 'var(--accent)', fontWeight: 'bold', marginBottom: '1rem' }}><SparklesIcon size={18} /> {t.updateAvailable}</p>
                 <a href={updateInfo.releaseUrl} target="_blank" rel="noopener noreferrer" className="action-btn-large" style={{ textDecoration: 'none', display: 'inline-block' }}>
-                  Voir sur GitHub
+                  {t.viewOnGitHub}
                 </a>
               </div>
+            ) : updateInfo.localVersionAhead ? (
+              <p style={{ textAlign: 'center', color: 'var(--accent)', margin: '1rem 0 0' }}><SparklesIcon size={18} /> {t.localVersionAhead}</p>
             ) : updateInfo.latestVersion ? (
-              <p style={{ textAlign: 'center', opacity: 0.7, margin: '1rem 0 0' }}><CheckCircleIcon size={18} /> Vous utilisez la dernière version.</p>
+              <p style={{ textAlign: 'center', opacity: 0.7, margin: '1rem 0 0' }}><CheckCircleIcon size={18} /> {t.upToDate}</p>
             ) : updateInfo.error ? (
               <p style={{ textAlign: 'center', color: '#ff4b4b', margin: '1rem 0 0' }}><AlertTriangleIcon size={18} /> {updateInfo.error}</p>
             ) : null}

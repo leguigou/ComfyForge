@@ -19,6 +19,7 @@ let slashCommands;
 let config;
 let webSocketHelpers;
 let moduleRecovery;
+let clipboardAutoGenerate;
 
 before(async () => {
   vite = await createServer({
@@ -37,6 +38,7 @@ before(async () => {
   slashCommands = await vite.ssrLoadModule('/src/utils/slashCommands.ts');
   webSocketHelpers = await vite.ssrLoadModule('/src/hooks/useWebSocket.ts');
   moduleRecovery = await vite.ssrLoadModule('/src/utils/moduleRecovery.ts');
+  clipboardAutoGenerate = await vite.ssrLoadModule('/src/utils/clipboardAutoGenerate.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
   ({ MessageText } = await vite.ssrLoadModule('/src/components/chat/MessageText.tsx'));
   ({ SeedyCompanion } = await vite.ssrLoadModule('/src/components/chat/SeedyCompanion.tsx'));
@@ -51,6 +53,49 @@ test('formats generation durations and storage sizes', () => {
   assert.equal(api.formatDuration(65), '1m05s');
   assert.equal(api.formatBytes(0), '0 B');
   assert.equal(api.formatBytes(1024), '1 KB');
+});
+
+test('normalizes and validates clipboard prompts without accepting unsupported browsers', () => {
+  assert.equal(clipboardAutoGenerate.normalizeClipboardPrompt('  first\r\nsecond\u0000  '), 'first\nsecond');
+  assert.equal(
+    clipboardAutoGenerate.normalizeClipboardPrompt('portrait, <lora:kit_krea2_epoch_05:1>, cinematic light'),
+    'portrait, cinematic light'
+  );
+  assert.equal(
+    clipboardAutoGenerate.normalizeClipboardPrompt('<LoRA:first:0.8>, portrait <lora:second:1.2>'),
+    'portrait'
+  );
+  assert.equal(clipboardAutoGenerate.normalizeClipboardPrompt('<lora:only_lora:1>'), '');
+  assert.equal(clipboardAutoGenerate.isClipboardPromptAllowed('portrait'), true);
+  assert.equal(clipboardAutoGenerate.isClipboardPromptAllowed(''), false);
+  assert.equal(
+    clipboardAutoGenerate.isClipboardPromptAllowed('x'.repeat(clipboardAutoGenerate.MAX_CLIPBOARD_PROMPT_LENGTH + 1)),
+    false
+  );
+  assert.equal(
+    clipboardAutoGenerate.isClipboardAutoGenerateSupported({ readText() {}, onclipboardchange: null }, true),
+    true
+  );
+  assert.equal(clipboardAutoGenerate.isClipboardAutoGenerateSupported({ readText() {} }, true), false);
+  assert.equal(
+    clipboardAutoGenerate.isClipboardAutoGenerateSupported({ readText() {}, onclipboardchange: null }, false),
+    false
+  );
+});
+
+test('wires clipboard permission, change detection, and the general-settings activation control', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const settingsSource = readFileSync('src/components/settings/SettingsModal.tsx', 'utf8');
+  const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
+
+  assert.match(appSource, /normalizeClipboardPrompt\(await navigator\.clipboard\.readText\(\)\)/);
+  assert.match(appSource, /clipboard\.addEventListener\('clipboardchange', handleClipboardChange\)/);
+  assert.match(appSource, /await onHandleSendRef\.current\(prompt\)/);
+  assert.match(settingsSource, /clipboardAutoGenerateTitle/);
+  assert.match(settingsSource, /onClipboardAutoGenerateChange\(event\.target\.checked\)/);
+  assert.match(settingsSource, /companion-enabled \$\{companionSettings\.enabled \? 'active' : ''\}/);
+  assert.match(settingsCss, /\.clipboard-auto-toggle input\s*\{[\s\S]*?clip-path:\s*inset\(50%\)/);
+  assert.match(settingsCss, /\.companion-enabled\.active\s*\{[\s\S]*?background:\s*var\(--accent\)/);
 });
 
 test('renders the localized welcome screen', () => {
@@ -125,6 +170,16 @@ test('loads confirmation dialog styles without opening settings', () => {
   assert.match(appCss, /\.settings-modal-overlay\s*\{/);
   assert.match(appCss, /\.confirm-modal\s*\{/);
   assert.match(appCss, /\.confirm-btn\.delete\s*\{/);
+});
+
+test('keeps the lazy settings loader inside the settings modal', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
+
+  assert.match(appSource, /const SettingsLoading =/);
+  assert.match(appSource, /className="settings-modal settings-panel settings-loading-panel"/);
+  assert.match(appSource, /<Suspense fallback=\{\([\s\S]*?<SettingsLoading/);
+  assert.match(settingsCss, /\.settings-loading-panel \.settings-loading-content\s*\{[\s\S]*?flex:\s*1;[\s\S]*?min-height:\s*0;/);
 });
 
 test('shows the generation counter from two remaining through the final generation', () => {

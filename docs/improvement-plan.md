@@ -14,8 +14,9 @@ back without blocking the rest of the roadmap.
   `SettingsModal.tsx`, and their stylesheets.
 - A verified pre-change archive is stored outside the repository in
   `F:\Antigravity\ComfyRealism-backups`.
-- `VERSION` and both package manifests are authoritative at `2.5.0`; runtime
-  drift must be reported, never resolved by silently changing these files.
+- When this plan was opened, `VERSION` and both package manifests were aligned
+  at `2.5.0`; runtime drift must be reported, never resolved by silently
+  changing these files.
 
 ## Phase 1 — architecture and delivery safety
 

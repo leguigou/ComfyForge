@@ -141,6 +141,7 @@ export interface GenParameters {
   llmSystemMessage: string;
   negativePrompt: string;
   llmEnabled: boolean;
+  clipboardAutoGenerate: boolean;
   llmProviderId?: string;
   visionProviderId?: string;
   visionModel?: string;

@@ -32,6 +32,12 @@ import toast, { Toaster } from 'react-hot-toast';
 import NoSleep from 'nosleep.js';
 import comfyForgeLogo from './assets/comfyforge-logo-v2.webp';
 import { importWithRecovery } from './utils/moduleRecovery';
+import {
+  isClipboardAutoGenerateSupported,
+  isClipboardPromptAllowed,
+  MAX_CLIPBOARD_PROMPT_LENGTH,
+  normalizeClipboardPrompt,
+} from './utils/clipboardAutoGenerate';
 
 const SettingsModal = lazy(() => importWithRecovery(() => import('./components/settings/SettingsModal')).then(module => ({
   default: module.SettingsModal
@@ -50,6 +56,44 @@ const WorkspaceLoading = () => (
   <div className="workspace-loading" role="status" aria-live="polite">
     <span aria-hidden="true" />
     Chargement…
+  </div>
+);
+
+const SettingsLoading = ({
+  title,
+  subtitle,
+  label,
+  closeLabel,
+  onClose,
+}: {
+  title: string;
+  subtitle: string;
+  label: string;
+  closeLabel: string;
+  onClose: () => void;
+}) => (
+  <div className="settings-modal-overlay" onClick={onClose}>
+    <div
+      className="settings-modal settings-panel settings-loading-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-loading-title"
+      onClick={(event) => event.stopPropagation()}
+    >
+      <header className="settings-header">
+        <div>
+          <h3 id="settings-loading-title">{title}</h3>
+          <p>{subtitle}</p>
+        </div>
+        <button className="settings-close-btn" onClick={onClose} aria-label={closeLabel}>
+          <XIcon size={20} />
+        </button>
+      </header>
+      <div className="workspace-loading settings-loading-content" role="status" aria-live="polite">
+        <span aria-hidden="true" />
+        {label}
+      </div>
+    </div>
   </div>
 );
 
@@ -82,6 +126,7 @@ const createDefaultGenParameters = (): GenParameters => ({
   llmSystemMessage: DEFAULT_LLM_SYSTEM_MESSAGE,
   negativePrompt: "low quality, bad anatomy, malformed, extra limbs, extra fingers, fused fingers, bad hands, poorly drawn hands, missing fingers, fused face, poorly drawn face, asymmetrical, cartoon, anime, 3d, render, watermark, text, logo, swept hair, portrait",
   llmEnabled: false,
+  clipboardAutoGenerate: false,
   visionProviderId: '',
   visionModel: '',
   visionSystemMessage: DEFAULT_VISION_SYSTEM_MESSAGE,
@@ -316,9 +361,17 @@ function App() {
   const [openOptionsRequest, setOpenOptionsRequest] = useState(0);
   
   const [params, setParams] = useState<GenParameters>(createDefaultGenParameters);
+  const [isClipboardAutoGeneratePending, setIsClipboardAutoGeneratePending] = useState(false);
   const lastSavedParamsRef = useRef<string>('');
   const settingsRequestIdRef = useRef(0);
   const settingsSaveRequestIdRef = useRef(0);
+  const lastClipboardPromptRef = useRef('');
+  const pendingClipboardPromptRef = useRef<string | null>(null);
+  const isProcessingClipboardPromptRef = useRef(false);
+  const clipboardAutoGenerateSupported = isClipboardAutoGenerateSupported(
+    navigator.clipboard,
+    window.isSecureContext,
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -766,26 +819,31 @@ function App() {
     } catch (err) { console.error('Error fetching users:', err); }
   }, [currentUser]);
 
-  const handleAddUser = useCallback(async () => {
-    if (!newUser.username || !newUser.password) return;
+  const handleAddUser = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
+    if (!newUser.username.trim() || !newUser.password) {
+      return { success: false, error: t.userCreateFailed };
+    }
     setIsAdminLoading(true);
     try {
       const res = await fetch(`${API_BASE}/api/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newUser),
+        body: JSON.stringify({ ...newUser, username: newUser.username.trim() }),
         credentials: 'include'
       });
       if (res.ok) {
         setNewUser({ username: '', password: '', isAdmin: false, queueLimit: 25 });
-        fetchAdminUsers();
-      } else {
-        const data = await res.json();
-        alert(data.error || 'Failed to add user');
+        await fetchAdminUsers();
+        return { success: true };
       }
-    } catch (err) { console.error('Error adding user:', err); }
+      const data = await res.json().catch(() => ({}));
+      return { success: false, error: data.error || t.userCreateFailed };
+    } catch (err) {
+      console.error('Error adding user:', err);
+      return { success: false, error: t.userCreateFailed };
+    }
     finally { setIsAdminLoading(false); }
-  }, [newUser, fetchAdminUsers]);
+  }, [newUser, fetchAdminUsers, t.userCreateFailed]);
 
   const internalDeleteUser = useCallback(async (id: string) => {
     if (!confirm(t.confirmDeleteUser)) return;
@@ -1937,9 +1995,111 @@ function App() {
       targetSessionId = await createNewSession();
     }
 
-    handleSend(text, regen, targetSessionId, skipEnhancement, false, forceEnhancement);
+    await handleSend(text, regen, targetSessionId, skipEnhancement, false, forceEnhancement);
     if (override === undefined) setInput('');
   }, [handleSend, input, currentSessionId, createNewSession]);
+
+  const onHandleSendRef = useRef(onHandleSend);
+  useEffect(() => {
+    onHandleSendRef.current = onHandleSend;
+  }, [onHandleSend]);
+
+  const changeClipboardAutoGenerate = useCallback(async (enabled: boolean) => {
+    if (!enabled) {
+      pendingClipboardPromptRef.current = null;
+      lastClipboardPromptRef.current = '';
+      setParams(current => ({ ...current, clipboardAutoGenerate: false }));
+      return;
+    }
+
+    if (!clipboardAutoGenerateSupported) {
+      toast.error(t.clipboardAutoGenerateUnsupported, { id: 'clipboard-auto-generate' });
+      return;
+    }
+
+    setIsClipboardAutoGeneratePending(true);
+    try {
+      // The first read both requests permission from the click gesture and
+      // establishes a baseline. Existing clipboard contents are never sent.
+      lastClipboardPromptRef.current = normalizeClipboardPrompt(await navigator.clipboard.readText());
+      pendingClipboardPromptRef.current = null;
+      setParams(current => ({ ...current, clipboardAutoGenerate: true }));
+      toast.success(t.clipboardAutoGenerateEnabled, { id: 'clipboard-auto-generate' });
+    } catch (error) {
+      console.error('[Clipboard] Unable to enable automatic generation:', error);
+      toast.error(t.clipboardAutoGeneratePermissionDenied, { id: 'clipboard-auto-generate' });
+    } finally {
+      setIsClipboardAutoGeneratePending(false);
+    }
+  }, [clipboardAutoGenerateSupported, t.clipboardAutoGenerateEnabled, t.clipboardAutoGeneratePermissionDenied, t.clipboardAutoGenerateUnsupported]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !params.clipboardAutoGenerate || !clipboardAutoGenerateSupported) return;
+
+    const clipboard = navigator.clipboard;
+    let cancelled = false;
+
+    const processPendingPrompts = async () => {
+      if (isProcessingClipboardPromptRef.current) return;
+      isProcessingClipboardPromptRef.current = true;
+      try {
+        while (!cancelled && pendingClipboardPromptRef.current) {
+          const prompt = pendingClipboardPromptRef.current;
+          pendingClipboardPromptRef.current = null;
+          setView('chat');
+          setShowSettings(false);
+          setInput(prompt);
+          window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+          toast.success(t.clipboardAutoGenerateStarted, { id: 'clipboard-auto-generate-started' });
+          await onHandleSendRef.current(prompt);
+          if (!cancelled) {
+            setInput(current => current === prompt ? '' : current);
+          }
+        }
+      } catch (error) {
+        console.error('[Clipboard] Automatic generation failed:', error);
+        if (!cancelled) {
+          toast.error(error instanceof Error ? error.message : t.clipboardAutoGeneratePermissionDenied, {
+            id: 'clipboard-auto-generate-error',
+          });
+        }
+      } finally {
+        isProcessingClipboardPromptRef.current = false;
+      }
+    };
+
+    const handleClipboardChange = async () => {
+      try {
+        const prompt = normalizeClipboardPrompt(await clipboard.readText());
+        if (cancelled || prompt === lastClipboardPromptRef.current) return;
+        lastClipboardPromptRef.current = prompt;
+
+        if (!isClipboardPromptAllowed(prompt)) {
+          if (prompt.length > MAX_CLIPBOARD_PROMPT_LENGTH) {
+            toast.error(t.clipboardAutoGenerateTooLong, { id: 'clipboard-auto-generate-too-long' });
+          }
+          return;
+        }
+
+        // While one prompt is being queued, retain only the newest clipboard
+        // value so rapid successive copies cannot create duplicate requests.
+        pendingClipboardPromptRef.current = prompt;
+        await processPendingPrompts();
+      } catch (error) {
+        if (cancelled) return;
+        console.error('[Clipboard] Unable to read clipboard contents:', error);
+        setParams(current => ({ ...current, clipboardAutoGenerate: false }));
+        toast.error(t.clipboardAutoGeneratePermissionDenied, { id: 'clipboard-auto-generate' });
+      }
+    };
+
+    clipboard.addEventListener('clipboardchange', handleClipboardChange);
+    return () => {
+      cancelled = true;
+      pendingClipboardPromptRef.current = null;
+      clipboard.removeEventListener('clipboardchange', handleClipboardChange);
+    };
+  }, [clipboardAutoGenerateSupported, isAuthenticated, params.clipboardAutoGenerate, t.clipboardAutoGeneratePermissionDenied, t.clipboardAutoGenerateStarted, t.clipboardAutoGenerateTooLong]);
 
   const normalizeLuckyReferences = useCallback((references: LuckyReference[]) => references.map((reference) => ({
     ...reference,
@@ -2725,10 +2885,21 @@ function App() {
       )}
 
       {showSettings && (
-        <Suspense fallback={<WorkspaceLoading />}>
+        <Suspense fallback={(
+          <SettingsLoading
+            title={t.settings}
+            subtitle={t.settingsSubtitle}
+            label={t.loading}
+            closeLabel={t.close || 'Close'}
+            onClose={() => setShowSettings(false)}
+          />
+        )}>
           <SettingsModal
             showSettings={showSettings} setShowSettings={setShowSettings} activeTab={activeTab} setActiveTab={setActiveTab}
             params={params} setParams={setParams} lang={lang} t={t} currentUser={currentUser}
+            clipboardAutoGenerateSupported={clipboardAutoGenerateSupported}
+            isClipboardAutoGeneratePending={isClipboardAutoGeneratePending}
+            onClipboardAutoGenerateChange={changeClipboardAutoGenerate}
             comfyModels={comfyModels} diffusionModels={diffusionModels}
             checkpointModelDetails={checkpointModelDetails} diffusionModelDetails={diffusionModelDetails}
             isFetchingComfyModels={isFetchingComfyModels} fetchComfyModels={fetchComfyModels}

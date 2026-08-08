@@ -4,6 +4,21 @@ import { APP_VERSION } from '../config/app-version';
 
 const router = express.Router();
 
+const cleanVersion = (version: string) => version.replace(/^v/, '').replace(/^\./, '').trim();
+
+export const compareVersions = (left: string, right: string) => {
+  const leftParts = cleanVersion(left).split(/[.-]/).slice(0, 3).map(Number);
+  const rightParts = cleanVersion(right).split(/[.-]/).slice(0, 3).map(Number);
+
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index++) {
+    const leftPart = leftParts[index] || 0;
+    const rightPart = rightParts[index] || 0;
+    if (leftPart > rightPart) return 1;
+    if (leftPart < rightPart) return -1;
+  }
+  return 0;
+};
+
 // Get current local version and check for updates on GitHub
 router.get('/check', async (req, res) => {
   try {
@@ -17,31 +32,17 @@ router.get('/check', async (req, res) => {
     });
 
     const latestRelease = response.data;
-    // Clean version strings: remove 'v', leading dots, and whitespace
-    const clean = (v: string) => v.replace(/^v/, '').replace(/^\./, '').trim();
-    
-    const currentVersion = clean(APP_VERSION);
-    const latestVersion = clean(latestRelease.tag_name);
-    
-    // Simple semver comparison: returns true if latest > current
-    const isNewer = (latest: string, current: string) => {
-      const l = latest.split('.').map(Number);
-      const c = current.split('.').map(Number);
-      for (let i = 0; i < Math.max(l.length, c.length); i++) {
-        const lNum = l[i] || 0;
-        const cNum = c[i] || 0;
-        if (lNum > cNum) return true;
-        if (lNum < cNum) return false;
-      }
-      return false;
-    };
-
-    const updateAvailable = isNewer(latestVersion, currentVersion);
+    const currentVersion = cleanVersion(APP_VERSION);
+    const latestVersion = cleanVersion(latestRelease.tag_name);
+    const comparison = compareVersions(latestVersion, currentVersion);
+    const updateAvailable = comparison > 0;
+    const localVersionAhead = comparison < 0;
     
     res.json({
       currentVersion,
       latestVersion,
       updateAvailable,
+      localVersionAhead,
       releaseUrl: latestRelease.html_url,
       releaseNotes: latestRelease.body,
       publishedAt: latestRelease.published_at
