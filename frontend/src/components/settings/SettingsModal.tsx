@@ -162,7 +162,7 @@ const AdminUserEditor = ({
         <header className="admin-user-modal-header">
           <div className="admin-user-identity">
             <div className="admin-user-avatar" aria-hidden="true">
-              {avatarUrl ? <img src={getFullImageUrl(getAvatarThumbnailUrl(avatarUrl))} alt="" /> : username.charAt(0).toUpperCase()}
+              {avatarUrl ? <img src={encodeURI(getFullImageUrl(getAvatarThumbnailUrl(avatarUrl)))} alt="" /> : username.charAt(0).toUpperCase()}
             </div>
             <div>
               <span>{t.editUser}</span>
