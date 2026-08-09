@@ -142,6 +142,7 @@ router.get('/', authenticate, (req, res) => {
       COUNT(DISTINCT mt.messageId) AS uses,
       COUNT(DISTINCT COALESCE(NULLIF(TRIM(m.generationPrompt), ''), NULLIF(TRIM(m.prompt), ''), m.text)) AS prompts,
       SUM(CASE WHEN m.isFavorite = 1 THEN 1 ELSE 0 END) AS favorites,
+      SUM(CASE WHEN m.isPromptFavorite = 1 THEN 1 ELSE 0 END) AS likedPrompts,
       MAX(m.timestamp) AS lastUsedAt
     FROM tags t
     JOIN message_tags mt ON mt.tagId = t.id

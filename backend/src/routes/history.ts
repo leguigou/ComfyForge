@@ -117,6 +117,17 @@ router.delete('/:id', authenticate, (req, res) => {
   const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND userId = ?').get(req.params.id, user.id);
   if (!session) return res.status(404).json({ error: 'Session not found' });
 
+  if (req.query.onlyIfEmpty === 'true') {
+    const content = db.prepare('SELECT COUNT(*) AS count FROM messages WHERE sessionId = ?')
+      .get(req.params.id) as { count: number };
+    if (content.count > 0) {
+      return res.status(409).json({
+        code: 'SESSION_NOT_EMPTY',
+        error: 'Session contains messages',
+      });
+    }
+  }
+
   const messages = db.prepare('SELECT imageUrl, thumbnailUrl FROM messages WHERE sessionId = ? AND imageUrl IS NOT NULL').all(req.params.id) as any[];
   deleteFiles(messages);
   

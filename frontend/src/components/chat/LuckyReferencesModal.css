@@ -83,6 +83,21 @@
 .lucky-reference-reroll-one { position: absolute; right: 8px; bottom: 8px; width: 34px; height: 34px; border-radius: 50%; backdrop-filter: blur(7px); }
 .lucky-reference-reroll-one:hover:not(:disabled), .lucky-reference-close:hover:not(:disabled) { background: rgba(139, 92, 246, 0.55); }
 .lucky-reference-card-body { padding: 10px; }
+.lucky-reference-links {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 7px;
+  font-size: .64rem;
+}
+.lucky-reference-links strong { color: #cfb3ff; }
+.lucky-reference-links span {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .lucky-reference-tags-shell {
   position: relative;
   min-width: 0;
@@ -151,7 +166,7 @@
 .lucky-reference-tags button:disabled { cursor: default; opacity: .7; }
 .lucky-reference-card-body p { display: -webkit-box; margin: 8px 0 0; overflow: hidden; color: var(--text); font-size: 0.76rem; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 
-.lucky-reference-actions { justify-content: flex-end; gap: 10px; position: sticky; bottom: -24px; margin: 22px -24px -24px; padding: 15px 24px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--sidebar-bg) 94%, transparent); backdrop-filter: blur(12px); }
+.lucky-reference-actions { z-index: 4; isolation: isolate; justify-content: flex-end; gap: 10px; position: sticky; bottom: -24px; margin: 22px -24px -24px; padding: 15px 24px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--sidebar-bg) 94%, transparent); backdrop-filter: blur(12px); }
 .lucky-reference-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 0 17px; border-radius: 12px; font-weight: 750; cursor: pointer; }
 .lucky-reference-actions button:disabled, .lucky-reference-close:disabled, .lucky-reference-reroll-one:disabled { opacity: 0.55; cursor: default; }
 .lucky-reference-secondary { border: 1px solid var(--border); color: var(--text-h); background: transparent; }

@@ -115,7 +115,8 @@ export const useGeneration = (
     skipEnhancement = false,
     runInBackground = false,
     forceEnhancement = false,
-    parameterOverrides?: Partial<GenParameters>
+    parameterOverrides?: Partial<GenParameters>,
+    existingRecovery?: { messageId?: string; userMessageId?: string }
   ) => {
     const activeSessionId = targetSessionId || currentSessionId;
     if (!textToSend.trim() || !activeSessionId) return;
@@ -134,8 +135,8 @@ export const useGeneration = (
       skipEnhancement,
       forceEnhancement
     });
-    let recoveryMessageId: string | undefined;
-    let recoveryUserMessageId: string | undefined;
+    let recoveryMessageId: string | undefined = existingRecovery?.messageId;
+    let recoveryUserMessageId: string | undefined = existingRecovery?.userMessageId;
     let recoveredPrompt = resolvedPrompt;
 
     if (!isRegeneration && shouldUpdateVisibleMessages) {
@@ -299,16 +300,21 @@ export const useGeneration = (
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       if (shouldUpdateVisibleMessages) {
-        setMessages(prev => prev.map(item => item.id === botMsgId
-          ? {
-              ...item,
-              id: recoveryMessageId || item.id,
-              text: message,
-              generationPrompt: recoveredPrompt,
-              status: 'failed',
-              isEnhancing: false
-            }
-          : item));
+        setMessages(prev => prev.map(item => {
+          if (userMsgId && recoveryUserMessageId && item.id === userMsgId) {
+            return { ...item, id: recoveryUserMessageId };
+          }
+          return item.id === botMsgId
+            ? {
+                ...item,
+                id: recoveryMessageId || item.id,
+                text: message,
+                generationPrompt: recoveredPrompt,
+                status: 'failed',
+                isEnhancing: false
+              }
+            : item;
+        }));
       }
       if (runInBackground) throw error;
     }

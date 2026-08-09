@@ -1,12 +1,78 @@
+import { useEffect, useState } from 'react';
 import { translations } from '../../i18n';
 import type { Language } from '../../types';
+import { CameraIcon, ComposeIcon, DiceIcon, HeartIcon, MagicWandIcon, RefreshIcon, SparklesIcon, StarIcon } from '../ui/Icons';
+
+export type WelcomeSuggestionAction =
+  | 'surprise'
+  | 'image'
+  | 'favorite'
+  | 'imagine'
+  | 'remix'
+  | 'portrait'
+  | 'cinematic'
+  | 'resume';
+
+const WELCOME_SUGGESTIONS: WelcomeSuggestionAction[] = [
+  'surprise',
+  'image',
+  'favorite',
+  'imagine',
+  'remix',
+  'portrait',
+  'cinematic',
+  'resume',
+];
+
+const VISIBLE_SUGGESTION_COUNT = 3;
+const SUGGESTION_ROTATION_MS = 12_000;
 
 interface WelcomeScreenProps {
   lang: Language;
+  onSelectSuggestion?: (suggestion: WelcomeSuggestionAction) => void;
 }
 
-export const WelcomeScreen = ({ lang }: WelcomeScreenProps) => {
+const SuggestionIcon = ({ suggestion }: { suggestion: WelcomeSuggestionAction }) => {
+  if (suggestion === 'surprise') return <DiceIcon size={23} />;
+  if (suggestion === 'image') return <CameraIcon size={23} />;
+  if (suggestion === 'favorite') return <HeartIcon size={23} filled />;
+  if (suggestion === 'imagine') return <SparklesIcon size={23} />;
+  if (suggestion === 'remix') return <MagicWandIcon size={23} />;
+  if (suggestion === 'portrait') return <StarIcon size={23} />;
+  if (suggestion === 'cinematic') return <ComposeIcon size={23} />;
+  return <RefreshIcon size={23} />;
+};
+
+export const WelcomeScreen = ({ lang, onSelectSuggestion }: WelcomeScreenProps) => {
   const t = translations[lang];
+  const [rotationStart, setRotationStart] = useState(0);
+  const [rotationPaused, setRotationPaused] = useState(false);
+  const suggestionLabels: Record<WelcomeSuggestionAction, string> = {
+    surprise: t.welcomeSurprise,
+    image: t.welcomeImage,
+    favorite: t.welcomeFavorite,
+    imagine: t.welcomeImagine,
+    remix: t.welcomeRemix,
+    portrait: t.welcomePortrait,
+    cinematic: t.welcomeCinematic,
+    resume: t.welcomeResume,
+  };
+  const visibleSuggestions = Array.from({ length: VISIBLE_SUGGESTION_COUNT }, (_, index) => (
+    WELCOME_SUGGESTIONS[(rotationStart + index) % WELCOME_SUGGESTIONS.length]
+  ));
+
+  useEffect(() => {
+    if (rotationPaused) return;
+    const interval = window.setInterval(() => {
+      setRotationStart(current => (current + VISIBLE_SUGGESTION_COUNT) % WELCOME_SUGGESTIONS.length);
+    }, SUGGESTION_ROTATION_MS);
+    return () => window.clearInterval(interval);
+  }, [rotationPaused]);
+
+  const rotateSuggestions = () => {
+    setRotationStart(current => (current + VISIBLE_SUGGESTION_COUNT) % WELCOME_SUGGESTIONS.length);
+  };
+
   return (
     <div className="welcome-screen">
       <div className="welcome-icon">
@@ -23,6 +89,41 @@ export const WelcomeScreen = ({ lang }: WelcomeScreenProps) => {
         </svg>
       </div>
       <h1>{t.welcomeText}</h1>
+      <div
+        className="welcome-suggestions-shell"
+        onMouseEnter={() => setRotationPaused(true)}
+        onMouseLeave={() => setRotationPaused(false)}
+        onFocusCapture={() => setRotationPaused(true)}
+        onBlurCapture={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRotationPaused(false);
+        }}
+      >
+        <button
+          type="button"
+          className="welcome-suggestions-refresh"
+          onClick={rotateSuggestions}
+          aria-label={t.welcomeRotateSuggestions}
+          title={t.welcomeRotateSuggestions}
+        >
+          <RefreshIcon size={15} />
+        </button>
+        <div key={rotationStart} className="welcome-suggestions" aria-label={t.welcomeSuggestionsLabel}>
+          {visibleSuggestions.map(suggestion => (
+            <button
+              type="button"
+              className="welcome-suggestion"
+              data-suggestion={suggestion}
+              key={suggestion}
+              onClick={() => onSelectSuggestion?.(suggestion)}
+            >
+              <span className="welcome-suggestion-icon" aria-hidden="true">
+                <SuggestionIcon suggestion={suggestion} />
+              </span>
+              <span>{suggestionLabels[suggestion]}</span>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 };

@@ -103,7 +103,24 @@ test('renders the localized welcome screen', () => {
   const english = renderToStaticMarkup(React.createElement(WelcomeScreen, { lang: 'en' }));
 
   assert.match(french, /Que souhaitez-vous créer/);
+  assert.match(french, /Surprends-moi/);
+  assert.match(french, /Créer depuis une image/);
+  assert.match(french, /Inspire-toi de mes favoris/);
   assert.match(english, /What would you like to create/);
+  assert.match(english, /Surprise me/);
+  assert.doesNotMatch(french, /Comparer/);
+});
+
+test('wires rotating welcome suggestions to existing creation actions', () => {
+  const welcomeSource = readFileSync('src/components/chat/WelcomeScreen.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+
+  assert.match(welcomeSource, /SUGGESTION_ROTATION_MS = 12_000/);
+  assert.match(welcomeSource, /current \+ VISIBLE_SUGGESTION_COUNT/);
+  assert.match(chatSource, /suggestion === 'surprise' \|\| suggestion === 'remix'/);
+  assert.match(chatSource, /void loadSavedPrompt\('favorite'\)/);
+  assert.match(chatSource, /const loadLatestPrompt = async/);
+  assert.match(chatSource, /onClick=\{openImageImport\}/);
 });
 
 test('truncates long message text while keeping short text intact', () => {
@@ -172,6 +189,15 @@ test('loads confirmation dialog styles without opening settings', () => {
   assert.match(appCss, /\.confirm-btn\.delete\s*\{/);
 });
 
+test('deletes empty chats immediately and asks for confirmation only when content exists', () => {
+  const sessionsSource = readFileSync('src/hooks/useSessions.ts', 'utf8');
+
+  assert.match(sessionsSource, /\?onlyIfEmpty=true/);
+  assert.match(sessionsSource, /response\.status === 409/);
+  assert.match(sessionsSource, /setSessionToDelete\(id\)/);
+  assert.match(sessionsSource, /confirmDeleteSession[\s\S]*?\/api\/history\/\$\{id\}/);
+});
+
 test('keeps the lazy settings loader inside the settings modal', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
   const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
@@ -238,13 +264,68 @@ test('wires vision detail, centered cancellation, stable settings, and exact cha
 
 test('keeps fullscreen image navigation available and supports mouse-wheel zoom', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
+  const appCss = readFileSync('src/App.css', 'utf8');
 
   assert.match(appSource, /const handleLightboxWheel = useCallback/);
   assert.match(appSource, /Math\.exp\(-e\.deltaY \* 0\.0015\)/);
   assert.match(appSource, /Math\.min\(4, Math\.max\(1, zoomScale \* factor\)\)/);
   assert.match(appSource, /onWheel=\{handleLightboxWheel\}/);
   assert.match(appSource, /className="lightbox-btn go-to-chat"[\s\S]*?goToImage\(activeLightbox\.sessionId, activeLightbox\.messageId\)/);
+  assert.match(appSource, /if \(source === 'gallery'\)\s*\{\s*goToImage\(sessionId, messageId\)/);
+  assert.match(appSource, /else \{\s*closeLightbox\(\)/);
+  assert.match(appSource, /const touchedImage = \(e\.target as HTMLElement\)\.closest\('\.lightbox-hd, \.lightbox-thumb'\) !== null/);
+  assert.match(appSource, /e\.touches\.length === 0 && zoomScale === 1 && touchedImage[\s\S]*?suppressLightboxClickRef\.current = true/);
+  assert.doesNotMatch(appCss, /\.lightbox-btn\.go-to-chat\s*\{[^}]*background:\s*var\(--accent\)/);
   assert.match(appSource, /onTouchStart=\{handleLightboxTouchStart\}[\s\S]*?onTouchMove=\{handleLightboxTouchMove\}/);
+});
+
+test('adds a fullscreen image to favorites on double click without removing an existing favorite', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /const handleLightboxImageDoubleClick = useCallback/);
+  assert.match(appSource, /closest\('\.lightbox-hd, \.lightbox-thumb'\)/);
+  assert.match(appSource, /if \(currentItem\?\.isFavorite === 1\) return;/);
+  assert.match(appSource, /toggleFavorite\(activeLightbox\.sessionId, activeLightbox\.messageId, 0\)/);
+  assert.match(appSource, /onDoubleClick=\{handleLightboxImageDoubleClick\}/);
+});
+
+test('closes the lightbox action menu when the fullscreen image is tapped', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const handlerStart = appSource.indexOf('const handleLightboxImageClick = useCallback');
+  const handlerEnd = appSource.indexOf('const handleLightboxImageDoubleClick', handlerStart);
+  const handlerSource = appSource.slice(handlerStart, handlerEnd);
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  assert.ok(handlerSource.indexOf('if (showLightboxMenu)') < handlerSource.indexOf('if (suppressLightboxClickRef.current)'));
+  assert.match(handlerSource, /if \(showLightboxMenu\) \{[\s\S]*?setShowLightboxMenu\(false\);[\s\S]*?e\.stopPropagation\(\);[\s\S]*?return;/);
+});
+
+test('keeps the lightbox regeneration menu open until one second after the last click', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /const scheduleLightboxMenuClose = useCallback\([\s\S]*?window\.clearTimeout\(lightboxMenuCloseTimeoutRef\.current\)[\s\S]*?setShowLightboxMenu\(false\);[\s\S]*?}, 1000\)/);
+  assert.match(appSource, /const regenerateLightboxImage = async \(\) => \{[\s\S]*?scheduleLightboxMenuClose\(\);\s*recordRegeneration\(messageId\)/);
+  assert.match(appSource, /onClick=\{\(\) => void regenerateLightboxImage\(\)\}/);
+});
+
+test('lets the final prompt scroll on touch devices without closing the lightbox', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const appCss = readFileSync('src/App.css', 'utf8');
+
+  assert.match(appSource, /className="lightbox-prompt-panel"[\s\S]*?onTouchStart=\{\(event\) => event\.stopPropagation\(\)\}[\s\S]*?onTouchMove=\{\(event\) => event\.stopPropagation\(\)\}[\s\S]*?onTouchEnd=\{\(event\) => event\.stopPropagation\(\)\}/);
+  assert.match(appCss, /\.lightbox-prompt-panel\s*\{[^}]*overflow:\s*auto;[^}]*touch-action:\s*pan-y;[^}]*overscroll-behavior-y:\s*contain;[^}]*-webkit-overflow-scrolling:\s*touch;/);
+});
+
+test('uses stacked, bounded admin cards on mobile settings screens', () => {
+  const queueCss = readFileSync('src/components/settings/AdminQueuePanel.css', 'utf8');
+  const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
+
+  assert.match(queueCss, /\.admin-queue-panel\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%/);
+  assert.match(queueCss, /@media \(max-width:\s*640px\)[\s\S]*?\.admin-queue-summary\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(queueCss, /\.admin-queue-summary span\s*\{[\s\S]*?gap:\s*0\.25rem/);
+  assert.match(queueCss, /\.admin-queue-item p\s*\{[\s\S]*?-webkit-line-clamp:\s*3/);
+  assert.match(settingsCss, /grid-template-areas:\s*"level source direction duration"\s*"time time time time"\s*"message message message message"/);
+  assert.match(settingsCss, /\.admin-log-message\s*\{[\s\S]*?white-space:\s*normal;[\s\S]*?-webkit-line-clamp:\s*2/);
 });
 
 test('keeps large settings data out of generation requests', () => {

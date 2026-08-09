@@ -38,6 +38,7 @@ import {
   MAX_CLIPBOARD_PROMPT_LENGTH,
   normalizeClipboardPrompt,
 } from './utils/clipboardAutoGenerate';
+import { toGenerationRequestParams } from './utils/generationParams';
 
 const SettingsModal = lazy(() => importWithRecovery(() => import('./components/settings/SettingsModal')).then(module => ({
   default: module.SettingsModal
@@ -48,6 +49,30 @@ const StatisticsDashboard = lazy(() => importWithRecovery(() => import('./compon
 const ComparisonView = lazy(() => importWithRecovery(() => import('./components/comparison/ComparisonView')).then(module => ({
   default: module.ComparisonView
 })));
+
+const isLuckyCoherenceTag = (tag: PromptTag) => (
+  !['subject', 'count', 'lighting', 'pose', 'shot'].includes(tag.category)
+  && !['photorealistic', 'nature'].includes(tag.slug)
+);
+
+const normalizeLuckyReferenceConnections = (references: LuckyReference[]) => references.map((reference) => {
+  const connections = references
+    .filter(other => other.messageId !== reference.messageId)
+    .map(other => ({
+      messageId: other.messageId,
+      tags: (reference.tags || []).filter(tag => (
+        isLuckyCoherenceTag(tag)
+        && (other.tags || []).some(otherTag => otherTag.slug === tag.slug)
+      )),
+    }))
+    .filter(connection => connection.tags.length > 0);
+  const matchingSlugs = new Set(connections.flatMap(connection => connection.tags.map(tag => tag.slug)));
+  return {
+    ...reference,
+    matchingTags: (reference.tags || []).filter(tag => matchingSlugs.has(tag.slug)),
+    connections,
+  };
+});
 const OnboardingWizard = lazy(() => importWithRecovery(() => import('./components/onboarding/OnboardingWizard')).then(module => ({
   default: module.OnboardingWizard
 })));
@@ -557,12 +582,28 @@ function App() {
   const [keepModifySeed, setKeepModifySeed] = useState(true);
   const [isModifyingImage, setIsModifyingImage] = useState(false);
   const [isGeneratingRandomFavorite, setIsGeneratingRandomFavorite] = useState(false);
-  const lightboxChatWasNavigatedRef = useRef(false);
   const lightboxMenuRef = useRef<HTMLDivElement>(null);
+  const lightboxMenuCloseTimeoutRef = useRef<number | null>(null);
+
+  const scheduleLightboxMenuClose = useCallback(() => {
+    if (lightboxMenuCloseTimeoutRef.current !== null) {
+      window.clearTimeout(lightboxMenuCloseTimeoutRef.current);
+    }
+    lightboxMenuCloseTimeoutRef.current = window.setTimeout(() => {
+      lightboxMenuCloseTimeoutRef.current = null;
+      setShowLightboxMenu(false);
+    }, 1000);
+  }, []);
+
+  useEffect(() => {
+    if (showLightboxMenu || lightboxMenuCloseTimeoutRef.current === null) return;
+    window.clearTimeout(lightboxMenuCloseTimeoutRef.current);
+    lightboxMenuCloseTimeoutRef.current = null;
+  }, [showLightboxMenu]);
 
   const closeLightbox = useCallback(() => {
     const lightbox = activeLightbox;
-    const shouldRealignChat = lightbox?.source === 'chat' && lightboxChatWasNavigatedRef.current;
+    const shouldRealignChat = lightbox?.source === 'chat';
 
     if (shouldRealignChat) {
       if (scrollRequestTimeoutRef.current !== null) {
@@ -588,7 +629,6 @@ function App() {
     }
 
     setActiveLightbox(null);
-    lightboxChatWasNavigatedRef.current = false;
   }, [activeLightbox]);
 
   const [hdLoaded, setHdLoaded] = useState<string | null>(null);
@@ -617,6 +657,9 @@ function App() {
 
   useEffect(() => () => {
     Object.values(regenerationCountTimeoutsRef.current).forEach(window.clearTimeout);
+    if (lightboxMenuCloseTimeoutRef.current !== null) {
+      window.clearTimeout(lightboxMenuCloseTimeoutRef.current);
+    }
   }, []);
 
   // Pinch-to-zoom states
@@ -773,6 +816,18 @@ function App() {
 
   const handleLightboxTouchEnd = (e: React.TouchEvent) => {
     const tap = lightboxTapGesture.current;
+    const touchedImage = (e.target as HTMLElement).closest('.lightbox-hd, .lightbox-thumb') !== null;
+
+    // On touch devices, the browser emits a synthetic click after a tap. Keep a
+    // simple tap on the fullscreen image inert on mobile; the close button stays
+    // available while swipe and pinch gestures continue to work normally.
+    if (e.touches.length === 0 && zoomScale === 1 && touchedImage) {
+      suppressLightboxClickRef.current = true;
+      window.setTimeout(() => {
+        suppressLightboxClickRef.current = false;
+      }, 500);
+    }
+
     if (tap?.moved) {
       suppressLightboxClickRef.current = true;
       window.setTimeout(() => {
@@ -885,6 +940,7 @@ function App() {
 
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
   const [galleryTotal, setGalleryTotal] = useState(0);
+  const [galleryStartIndex, setGalleryStartIndex] = useState(0);
   const galleryItemsRef = useRef<GalleryItem[]>([]);
   const [hasMoreGallery, setHasMoreGallery] = useState(true);
   const hasMoreGalleryRef = useRef(true);
@@ -1033,15 +1089,9 @@ function App() {
       isFavorite: item.isFavorite,
       tags: item.tags || [],
       matchingTags: [],
+      connections: [],
     }));
-    const normalizedReferences = references.map(reference => ({
-      ...reference,
-      matchingTags: reference.tags.filter(tag => (
-        tag.category !== 'subject'
-        && tag.category !== 'count'
-        && references.some(other => other.messageId !== reference.messageId && other.tags.some(otherTag => otherTag.slug === tag.slug))
-      )),
-    }));
+    const normalizedReferences = normalizeLuckyReferenceConnections(references);
     setLuckyReferencePreview({
       keywords: '',
       references: normalizedReferences,
@@ -1060,7 +1110,6 @@ function App() {
     } else {
       clickTimeoutRef.current = window.setTimeout(() => {
         clickTimeoutRef.current = null;
-        lightboxChatWasNavigatedRef.current = false;
         setActiveLightbox({ 
           url: item.url, 
           thumbnailUrl: item.thumbnailUrl, 
@@ -1086,40 +1135,6 @@ function App() {
 
     closeLightbox();
   }, [closeLightbox, showLightboxMenu]);
-
-  const handleLightboxImageClick = useCallback((e: React.MouseEvent) => {
-    if (suppressLightboxClickRef.current) {
-      suppressLightboxClickRef.current = false;
-      e.stopPropagation();
-      return;
-    }
-
-    if (showLightboxMenu) {
-      setShowLightboxMenu(false);
-      e.stopPropagation();
-      return;
-    }
-
-    if (e.target === e.currentTarget) {
-      closeLightbox();
-      return;
-    }
-
-    e.stopPropagation();
-    if (!activeLightbox) return;
-    if (clickTimeoutRef.current) {
-      clearTimeout(clickTimeoutRef.current);
-      clickTimeoutRef.current = null;
-      const currentItem = activeLightbox.source === 'chat' 
-        ? messages.find(m => m.id === activeLightbox.messageId)
-        : galleryItems.find(m => m.messageId === activeLightbox.messageId);
-      toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, currentItem?.isFavorite);
-    } else {
-      clickTimeoutRef.current = window.setTimeout(() => {
-        clickTimeoutRef.current = null;
-      }, 350);
-    }
-  }, [activeLightbox, closeLightbox, galleryItems, messages, showLightboxMenu, toggleFavorite]);
 
   const [comfyModels, setComfyModels] = useState<string[]>([]);
   const [diffusionModels, setDiffusionModels] = useState<string[]>([]);
@@ -1596,13 +1611,14 @@ function App() {
     }
   }, []);
 
-  const fetchGallery = useCallback(async (isInitial = false): Promise<GalleryItem[]> => {
-    if (!isInitial && isFetchingGalleryRef.current) {
+  const fetchGallery = useCallback(async (isInitial = false, requestedOffset?: number): Promise<GalleryItem[]> => {
+    const isSeek = Number.isInteger(requestedOffset) && (requestedOffset ?? 0) >= 0;
+    if (!isInitial && !isSeek && isFetchingGalleryRef.current) {
       return galleryFetchPromiseRef.current ?? [];
     }
-    if (!isInitial && !hasMoreGalleryRef.current) return [];
+    if (!isInitial && !isSeek && !hasMoreGalleryRef.current) return [];
 
-    const requestId = isInitial ? ++galleryRequestRef.current : galleryRequestRef.current;
+    const requestId = isInitial || isSeek ? ++galleryRequestRef.current : galleryRequestRef.current;
     let resolveFetch!: (items: GalleryItem[]) => void;
     const fetchPromise = new Promise<GalleryItem[]>(resolve => {
       resolveFetch = resolve;
@@ -1613,7 +1629,7 @@ function App() {
     isFetchingGalleryRef.current = true;
     setIsFetchingGallery(true);
     
-    const currentOffset = isInitial ? 0 : galleryOffsetRef.current;
+    const currentOffset = isInitial ? 0 : (isSeek ? requestedOffset! : galleryOffsetRef.current);
     try {
       const query = new URLSearchParams({
         limit: '25',
@@ -1621,7 +1637,7 @@ function App() {
         favoritesOnly: String(favoritesOnly),
         includeTotal: 'true',
       });
-      if (!isInitial && galleryCursorRef.current) {
+      if (!isInitial && !isSeek && galleryCursorRef.current) {
         query.set('cursorTimestamp', String(galleryCursorRef.current.timestamp));
         query.set('cursorId', galleryCursorRef.current.id);
       } else {
@@ -1649,13 +1665,17 @@ function App() {
         ? responseData.nextCursor as { timestamp: number; id: string }
         : null;
 
-      if (isInitial) {
+      if (isInitial || isSeek) {
         loadedItems = data;
         galleryItemsRef.current = data;
         setGalleryItems(data);
-        galleryOffsetRef.current = data.length;
+        setGalleryStartIndex(currentOffset);
+        galleryOffsetRef.current = currentOffset + data.length;
         galleryCursorRef.current = nextCursor;
-        hasMoreGalleryRef.current = Boolean(nextCursor) || data.length === 25;
+        const total = typeof responseData?.total === 'number'
+          ? responseData.total
+          : currentOffset + data.length + (nextCursor ? 1 : 0);
+        hasMoreGalleryRef.current = currentOffset + data.length < total && (Boolean(nextCursor) || data.length === 25);
         setHasMoreGallery(hasMoreGalleryRef.current);
       } else if (data.length > 0) {
         const existingIds = new Set(galleryItemsRef.current.map(item => item.messageId));
@@ -1686,6 +1706,13 @@ function App() {
     return loadedItems;
   }, [showArchivedInGallery, favoritesOnly, selectedPromptTags, debouncedGallerySearch]);
 
+  const seekGallery = useCallback((targetIndex: number) => {
+    const lastIndex = Math.max(0, galleryTotal - 1);
+    const target = Math.min(lastIndex, Math.max(0, Math.round(targetIndex)));
+    const offset = Math.min(target, Math.max(0, galleryTotal - 25));
+    return fetchGallery(false, offset);
+  }, [fetchGallery, galleryTotal]);
+
   const observer = useRef<IntersectionObserver | null>(null);
   const lastImageElementRef = useCallback((node: HTMLDivElement) => {
     if (isFetchingGallery) return;
@@ -1703,6 +1730,7 @@ function App() {
   const resetGallery = useCallback(() => {
     galleryOffsetRef.current = 0;
     galleryCursorRef.current = null;
+    setGalleryStartIndex(0);
     hasMoreGalleryRef.current = true;
     setGalleryItems([]);
     setHasMoreGallery(true);
@@ -1777,6 +1805,71 @@ function App() {
     setView('chat');
     void fetchSessionDetails(sessionId, { all: true, reset: true });
   }, [fetchSessionDetails, setCurrentSessionId, setMessages]);
+
+  const handleLightboxImageClick = useCallback((e: React.MouseEvent) => {
+    if (showLightboxMenu) {
+      suppressLightboxClickRef.current = false;
+      setShowLightboxMenu(false);
+      e.stopPropagation();
+      return;
+    }
+
+    if (suppressLightboxClickRef.current) {
+      suppressLightboxClickRef.current = false;
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.target === e.currentTarget) {
+      closeLightbox();
+      return;
+    }
+
+    e.stopPropagation();
+    if (!activeLightbox) return;
+
+    if (zoomScale > 1) {
+      setZoomScale(1);
+      setZoomOffset({ x: 0, y: 0 });
+      return;
+    }
+
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+      return;
+    } else {
+      const { source, sessionId, messageId } = activeLightbox;
+      clickTimeoutRef.current = window.setTimeout(() => {
+        clickTimeoutRef.current = null;
+        if (source === 'gallery') {
+          goToImage(sessionId, messageId);
+          setActiveLightbox(null);
+        } else {
+          closeLightbox();
+        }
+      }, 350);
+    }
+  }, [activeLightbox, closeLightbox, goToImage, showLightboxMenu, zoomScale]);
+
+  const handleLightboxImageDoubleClick = useCallback((e: React.MouseEvent) => {
+    const clickedImage = (e.target as HTMLElement).closest('.lightbox-hd, .lightbox-thumb');
+    if (!clickedImage || !activeLightbox) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    if (clickTimeoutRef.current !== null) {
+      window.clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+
+    const currentItem = activeLightbox.source === 'chat'
+      ? messages.find(message => message.id === activeLightbox.messageId)
+      : galleryItems.find(item => item.messageId === activeLightbox.messageId);
+    if (currentItem?.isFavorite === 1) return;
+
+    void toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, 0);
+  }, [activeLightbox, galleryItems, messages, toggleFavorite]);
 
   useEffect(() => {
     if (view !== 'chat' || !imageAnchorRequest) return;
@@ -1894,7 +1987,6 @@ function App() {
       const nextIndex = (currentIndex + direction + items.length) % items.length;
       const next = items[nextIndex];
       setHdLoaded(null);
-      lightboxChatWasNavigatedRef.current = true;
       setActiveLightbox({
         url: next.imageUrl!,
         thumbnailUrl: next.thumbnailUrl,
@@ -2101,14 +2193,10 @@ function App() {
     };
   }, [clipboardAutoGenerateSupported, isAuthenticated, params.clipboardAutoGenerate, t.clipboardAutoGeneratePermissionDenied, t.clipboardAutoGenerateStarted, t.clipboardAutoGenerateTooLong]);
 
-  const normalizeLuckyReferences = useCallback((references: LuckyReference[]) => references.map((reference) => ({
-    ...reference,
-    matchingTags: (reference.tags || []).filter((tag) => (
-      tag.category !== 'subject'
-      && tag.category !== 'count'
-      && references.some((other) => other.messageId !== reference.messageId && (other.tags || []).some((otherTag) => otherTag.slug === tag.slug))
-    )),
-  })), []);
+  const normalizeLuckyReferences = useCallback(
+    (references: LuckyReference[]) => normalizeLuckyReferenceConnections(references),
+    []
+  );
 
   const readLuckyError = useCallback((data: { code?: string; error?: string }) => {
     if (data.code === 'NO_LIKED_PROMPTS') return t.luckyNeedsFavorites;
@@ -2172,6 +2260,7 @@ function App() {
     try {
       let targetSessionId: string | undefined = currentSessionId ?? undefined;
       if (!targetSessionId) targetSessionId = await createNewSession();
+      if (!targetSessionId) throw new Error(t.luckyPromptFailed);
 
       const response = await fetch(`${API_BASE}/api/llm/lucky-prompt`, {
         method: 'POST',
@@ -2183,23 +2272,42 @@ function App() {
           keywords: preview.keywords,
           referenceIds: preview.references.map((reference) => reference.messageId),
           guidance: preview.guidance,
+          sessionId: targetSessionId,
+          params: toGenerationRequestParams(params),
         }),
         credentials: 'include',
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(readLuckyError(data));
-      if (!data.prompt?.trim()) throw new Error(t.luckyPromptFailed);
+      if (!response.ok || !data.prompt?.trim()) {
+        if (data.recoveryMessageId) {
+          await fetchSessionDetails(targetSessionId, { all: true, reset: true });
+        }
+        if (!response.ok) throw new Error(readLuckyError(data));
+        throw new Error(t.luckyPromptFailed);
+      }
 
       // The lucky prompt is complete. Remove its dedicated loading card before
       // handleSend adds the pending generation card, so both states never overlap.
       setIsCreatingLuckyPrompt(false);
-      await handleSend(data.prompt.trim(), false, targetSessionId, true);
+      await handleSend(
+        data.prompt.trim(),
+        false,
+        targetSessionId,
+        true,
+        false,
+        false,
+        data.negativePrompt?.trim() ? { negativePrompt: data.negativePrompt.trim() } : undefined,
+        {
+          messageId: typeof data.recoveryMessageId === 'string' ? data.recoveryMessageId : undefined,
+          userMessageId: typeof data.recoveryUserMessageId === 'string' ? data.recoveryUserMessageId : undefined,
+        }
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t.luckyPromptFailed);
     } finally {
       setIsCreatingLuckyPrompt(false);
     }
-  }, [createNewSession, currentSessionId, handleSend, isCreatingLuckyPrompt, luckyReferencePreview, params.llmProviderId, params.luckyFavoriteCount, params.luckyTemperature, readLuckyError, t.luckyPromptFailed]);
+  }, [createNewSession, currentSessionId, fetchSessionDetails, handleSend, isCreatingLuckyPrompt, luckyReferencePreview, params, readLuckyError, t.luckyPromptFailed]);
 
   const rerollAllLuckyReferences = useCallback(async () => {
     if (!luckyReferencePreview || luckyRerollingId !== null) return;
@@ -2515,7 +2623,7 @@ function App() {
     if (!prompt.trim()) return;
     const { messageId, sessionId } = activeLightbox;
 
-    setShowLightboxMenu(false);
+    scheduleLightboxMenuClose();
     recordRegeneration(messageId);
     toast.success(t.regenerationStarted);
     try {
@@ -2610,7 +2718,7 @@ function App() {
         )}
         {activeLightbox && (
         <div className={`lightbox ${zoomScale > 1 ? 'zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={lang === 'fr' ? 'Aperçu de l’image' : 'Image preview'} onClick={handleLightboxBackdropClick} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd} onTouchCancel={handleLightboxTouchEnd}>
-          <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick} onWheel={handleLightboxWheel}>
+          <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick} onDoubleClick={handleLightboxImageDoubleClick} onWheel={handleLightboxWheel}>
             {activeLightbox.thumbnailUrl && !isAlreadyLoaded && (
               <img src={getFullImageUrl(activeLightbox.thumbnailUrl)} alt="Loading..." className="lightbox-thumb" style={{ filter: 'blur(10px)', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: hdLoaded === activeLightbox.messageId ? 0 : 1, transition: 'opacity 0.3s ease-out' }} />
             )}
@@ -2624,6 +2732,10 @@ function App() {
               aria-modal="true"
               aria-labelledby="lightbox-prompt-title"
               onClick={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
+              onTouchMove={(event) => event.stopPropagation()}
+              onTouchEnd={(event) => event.stopPropagation()}
+              onTouchCancel={(event) => event.stopPropagation()}
             >
               <div className="lightbox-prompt-header">
                 <h2 id="lightbox-prompt-title">{t.finalPrompt}</h2>
@@ -2800,10 +2912,7 @@ function App() {
                       type="button"
                       className="lightbox-menu-item"
                       role="menuitem"
-                      onClick={() => {
-                        setShowLightboxMenu(false);
-                        void regenerateLightboxImage();
-                      }}
+                      onClick={() => void regenerateLightboxImage()}
                     >
                       <span className="lightbox-menu-icon" aria-hidden="true"><RefreshIcon size={18} /></span>
                       <span>{t.regenerate}</span>
@@ -3059,7 +3168,8 @@ function App() {
           retryAllIncomplete={retryAllIncomplete} updatePendingPrompt={updatePendingPrompt}
           interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} openComparison={openComparison} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
           setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} favoritedId={favoritedId}
-          galleryItems={galleryItems} galleryTotal={galleryTotal} isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
+          galleryItems={galleryItems} galleryTotal={galleryTotal} galleryStartIndex={galleryStartIndex} seekGallery={seekGallery}
+          isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
           batchDeleteGalleryItems={batchDeleteGalleryItems} batchRegenerateGalleryItems={batchRegenerateGalleryItems}
           batchLuckyGalleryItems={batchLuckyGalleryItems} batchSetGalleryFavorites={batchSetGalleryFavorites}
           batchSetGalleryPromptFavorites={batchSetGalleryPromptFavorites}

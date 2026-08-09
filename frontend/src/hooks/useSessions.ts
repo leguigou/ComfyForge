@@ -244,23 +244,42 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
     }
   };
 
-  const deleteSession = (e: React.MouseEvent, id: string) => {
+  const removeDeletedSession = (id: string) => {
+    setSessions(prev => prev.filter(session => session.id !== id));
+    if (currentSessionId === id) {
+      setCurrentSessionId(null);
+      setMessages([]);
+    }
+  };
+
+  const deleteSession = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    setSessionToDelete(id);
+    try {
+      const response = await fetch(`${API_BASE}/api/history/${id}?onlyIfEmpty=true`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      if (response.status === 409) {
+        setSessionToDelete(id);
+        return;
+      }
+      if (!response.ok) throw new Error('Failed to delete empty session');
+      removeDeletedSession(id);
+    } catch (err) {
+      console.error('Error deleting session:', err);
+    }
   };
 
   const confirmDeleteSession = async () => {
     if (!sessionToDelete) return;
+    const id = sessionToDelete;
     try {
-      await fetch(`${API_BASE}/api/history/${sessionToDelete}`, { 
-        method: 'DELETE', 
-        credentials: 'include' 
+      const response = await fetch(`${API_BASE}/api/history/${id}`, {
+        method: 'DELETE',
+        credentials: 'include'
       });
-      setSessions(prev => prev.filter(s => s.id !== sessionToDelete));
-      if (currentSessionId === sessionToDelete) {
-        setCurrentSessionId(null);
-        setMessages([]);
-      }
+      if (!response.ok) throw new Error('Failed to delete session');
+      removeDeletedSession(id);
     } catch (err) {
       console.error('Error deleting session:', err);
     } finally {

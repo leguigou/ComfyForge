@@ -17,7 +17,8 @@ export interface LuckyReferenceCandidate {
 }
 
 const GENERIC_TAG_CATEGORIES = new Set(['subject', 'count']);
-const GENERIC_TAG_SLUGS = new Set(['photorealistic']);
+const SUPPORTING_TAG_CATEGORIES = new Set(['lighting', 'pose', 'shot']);
+const GENERIC_TAG_SLUGS = new Set(['photorealistic', 'nature']);
 const GENERIC_PROMPT_WORDS = new Set([
   'a', 'an', 'and', 'avec', 'de', 'des', 'du', 'et', 'femme', 'femmes', 'for', 'girl',
   'girls', 'in', 'la', 'le', 'les', 'of', 'on', 'photo', 'photograph', 'portrait', 'the',
@@ -29,6 +30,28 @@ export const meaningfulTagSlugs = (candidate: LuckyReferenceCandidate) => new Se
     .filter(tag => !GENERIC_TAG_CATEGORIES.has(tag.category) && !GENERIC_TAG_SLUGS.has(tag.slug))
     .map(tag => tag.slug)
 );
+
+// Composition, camera and lighting tags are useful supporting traits, but they
+// are too broad to prove that two reference images depict a related idea. A
+// coherent link must come from a semantic tag such as appearance, content,
+// setting, style or a distinctive detail.
+export const coherenceTagSlugs = (candidate: LuckyReferenceCandidate) => new Set(
+  candidate.tags
+    .filter(tag => (
+      !GENERIC_TAG_CATEGORIES.has(tag.category)
+      && !SUPPORTING_TAG_CATEGORIES.has(tag.category)
+      && !GENERIC_TAG_SLUGS.has(tag.slug)
+    ))
+    .map(tag => tag.slug)
+);
+
+export const sharedCoherenceTagSlugs = (
+  left: LuckyReferenceCandidate,
+  right: LuckyReferenceCandidate
+) => {
+  const leftTags = coherenceTagSlugs(left);
+  return [...coherenceTagSlugs(right)].filter(tag => leftTags.has(tag));
+};
 
 const promptTokens = (prompt: string) => new Set(
   prompt
@@ -51,10 +74,7 @@ export const promptSimilarity = (left: string, right: string) => {
 export const shareMeaningfulTag = (
   left: LuckyReferenceCandidate,
   right: LuckyReferenceCandidate
-) => {
-  const leftTags = meaningfulTagSlugs(left);
-  return [...meaningfulTagSlugs(right)].some(tag => leftTags.has(tag));
-};
+) => sharedCoherenceTagSlugs(left, right).length > 0;
 
 const candidateWeight = (candidate: LuckyReferenceCandidate, now: number) => {
   const favoriteBoost = candidate.isFavorite === 1 ? 2 : 1;
@@ -79,8 +99,39 @@ const weightedShuffle = (
 const canJoinSelection = (
   candidate: LuckyReferenceCandidate,
   selected: LuckyReferenceCandidate[]
-) => selected.some(reference => shareMeaningfulTag(candidate, reference))
+) => selected.every(reference => shareMeaningfulTag(candidate, reference))
   && selected.every(reference => promptSimilarity(candidate.prompt, reference.prompt) < 0.72);
+
+const sharedTagScore = (
+  candidate: LuckyReferenceCandidate,
+  selected: LuckyReferenceCandidate[]
+) => selected.reduce((score, reference) => (
+  score + sharedCoherenceTagSlugs(candidate, reference).length
+), 0);
+
+const extendCoherentSelection = (
+  ordered: LuckyReferenceCandidate[],
+  count: number,
+  initial: LuckyReferenceCandidate[]
+) => {
+  const selected = [...initial];
+  while (selected.length < count) {
+    let bestCandidate: LuckyReferenceCandidate | undefined;
+    let bestScore = -1;
+    for (const candidate of ordered) {
+      if (selected.some(reference => reference.messageId === candidate.messageId)) continue;
+      if (!canJoinSelection(candidate, selected)) continue;
+      const score = sharedTagScore(candidate, selected);
+      if (score > bestScore) {
+        bestCandidate = candidate;
+        bestScore = score;
+      }
+    }
+    if (!bestCandidate) break;
+    selected.push(bestCandidate);
+  }
+  return selected;
+};
 
 export const selectLuckyReferences = (
   candidates: LuckyReferenceCandidate[],
@@ -103,24 +154,19 @@ export const selectLuckyReferences = (
   const ordered = weightedShuffle(pool, random, now);
 
   if (anchors.length > 0) {
-    return ordered
-      .filter(candidate => canJoinSelection(candidate, anchors))
-      .slice(0, Math.max(1, count));
+    return extendCoherentSelection(ordered, anchors.length + Math.max(1, count), anchors)
+      .slice(anchors.length);
   }
 
   let best: LuckyReferenceCandidate[] = [];
   for (const seed of ordered) {
-    const selection = [seed];
-    for (const candidate of ordered) {
-      if (selection.length >= count) break;
-      if (candidate.messageId === seed.messageId) continue;
-      if (canJoinSelection(candidate, selection)) selection.push(candidate);
-    }
+    const selection = extendCoherentSelection(ordered, count, [seed]);
     if (selection.length > best.length) best = selection;
     if (best.length >= count) break;
   }
 
-  return best.length >= 2 ? best : [];
+  const minimumSize = Math.min(Math.max(2, count), 3);
+  return best.length >= minimumSize ? best : [];
 };
 
 export const matchingReferenceTags = (
@@ -129,11 +175,19 @@ export const matchingReferenceTags = (
 ) => {
   const others = references.filter(reference => reference.messageId !== candidate.messageId);
   const commonSlugs = new Set<string>();
-  const candidateTags = meaningfulTagSlugs(candidate);
   others.forEach(reference => {
-    meaningfulTagSlugs(reference).forEach(slug => {
-      if (candidateTags.has(slug)) commonSlugs.add(slug);
-    });
+    sharedCoherenceTagSlugs(candidate, reference).forEach(slug => commonSlugs.add(slug));
   });
   return candidate.tags.filter(tag => commonSlugs.has(tag.slug));
 };
+
+export const referenceConnections = (
+  candidate: LuckyReferenceCandidate,
+  references: LuckyReferenceCandidate[]
+) => references
+  .filter(reference => reference.messageId !== candidate.messageId)
+  .map(reference => ({
+    messageId: reference.messageId,
+    tags: candidate.tags.filter(tag => sharedCoherenceTagSlugs(candidate, reference).includes(tag.slug)),
+  }))
+  .filter(connection => connection.tags.length > 0);

@@ -529,6 +529,38 @@ describe('API security boundaries', () => {
     expect(fs.existsSync(victimFile)).toBe(false);
   });
 
+  it('deletes an empty chat immediately but refuses conditional deletion once it has content', async () => {
+    const emptyResponse = await request('/api/history', { method: 'POST', cookie: adminCookie });
+    const emptySession = await emptyResponse.json() as { id: string };
+    const emptyDelete = await request(`/api/history/${emptySession.id}?onlyIfEmpty=true`, {
+      method: 'DELETE',
+      cookie: adminCookie,
+    });
+    expect(emptyDelete.status).toBe(200);
+    expect(db.prepare('SELECT id FROM sessions WHERE id = ?').get(emptySession.id)).toBeUndefined();
+
+    const populatedResponse = await request('/api/history', { method: 'POST', cookie: adminCookie });
+    const populatedSession = await populatedResponse.json() as { id: string };
+    db.prepare(`
+      INSERT INTO messages (id, sessionId, role, text, timestamp, status)
+      VALUES (?, ?, 'user', 'Keep this message', ?, 'completed')
+    `).run('conditional-delete-message', populatedSession.id, Date.now());
+
+    const conditionalDelete = await request(`/api/history/${populatedSession.id}?onlyIfEmpty=true`, {
+      method: 'DELETE',
+      cookie: adminCookie,
+    });
+    expect(conditionalDelete.status).toBe(409);
+    expect(await json(conditionalDelete)).toMatchObject({ code: 'SESSION_NOT_EMPTY' });
+    expect(db.prepare('SELECT id FROM sessions WHERE id = ?').get(populatedSession.id)).toBeTruthy();
+
+    const confirmedDelete = await request(`/api/history/${populatedSession.id}`, {
+      method: 'DELETE',
+      cookie: adminCookie,
+    });
+    expect(confirmedDelete.status).toBe(200);
+  });
+
   it('externalizes legacy companion sprites and isolates their files by user', async () => {
     const username = 'companion-owner';
     const createResponse = await request('/api/users', {
@@ -696,6 +728,131 @@ describe('API security boundaries', () => {
       expect(failedRecovery.generationPrompt).toBe('Prompt saved before a failed LLM call');
     } finally {
       postSpy.mockRestore();
+    }
+  });
+
+  it('persists Lucky messages before the LLM response and stores the completed prompt for recovery', async () => {
+    const { encryptApiKey } = await import('../services/llm-providers');
+    const providerId = 'lucky-recovery-provider';
+    const referenceId = 'lucky-recovery-reference';
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO llm_providers (
+        id, userId, name, type, baseUrl, model, apiKey, isActive, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      providerId,
+      adminId,
+      'Lucky recovery test',
+      'openai',
+      'https://lucky.example.test',
+      'lucky-test-model',
+      encryptApiKey('test-api-key'),
+      0,
+      now,
+      now,
+    );
+    db.prepare(`
+      INSERT INTO messages (
+        id, sessionId, role, text, prompt, generationPrompt, imageUrl, timestamp, status
+      ) VALUES (?, ?, 'bot', '', ?, ?, ?, ?, 'completed')
+    `).run(
+      referenceId,
+      adminSessionId,
+      'A blonde woman beside a swimming pool wearing a green swimsuit',
+      'A blonde woman beside a swimming pool wearing a green swimsuit',
+      '/api/image-files/lucky-reference.webp',
+      now - 1000,
+    );
+
+    let resolveProviderRequest: ((value: any) => void) | undefined;
+    const providerResponse = {
+      data: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              positive: 'Durably recovered Lucky prompt',
+              negative: 'Durably recovered negative prompt',
+            }),
+          },
+        }],
+      },
+    };
+    const postSpy = vi.spyOn(axios, 'post').mockImplementationOnce(() => new Promise(resolve => {
+      resolveProviderRequest = resolve;
+    }));
+
+    try {
+      const responsePromise = request('/api/llm/lucky-prompt', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: JSON.stringify({
+          providerId,
+          sessionId: adminSessionId,
+          referenceIds: [referenceId],
+          params: {
+            comfyModel: 'lucky-model.safetensors',
+            workflowFile: 'workflow_lcm.json',
+            width: 768,
+            height: 1024,
+            negativePrompt: 'Initial Lucky negative prompt',
+          },
+        }),
+      });
+
+      let pendingRecovery: { id: string; status: string; generationPrompt: string | null; generationParams: string } | undefined;
+      await vi.waitFor(() => {
+        pendingRecovery = db.prepare(`
+          SELECT id, status, generationPrompt, generationParams
+          FROM messages
+          WHERE sessionId = ? AND role = 'bot'
+            AND generationParams LIKE '%"recoveryKind":"lucky"%'
+          ORDER BY timestamp DESC LIMIT 1
+        `).get(adminSessionId) as typeof pendingRecovery;
+        expect(pendingRecovery?.status).toBe('preparing');
+      });
+      expect(pendingRecovery?.generationPrompt).toBeNull();
+      expect(JSON.parse(pendingRecovery!.generationParams).recoveryStage).toBe('llm-pending');
+
+      const prematureRetry = await request(`/api/generate/retry/${pendingRecovery!.id}`, {
+        method: 'POST',
+        cookie: adminCookie,
+        body: JSON.stringify({ params: {} }),
+      });
+      expect(prematureRetry.status).toBe(409);
+      expect((await json(prematureRetry)).code).toBe('LUCKY_PROMPT_NOT_READY');
+
+      resolveProviderRequest!(providerResponse);
+      const response = await responsePromise;
+      expect(response.status).toBe(200);
+      const body = await json(response);
+      expect(body.recoveryMessageId).toBe(pendingRecovery!.id);
+      expect(body.recoveryUserMessageId).toBeTruthy();
+
+      const recovered = db.prepare(`
+        SELECT status, prompt, generationPrompt, generationParams
+        FROM messages WHERE id = ?
+      `).get(body.recoveryMessageId) as {
+        status: string;
+        prompt: string;
+        generationPrompt: string;
+        generationParams: string;
+      };
+      expect(recovered.status).toBe('failed');
+      expect(recovered.prompt).toBe('Durably recovered Lucky prompt');
+      expect(recovered.generationPrompt).toBe('Durably recovered Lucky prompt');
+      expect(JSON.parse(recovered.generationParams)).toMatchObject({
+        recoveryKind: 'lucky',
+        recoveryStage: 'prompt-ready',
+        negativePrompt: 'Durably recovered negative prompt',
+      });
+      expect(db.prepare('SELECT text FROM messages WHERE id = ?').get(body.recoveryUserMessageId))
+        .toEqual({ text: 'Durably recovered Lucky prompt' });
+      expect(db.prepare('SELECT id FROM queue WHERE messageId = ?').get(body.recoveryMessageId)).toBeUndefined();
+    } finally {
+      postSpy.mockRestore();
+      db.prepare('DELETE FROM messages WHERE id = ?').run(referenceId);
+      db.prepare('DELETE FROM llm_providers WHERE id = ?').run(providerId);
     }
   });
 
