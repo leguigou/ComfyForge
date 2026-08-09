@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../services/database';
 import { authenticate } from '../middleware/auth';
+import { getUserImageStorageStats } from '../services/image';
 
 const router = express.Router();
 
@@ -39,6 +40,17 @@ const bucketKey = (timestamp: number, granularity: 'day' | 'month', timezoneOffs
     ? `${year}-${month}`
     : `${year}-${month}-${String(localDate.getUTCDate()).padStart(2, '0')}`;
 };
+
+router.get('/storage', authenticate, async (req, res) => {
+  try {
+    const stats = await getUserImageStorageStats(req.user!.id);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(stats);
+  } catch (error) {
+    console.error('[Statistics] Storage inspection failed:', error);
+    return res.status(500).json({ error: 'Unable to inspect image storage' });
+  }
+});
 
 router.get('/', authenticate, (req, res) => {
   const userId = (req as any).user.id as string;

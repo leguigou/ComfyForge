@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { API_BASE } from '../../services/api';
+import { API_BASE, formatBytes } from '../../services/api';
 import type { Language } from '../../types';
 import './StatisticsDashboard.css';
 import { CheckIcon, EyeIcon, SparklesIcon } from '../ui/Icons';
@@ -27,6 +27,13 @@ interface StatisticsData {
   llm: Array<{ kind: 'prompt' | 'vision'; model: string; calls: number; failures: number; averageDurationMs: number | null }>;
 }
 
+interface StorageData {
+  images: { fileCount: number; totalBytes: number };
+  thumbnails: { fileCount: number; totalBytes: number };
+  totalBytes: number;
+  calculatedAt: number;
+}
+
 const copy = {
   fr: {
     eyebrow: 'VUE D’ENSEMBLE', title: 'Statistiques', subtitle: 'Comprenez vos habitudes de création et les performances de votre installation.',
@@ -38,6 +45,7 @@ const copy = {
     tags: 'Analyse des tags', tag: 'Tag', category: 'Catégorie', prompts: 'Prompts associés', lastUse: 'Dernière utilisation', allTags: 'Tous les tags', favoriteTags: 'Tags des images favorites', likedTags: 'Tags des prompts aimés',
     llm: 'Appels LLM', llmHelp: 'Amélioration de prompts et identification d’images', prompt: 'Prompt / créatif', vision: 'Identification image',
     calls: 'Appels', failures: 'Échecs', coverage: 'Données LLM disponibles depuis le', workflows: 'Workflows',
+    storage: 'Espace disque', storageHelp: 'Stockage des fichiers image de votre compte', originalImages: 'Images originales', thumbnailCache: 'Cache des miniatures', storageTotal: 'Total images', files: 'fichiers', storageLoading: 'Calcul de l’espace utilisé…', storageError: 'Impossible de calculer l’espace disque.',
     loading: 'Calcul des statistiques…', error: 'Impossible de charger les statistiques.', retry: 'Réessayer', today: 'Aujourd’hui',
   },
   en: {
@@ -50,6 +58,7 @@ const copy = {
     tags: 'Tag analysis', tag: 'Tag', category: 'Category', prompts: 'Associated prompts', lastUse: 'Last used', allTags: 'All tags', favoriteTags: 'Favorite image tags', likedTags: 'Liked prompt tags',
     llm: 'LLM calls', llmHelp: 'Prompt enhancement and image identification', prompt: 'Prompt / creative', vision: 'Image identification',
     calls: 'Calls', failures: 'Failures', coverage: 'LLM data available since', workflows: 'Workflows',
+    storage: 'Disk space', storageHelp: 'Storage used by image files in your account', originalImages: 'Original images', thumbnailCache: 'Thumbnail cache', storageTotal: 'Total images', files: 'files', storageLoading: 'Calculating storage used…', storageError: 'Unable to calculate disk space.',
     loading: 'Computing statistics…', error: 'Unable to load statistics.', retry: 'Retry', today: 'Today',
   },
 };
@@ -179,6 +188,9 @@ export const StatisticsDashboard = ({ lang }: { lang: Language }) => {
   const [data, setData] = useState<StatisticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [storage, setStorage] = useState<StorageData | null>(null);
+  const [storageLoading, setStorageLoading] = useState(true);
+  const [storageError, setStorageError] = useState(false);
   const [tagSearch, setTagSearch] = useState('');
   const [tagCategory, setTagCategory] = useState('all');
   const [chartMode, setChartMode] = useState<ChartMode>('activity');
@@ -202,6 +214,20 @@ export const StatisticsDashboard = ({ lang }: { lang: Language }) => {
   }, [granularity, rangeEnd, rangeStart]);
 
   useEffect(() => { const controller = load(); return () => controller.abort(); }, [load]);
+
+  const loadStorage = useCallback(() => {
+    const controller = new AbortController();
+    setStorageLoading(true);
+    setStorageError(false);
+    fetch(`${API_BASE}/api/statistics/storage`, { credentials: 'include', signal: controller.signal })
+      .then(response => { if (!response.ok) throw new Error('Storage statistics request failed'); return response.json(); })
+      .then(setStorage)
+      .catch(err => { if (err.name !== 'AbortError') setStorageError(true); })
+      .finally(() => { if (!controller.signal.aborted) setStorageLoading(false); });
+    return controller;
+  }, []);
+
+  useEffect(() => { const controller = loadStorage(); return () => controller.abort(); }, [loadStorage]);
 
   const periodLabel = new Intl.DateTimeFormat(lang, period === 'year'
     ? { year: 'numeric' }
@@ -278,6 +304,25 @@ export const StatisticsDashboard = ({ lang }: { lang: Language }) => {
               <div className="lifetime-stats"><div><strong>{data.totals.conversations}</strong><span>{t.conversations}</span></div><div><strong>{data.totals.favorites}</strong><span>{t.favorites}</span></div><div><strong>{data.totals.likedPrompts}</strong><span>{t.liked}</span></div></div>
             </article>
           </div>
+
+          <article className="dashboard-card storage-card" aria-live="polite">
+            <div className="card-heading storage-heading">
+              <div><h2>{t.storage}</h2><p>{t.storageHelp}</p></div>
+              {storage && !storageLoading && <div className="storage-total"><strong>{formatBytes(storage.totalBytes)}</strong><span>{t.storageTotal}</span></div>}
+            </div>
+            {storageLoading && !storage ? <div className="storage-state"><span className="stats-loader" />{t.storageLoading}</div>
+              : storageError && !storage ? <div className="storage-state error"><span>{t.storageError}</span><button onClick={() => loadStorage()}>{t.retry}</button></div>
+                : storage && <>
+                  <div className="storage-breakdown">
+                    <div className="storage-item originals"><span className="storage-swatch" /><div><span>{t.originalImages}</span><strong>{formatBytes(storage.images.totalBytes)}</strong><small>{storage.images.fileCount.toLocaleString(lang)} {t.files}</small></div></div>
+                    <div className="storage-item thumbnails"><span className="storage-swatch" /><div><span>{t.thumbnailCache}</span><strong>{formatBytes(storage.thumbnails.totalBytes)}</strong><small>{storage.thumbnails.fileCount.toLocaleString(lang)} {t.files}</small></div></div>
+                  </div>
+                  <div className="storage-track" role="img" aria-label={`${t.originalImages}: ${formatBytes(storage.images.totalBytes)}. ${t.thumbnailCache}: ${formatBytes(storage.thumbnails.totalBytes)}.`}>
+                    <span className="originals" style={{ width: `${storage.totalBytes ? storage.images.totalBytes / storage.totalBytes * 100 : 0}%` }} />
+                    <span className="thumbnails" style={{ width: `${storage.totalBytes ? storage.thumbnails.totalBytes / storage.totalBytes * 100 : 0}%` }} />
+                  </div>
+                </>}
+          </article>
 
           <div className="dashboard-grid detail-row">
             <article className="dashboard-card models-card">

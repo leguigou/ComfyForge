@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { WebSocket, WebSocketServer } from 'ws';
 import db from './database';
 import { getTargetComfyUrl, getWorkflow, isComfyConnectionRefused, parseComfyError, releaseComfyMemory } from './comfy';
-import { imagesDir, thumbnailsDir } from './image';
+import { generateThumbnailVariants, getThumbnailFilename, imagesDir, thumbnailsDir } from './image';
 import { QueueTask, GenerationParams, ComfyHistoryEntry } from '../types';
 import { writeAuditLog } from './audit-log';
 import { resolveComfyHistoryImage, ResolvedComfyHistoryImage } from './comfy-history';
@@ -320,16 +320,14 @@ export const processQueue = async () => {
 
     const baseName = `${Date.now()}-${filename.replace(/\.[^/.]+$/, "")}`;
     const fullWebpName = `${baseName}.webp`;
-    const thumbWebpName = `${baseName}_thumb.webp`;
+    const thumbWebpName = getThumbnailFilename(baseName, 400);
     
     await Promise.all([
       sharp(imgResp.data)
+        .rotate()
         .webp({ quality: 85 })
         .toFile(path.join(userImagesDir, fullWebpName)),
-      sharp(imgResp.data)
-        .resize(400, 400, { fit: 'inside', withoutEnlargement: true })
-        .webp({ quality: 70 })
-        .toFile(path.join(userThumbnailsDir, thumbWebpName))
+      generateThumbnailVariants(imgResp.data, userThumbnailsDir, baseName)
     ]);
     
     const imageUrl = `/api/image-files/${userId}/${fullWebpName}`;

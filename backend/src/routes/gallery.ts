@@ -6,6 +6,24 @@ import { attachPromptTags } from '../services/prompt-tags';
 
 const router = express.Router();
 
+const effectivePromptSql = (messageAlias = 'm') => `COALESCE(
+  NULLIF(TRIM(${messageAlias}.generationPrompt), ''),
+  NULLIF(TRIM(${messageAlias}.prompt), ''),
+  NULLIF(TRIM(${messageAlias}.text), ''),
+  '__message__:' || ${messageAlias}.id
+)`;
+
+const galleryColumnsSql = (messageAlias = 'm') => `
+  ${messageAlias}.sessionId, ${messageAlias}.id as messageId, ${messageAlias}.imageUrl,
+  ${messageAlias}.thumbnailUrl, ${messageAlias}.prompt, ${messageAlias}.text,
+  ${messageAlias}.generationPrompt, ${messageAlias}.timestamp, ${messageAlias}.model,
+  ${messageAlias}.width, ${messageAlias}.height, ${messageAlias}.steps, ${messageAlias}.cfg,
+  ${messageAlias}.workflow, ${messageAlias}.seed, ${messageAlias}.isFavorite,
+  ${messageAlias}.isPromptFavorite, ${messageAlias}.duration, ${messageAlias}.sampler,
+  ${messageAlias}.scheduler, ${messageAlias}.randomSelections,
+  ${messageAlias}.comparisonMessageId
+`;
+
 router.get('/tags', authenticate, (req, res) => {
   const user = (req as any).user;
   const tags = db.prepare(`
@@ -60,6 +78,36 @@ router.get('/random-prompt', authenticate, (req, res) => {
   res.json({ prompt: result.prompt, source });
 });
 
+router.get('/group/:messageId', authenticate, (req, res) => {
+  const user = (req as any).user;
+  const representative = db.prepare(`
+    SELECT ${effectivePromptSql('m')} AS promptGroupKey, s.isArchived
+    FROM messages m
+    JOIN sessions s ON s.id = m.sessionId
+    WHERE m.id = ? AND s.userId = ? AND m.imageUrl IS NOT NULL
+  `).get(req.params.messageId, user.id) as { promptGroupKey: string; isArchived: number } | undefined;
+
+  if (!representative) {
+    return res.status(404).json({ error: 'Gallery group not found' });
+  }
+
+  const results = db.prepare(`
+    SELECT ${galleryColumnsSql('m')}
+    FROM messages m
+    JOIN sessions s ON s.id = m.sessionId
+    WHERE s.userId = ?
+      AND s.isArchived = ?
+      AND m.imageUrl IS NOT NULL
+      AND ${effectivePromptSql('m')} = ?
+    ORDER BY m.timestamp DESC, m.id DESC
+  `).all(user.id, representative.isArchived, representative.promptGroupKey) as Record<string, unknown>[];
+
+  res.json({
+    items: attachPromptTags(db, results.map(withParsedRandomSelections), 'messageId'),
+    total: results.length,
+  });
+});
+
 router.get('/', authenticate, (req, res) => {
   const user = (req as any).user;
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 25));
@@ -70,6 +118,7 @@ router.get('/', authenticate, (req, res) => {
   const onlyArchived = req.query.includeArchived === 'true';
   const favoritesOnly = req.query.favoritesOnly === 'true';
   const promptFavoritesOnly = req.query.promptFavoritesOnly === 'true';
+  const groupByPrompt = req.query.groupByPrompt === 'true';
   const rawTags = Array.isArray(req.query.tag) ? req.query.tag : [req.query.tag];
   const selectedTags = [...new Set(rawTags
     .filter((tag): tag is string => typeof tag === 'string')
@@ -84,16 +133,14 @@ router.get('/', authenticate, (req, res) => {
   
   const params: any[] = [user.id];
   
-  if (favoritesOnly) {
+  if (favoritesOnly && !groupByPrompt) {
     filteredSource += ` AND m.isFavorite = 1`;
   }
-  if (promptFavoritesOnly) {
+  if (promptFavoritesOnly && !groupByPrompt) {
     filteredSource += ` AND m.isPromptFavorite = 1`;
   }
-  if (!favoritesOnly && !promptFavoritesOnly) {
-    filteredSource += ` AND s.isArchived = ?`;
-    params.push(onlyArchived ? 1 : 0);
-  }
+  filteredSource += ` AND s.isArchived = ?`;
+  params.push(onlyArchived ? 1 : 0);
   if (selectedTags.length > 0) {
     filteredSource += ` AND m.id IN (
       SELECT mt.messageId
@@ -114,8 +161,74 @@ router.get('/', authenticate, (req, res) => {
     }
   }
 
-  const totalRow = db.prepare(`SELECT COUNT(*) AS total ${filteredSource}`)
-    .get(...params) as { total: number };
+  const includeTotal = req.query.includeTotal === 'true';
+  const includeCursor = req.query.includeCursor === 'true';
+
+  if (groupByPrompt) {
+    const groupEligibilitySql = [
+      favoritesOnly ? 'groupHasFavorite = 1' : '',
+      promptFavoritesOnly ? 'groupHasPromptFavorite = 1' : '',
+    ].filter(Boolean).join(' AND ') || '1 = 1';
+    const groupHavingConditions = [
+      favoritesOnly ? 'MAX(COALESCE(m.isFavorite, 0)) = 1' : '',
+      promptFavoritesOnly ? 'MAX(COALESCE(m.isPromptFavorite, 0)) = 1' : '',
+    ].filter(Boolean);
+    const totalRow = includeTotal
+      ? db.prepare(`
+          SELECT COUNT(*) AS total FROM (
+            SELECT ${effectivePromptSql('m')} AS promptGroupKey
+            ${filteredSource}
+            GROUP BY ${effectivePromptSql('m')}
+            ${groupHavingConditions.length ? `HAVING ${groupHavingConditions.join(' AND ')}` : ''}
+          ) grouped_prompts
+        `).get(...params) as { total: number }
+      : undefined;
+    const groupCursorSql = hasCursor
+      ? 'AND (timestamp < ? OR (timestamp = ? AND id < ?))'
+      : '';
+    const groupParams = hasCursor
+      ? [...params, cursorTimestamp, cursorTimestamp, cursorId]
+      : params;
+    const results = db.prepare(`
+      WITH filtered AS (
+        SELECT m.*, ${effectivePromptSql('m')} AS promptGroupKey
+        ${filteredSource}
+      ), ranked AS (
+        SELECT filtered.*,
+          COUNT(*) OVER (PARTITION BY promptGroupKey) AS groupCount,
+          MAX(COALESCE(isFavorite, 0)) OVER (PARTITION BY promptGroupKey) AS groupHasFavorite,
+          MAX(COALESCE(isPromptFavorite, 0)) OVER (PARTITION BY promptGroupKey) AS groupHasPromptFavorite,
+          ROW_NUMBER() OVER (
+            PARTITION BY promptGroupKey
+            ORDER BY timestamp DESC, id DESC
+          ) AS promptGroupRank
+        FROM filtered
+      )
+      SELECT ${galleryColumnsSql('ranked')}, groupCount, groupHasFavorite, groupHasPromptFavorite
+      FROM ranked
+      WHERE promptGroupRank = 1 AND ${groupEligibilitySql}
+      ${groupCursorSql}
+      ORDER BY timestamp DESC, id DESC
+      LIMIT ? OFFSET ?
+    `).all(...groupParams, limit, hasCursor ? 0 : offset) as Record<string, unknown>[];
+    const enrichedResults = attachPromptTags(db, results.map(withParsedRandomSelections), 'messageId');
+    const lastResult = results[results.length - 1] as { timestamp?: number; messageId?: string } | undefined;
+    const nextCursor = results.length === limit && lastResult?.timestamp && lastResult?.messageId
+      ? { timestamp: lastResult.timestamp, id: lastResult.messageId }
+      : null;
+
+    if (includeTotal) {
+      return res.json({ items: enrichedResults, total: totalRow!.total, nextCursor });
+    }
+    if (includeCursor) {
+      return res.json({ items: enrichedResults, nextCursor });
+    }
+    return res.json(enrichedResults);
+  }
+
+  const totalRow = includeTotal
+    ? db.prepare(`SELECT COUNT(*) AS total ${filteredSource}`).get(...params) as { total: number }
+    : undefined;
   const pageSource = hasCursor
     ? `${filteredSource} AND (m.timestamp < ? OR (m.timestamp = ? AND m.id < ?))`
     : filteredSource;
@@ -123,10 +236,7 @@ router.get('/', authenticate, (req, res) => {
     ? [...params, cursorTimestamp, cursorTimestamp, cursorId]
     : params;
   const results = db.prepare(`
-    SELECT m.sessionId, m.id as messageId, m.imageUrl, m.thumbnailUrl, m.prompt, m.text,
-      m.generationPrompt, m.timestamp, m.model, m.width, m.height, m.steps, m.cfg,
-      m.workflow, m.seed, m.isFavorite, m.isPromptFavorite, m.duration, m.sampler,
-      m.scheduler, m.randomSelections, m.comparisonMessageId
+    SELECT ${galleryColumnsSql('m')}
     ${pageSource}
     ORDER BY m.timestamp DESC, m.id DESC LIMIT ? OFFSET ?
   `).all(...pageParams, limit, hasCursor ? 0 : offset) as Record<string, unknown>[];
@@ -135,8 +245,11 @@ router.get('/', authenticate, (req, res) => {
   const nextCursor = results.length === limit && lastResult?.timestamp && lastResult?.messageId
     ? { timestamp: lastResult.timestamp, id: lastResult.messageId }
     : null;
-  if (req.query.includeTotal === 'true') {
-    return res.json({ items: enrichedResults, total: totalRow.total, nextCursor });
+  if (includeTotal) {
+    return res.json({ items: enrichedResults, total: totalRow!.total, nextCursor });
+  }
+  if (includeCursor) {
+    return res.json({ items: enrichedResults, nextCursor });
   }
   res.json(enrichedResults);
 });

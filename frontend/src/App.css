@@ -597,6 +597,28 @@ div:focus:not(:focus-visible) {
   pointer-events: none;
 }
 
+.lightbox-group-counter {
+  position: absolute;
+  top: max(20px, env(safe-area-inset-top));
+  left: 50%;
+  z-index: 25;
+  min-width: 62px;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(18, 18, 22, 0.7);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
 .lightbox-prompt-panel {
   position: absolute;
   top: 50%;
@@ -1067,6 +1089,7 @@ div:focus:not(:focus-visible) {
 
   .lightbox-top-actions { top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); }
   .lightbox-btn { width: 44px; height: 44px; font-size: 1.1rem; }
+  .lightbox-group-counter { top: max(14px, env(safe-area-inset-top)); }
 }
 
 /* Animations & Utils */

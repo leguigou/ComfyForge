@@ -182,6 +182,67 @@ test('uses generated thumbnails for profile avatars', () => {
   );
 });
 
+test('loads gallery thumbnails responsively without unnecessary pagination work', () => {
+  const thumbnail = '/api/image-files/thumbnails/user-1/portrait_thumb.webp';
+  assert.equal(
+    api.getThumbnailVariantUrl(thumbnail, 160),
+    '/api/image-files/thumbnails/user-1/portrait_thumb-160.webp'
+  );
+  assert.equal(api.getThumbnailVariantUrl(thumbnail, 400), thumbnail);
+  assert.equal(
+    api.getThumbnailSrcSet(thumbnail),
+    '/api/image-files/thumbnails/user-1/portrait_thumb-160.webp 160w, '
+      + '/api/image-files/thumbnails/user-1/portrait_thumb-256.webp 256w, '
+      + '/api/image-files/thumbnails/user-1/portrait_thumb.webp 400w'
+  );
+  assert.equal(api.getThumbnailSrcSet('https://example.com/photo.webp'), undefined);
+
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const nginx = readFileSync('nginx.conf', 'utf8');
+  assert.match(appSource, /const GALLERY_PAGE_SIZE = 48/);
+  assert.match(appSource, /includeTotal: String\(isInitial \|\| \(isSeek && !isPrepend\)\)/);
+  assert.match(appSource, /includeCursor: 'true'/);
+  assert.match(appSource, /target - Math\.floor\(GALLERY_PAGE_SIZE \/ 2\)/);
+  assert.match(appSource, /mode: 'replace' \| 'prepend' = 'replace'/);
+  assert.match(appSource, /const nextItems = \[\.\.\.loadedItems, \.\.\.galleryItemsRef\.current\]/);
+  assert.match(appSource, /container\.scrollTop = previousTop \+ container\.scrollHeight - previousHeight/);
+  assert.match(chatSource, /ref=\{firstImageElementRef\} className="gallery-page-sentinel"/);
+  assert.match(appSource, /rootMargin: '250px 0px'/);
+  assert.match(chatSource, /loading=\{index < galleryColumns \* 3 \? 'eager' : 'lazy'\}/);
+  assert.match(chatSource, /fetchPriority=\{index < galleryColumns \? 'high' : 'auto'\}/);
+  assert.match(nginx, /location \^~ \/_protected-images\/\s*\{[\s\S]*?internal;/);
+});
+
+test('offers a confirmed thumbnail-cache purge in general settings', () => {
+  const settingsSource = readFileSync('src/components/settings/SettingsModal.tsx', 'utf8');
+  const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
+  const translations = readFileSync('src/i18n.ts', 'utf8');
+
+  assert.match(settingsSource, /\/api\/image-files\/thumbnail-cache/);
+  assert.match(settingsSource, /method: 'DELETE'/);
+  assert.match(settingsSource, /role="alertdialog"/);
+  assert.match(settingsSource, /thumbnailCacheConfirmHelp[\s\S]*?replace\('\{count\}'/);
+  assert.match(settingsSource, /window\.location\.reload\(\)/);
+  assert.match(settingsCss, /\.thumbnail-cache-confirm-overlay\s*\{[\s\S]*?z-index: 3500/);
+  assert.match(settingsCss, /\.thumbnail-cache-card\s*\{/);
+  assert.match(translations, /thumbnailCacheTitle: 'Cache des miniatures'/);
+  assert.match(translations, /thumbnailCacheTitle: 'Thumbnail cache'/);
+});
+
+test('shows original-image and thumbnail-cache disk usage in user statistics', () => {
+  const statisticsSource = readFileSync('src/components/statistics/StatisticsDashboard.tsx', 'utf8');
+  const statisticsCss = readFileSync('src/components/statistics/StatisticsDashboard.css', 'utf8');
+
+  assert.match(statisticsSource, /\/api\/statistics\/storage/);
+  assert.match(statisticsSource, /originalImages: 'Images originales'/);
+  assert.match(statisticsSource, /thumbnailCache: 'Cache des miniatures'/);
+  assert.match(statisticsSource, /formatBytes\(storage\.images\.totalBytes\)/);
+  assert.match(statisticsSource, /formatBytes\(storage\.thumbnails\.totalBytes\)/);
+  assert.match(statisticsCss, /\.storage-breakdown\s*\{/);
+  assert.match(statisticsCss, /@media\(max-width:650px\)[\s\S]*?\.storage-breakdown\{grid-template-columns:1fr\}/);
+});
+
 test('loads confirmation dialog styles without opening settings', () => {
   const appCss = readFileSync('src/App.css', 'utf8');
   assert.match(appCss, /\.settings-modal-overlay\s*\{/);

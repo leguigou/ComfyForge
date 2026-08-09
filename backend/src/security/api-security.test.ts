@@ -2,6 +2,7 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import axios from 'axios';
+import sharp from 'sharp';
 import { AddressInfo } from 'net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { RawData, WebSocket, WebSocketServer } from 'ws';
@@ -140,16 +141,23 @@ describe('API security boundaries', () => {
 
       const cursor = new URLSearchParams({
         limit: '5',
-        includeTotal: 'true',
+        includeCursor: 'true',
         cursorTimestamp: String(first.nextCursor.timestamp),
         cursorId: String(first.nextCursor.id)
       });
+      const prepareSpy = vi.spyOn(db, 'prepare');
       const secondResponse = await request(`/api/gallery?${cursor}`, { cookie: adminCookie });
       const second = await json(secondResponse);
+      const countQueries = prepareSpy.mock.calls.filter(([sql]) => (
+        String(sql).includes('SELECT COUNT(*) AS total')
+      ));
+      prepareSpy.mockRestore();
       const firstIds = new Set(first.items.map((item: { messageId: string }) => item.messageId));
       expect(secondResponse.status).toBe(200);
       expect(second.items).toHaveLength(5);
       expect(second.items.every((item: { messageId: string }) => !firstIds.has(item.messageId))).toBe(true);
+      expect(second.total).toBeUndefined();
+      expect(countQueries).toHaveLength(0);
 
       const searchResponse = await request('/api/gallery?limit=5&includeTotal=true&search=Prompt%2011', { cookie: adminCookie });
       const search = await json(searchResponse);
@@ -157,6 +165,167 @@ describe('API security boundaries', () => {
       expect(search.items.map((item: { messageId: string }) => item.messageId)).toContain('cursor-gallery-11');
     } finally {
       db.prepare(`DELETE FROM messages WHERE id LIKE 'cursor-gallery-%'`).run();
+    }
+  });
+
+  it('groups gallery images by their effective prompt and opens the complete group', async () => {
+    const ids = ['prompt-group-old', 'prompt-group-middle', 'prompt-group-new', 'prompt-group-other'];
+    try {
+      const insert = db.prepare(`
+        INSERT INTO messages (
+          id, sessionId, role, text, prompt, generationPrompt, imageUrl, timestamp,
+          status, isFavorite, isPromptFavorite
+        ) VALUES (?, ?, 'bot', '', ?, ?, ?, ?, 'completed', ?, ?)
+      `);
+      insert.run(ids[0], adminSessionId, 'Displayed old prompt', '  Shared final prompt  ', `/api/image-files/${ids[0]}.png`, 20_001, 1, 0);
+      insert.run(ids[1], adminSessionId, 'Displayed middle prompt', 'Shared final prompt', `/api/image-files/${ids[1]}.png`, 20_002, 0, 1);
+      insert.run(ids[2], adminSessionId, 'Displayed new prompt', 'Shared final prompt', `/api/image-files/${ids[2]}.png`, 20_003, 0, 0);
+      insert.run(ids[3], adminSessionId, 'Another prompt', 'Another final prompt', `/api/image-files/${ids[3]}.png`, 20_000, 0, 0);
+
+      const groupedResponse = await request('/api/gallery?groupByPrompt=true&limit=20&includeTotal=true', { cookie: adminCookie });
+      const grouped = await json(groupedResponse);
+      const sharedGroup = grouped.items.find((item: { messageId: string }) => item.messageId === ids[2]);
+
+      expect(groupedResponse.status).toBe(200);
+      expect(sharedGroup).toMatchObject({
+        messageId: ids[2],
+        groupCount: 3,
+        groupHasFavorite: 1,
+        groupHasPromptFavorite: 1,
+      });
+
+      const favoriteGroupsResponse = await request('/api/gallery?groupByPrompt=true&favoritesOnly=true&limit=20&includeTotal=true', { cookie: adminCookie });
+      const favoriteGroups = await json(favoriteGroupsResponse);
+      expect(favoriteGroupsResponse.status).toBe(200);
+      expect(favoriteGroups.items.some((item: { messageId: string }) => item.messageId === ids[2])).toBe(true);
+
+      const likedPromptGroupsResponse = await request('/api/gallery?groupByPrompt=true&promptFavoritesOnly=true&limit=20&includeTotal=true', { cookie: adminCookie });
+      const likedPromptGroups = await json(likedPromptGroupsResponse);
+      expect(likedPromptGroupsResponse.status).toBe(200);
+      expect(likedPromptGroups.items.some((item: { messageId: string }) => item.messageId === ids[2])).toBe(true);
+
+      const likedPromptImagesResponse = await request('/api/gallery?promptFavoritesOnly=true&limit=20&includeTotal=true', { cookie: adminCookie });
+      const likedPromptImages = await json(likedPromptImagesResponse);
+      expect(likedPromptImagesResponse.status).toBe(200);
+      expect(likedPromptImages.items.map((item: { messageId: string }) => item.messageId)).toContain(ids[1]);
+      expect(likedPromptImages.items.map((item: { messageId: string }) => item.messageId)).not.toContain(ids[2]);
+
+      const groupResponse = await request(`/api/gallery/group/${ids[2]}`, { cookie: adminCookie });
+      const group = await json(groupResponse);
+      expect(groupResponse.status).toBe(200);
+      expect(group.total).toBe(3);
+      expect(group.items.map((item: { messageId: string }) => item.messageId)).toEqual(ids.slice(0, 3).reverse());
+    } finally {
+      db.prepare(`DELETE FROM messages WHERE id LIKE 'prompt-group-%'`).run();
+    }
+  });
+
+  it('serves responsive thumbnails with one cached user lookup per image burst', async () => {
+    const userImagesDir = path.join(imagesDir, adminId);
+    const userThumbnailsDir = path.join(imagesDir, 'thumbnails', adminId);
+    const canonicalPath = path.join(userThumbnailsDir, 'cache-test_thumb.webp');
+    fs.mkdirSync(userImagesDir, { recursive: true });
+    fs.mkdirSync(userThumbnailsDir, { recursive: true });
+    const canonicalThumbnail = await sharp({
+      create: { width: 400, height: 300, channels: 3, background: '#2563eb' },
+    }).webp().toBuffer();
+    await fs.promises.writeFile(canonicalPath, canonicalThumbnail);
+
+    const { invalidateImageAuthCache } = await import('../middleware/auth');
+    const imageService = await import('../services/image');
+    expect(path.resolve(imageService.thumbnailsDir)).toBe(path.resolve(imagesDir, 'thumbnails'));
+    expect(fs.existsSync(canonicalPath)).toBe(true);
+    invalidateImageAuthCache(adminId);
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    try {
+      const canonicalUrl = `/api/image-files/thumbnails/${adminId}/cache-test_thumb.webp`;
+      const first = await request(canonicalUrl, { cookie: adminCookie });
+      const firstBody = await first.arrayBuffer();
+      expect(first.status, Buffer.from(firstBody).toString()).toBe(200);
+      expect(first.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
+      expect(first.headers.get('vary')).toContain('Cookie');
+
+      const second = await request(canonicalUrl, { cookie: adminCookie });
+      expect(second.status).toBe(200);
+      await second.arrayBuffer();
+
+      const responsive = await request(
+        `/api/image-files/thumbnails/${adminId}/cache-test_thumb-160.webp`,
+        { cookie: adminCookie },
+      );
+
+      expect(responsive.status).toBe(200);
+      const responsiveMetadata = await sharp(await responsive.arrayBuffer()).metadata();
+      expect(responsiveMetadata.format).toBe('webp');
+      expect(responsiveMetadata.width).toBeLessThanOrEqual(160);
+
+      const authLookups = prepareSpy.mock.calls.filter(([sql]) => (
+        String(sql).includes('SELECT id, username, isAdmin, avatarUrl FROM users WHERE id = ?')
+      ));
+      expect(authLookups).toHaveLength(1);
+    } finally {
+      prepareSpy.mockRestore();
+      fs.rmSync(path.join(userThumbnailsDir, 'cache-test_thumb.webp'), { force: true, maxRetries: 5, retryDelay: 50 });
+      fs.rmSync(path.join(userThumbnailsDir, 'cache-test_thumb-160.webp'), { force: true, maxRetries: 5, retryDelay: 50 });
+      invalidateImageAuthCache(adminId);
+    }
+  });
+
+  it('purges only the authenticated user thumbnail cache and preserves originals', async () => {
+    const userImagesDir = path.join(imagesDir, adminId);
+    const userThumbnailsDir = path.join(imagesDir, 'thumbnails', adminId);
+    const originalPath = path.join(userImagesDir, 'purge-test.webp');
+    const canonicalPath = path.join(userThumbnailsDir, 'purge-test_thumb.webp');
+    const responsivePath = path.join(userThumbnailsDir, 'purge-test_thumb-160.webp');
+    const sentinelPath = path.join(userThumbnailsDir, 'keep.webp');
+    fs.mkdirSync(userImagesDir, { recursive: true });
+    fs.mkdirSync(userThumbnailsDir, { recursive: true });
+    const image = await sharp({
+      create: { width: 480, height: 320, channels: 3, background: '#f59e0b' },
+    }).webp().toBuffer();
+    await Promise.all([
+      fs.promises.writeFile(originalPath, image),
+      fs.promises.writeFile(canonicalPath, image),
+      fs.promises.writeFile(responsivePath, image),
+      fs.promises.writeFile(sentinelPath, image),
+    ]);
+
+    try {
+      const unauthorized = await request('/api/image-files/thumbnail-cache');
+      expect(unauthorized.status).toBe(401);
+
+      const statsResponse = await request('/api/image-files/thumbnail-cache', { cookie: adminCookie });
+      const stats = await json(statsResponse);
+      expect(statsResponse.status).toBe(200);
+      expect(statsResponse.headers.get('cache-control')).toBe('no-store');
+      expect(stats.fileCount).toBeGreaterThanOrEqual(2);
+      expect(stats.totalBytes).toBeGreaterThan(0);
+
+      const purgeResponse = await request('/api/image-files/thumbnail-cache', {
+        method: 'DELETE',
+        cookie: adminCookie,
+      });
+      const purged = await json(purgeResponse);
+      expect(purgeResponse.status).toBe(200);
+      expect(purged.success).toBe(true);
+      expect(purged.fileCount).toBeGreaterThanOrEqual(2);
+      expect(purgeResponse.headers.get('set-cookie')).toContain('thumbnailCacheVersion=');
+      expect(fs.existsSync(canonicalPath)).toBe(false);
+      expect(fs.existsSync(responsivePath)).toBe(false);
+      expect(fs.existsSync(originalPath)).toBe(true);
+      expect(fs.existsSync(sentinelPath)).toBe(true);
+
+      const regeneratedResponse = await request(
+        `/api/image-files/thumbnails/${adminId}/purge-test_thumb-160.webp`,
+        { cookie: adminCookie },
+      );
+      expect(regeneratedResponse.status).toBe(200);
+      await regeneratedResponse.arrayBuffer();
+      expect(fs.existsSync(responsivePath)).toBe(true);
+    } finally {
+      for (const filePath of [originalPath, canonicalPath, responsivePath, sentinelPath]) {
+        fs.rmSync(filePath, { force: true, maxRetries: 5, retryDelay: 50 });
+      }
     }
   });
 

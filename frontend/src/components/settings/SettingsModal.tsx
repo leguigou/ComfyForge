@@ -94,6 +94,11 @@ interface AdminUserUpdate {
   queueLimit: number | null;
 }
 
+interface ThumbnailCacheStats {
+  fileCount: number;
+  totalBytes: number;
+}
+
 type NewAdminUser = {
   username: string;
   password: string;
@@ -507,6 +512,10 @@ export const SettingsModal = ({
   const [isFreeingComfyMemory, setIsFreeingComfyMemory] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [thumbnailCacheStats, setThumbnailCacheStats] = useState<ThumbnailCacheStats | null>(null);
+  const [isInspectingThumbnailCache, setIsInspectingThumbnailCache] = useState(false);
+  const [isPurgingThumbnailCache, setIsPurgingThumbnailCache] = useState(false);
+  const [showThumbnailCacheConfirm, setShowThumbnailCacheConfirm] = useState(false);
 
   // Local states for textareas to allow manual save
   const [localNegativePrompt, setLocalNegativePrompt] = useState(params.negativePrompt);
@@ -521,6 +530,7 @@ export const SettingsModal = ({
   const companionFileInputRef = useRef<HTMLInputElement>(null);
   const activeTabButtonRef = useRef<HTMLButtonElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const thumbnailCacheCancelRef = useRef<HTMLButtonElement>(null);
   const hydratedProfilesRef = useRef('');
 
   const unloadLlmMemory = async () => {
@@ -571,6 +581,58 @@ export const SettingsModal = ({
     }
   };
 
+  const inspectThumbnailCache = async () => {
+    setIsInspectingThumbnailCache(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/image-files/thumbnail-cache`, {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(t.thumbnailCacheInspectFailed);
+      const stats = {
+        fileCount: Number(data.fileCount) || 0,
+        totalBytes: Number(data.totalBytes) || 0,
+      };
+      setThumbnailCacheStats(stats);
+      if (stats.fileCount === 0) {
+        toast.success(t.thumbnailCacheEmpty);
+      } else {
+        setShowThumbnailCacheConfirm(true);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.thumbnailCacheInspectFailed);
+    } finally {
+      setIsInspectingThumbnailCache(false);
+    }
+  };
+
+  const purgeThumbnailCacheFiles = async () => {
+    setIsPurgingThumbnailCache(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/image-files/thumbnail-cache`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(t.thumbnailCachePurgeFailed);
+      const deletedStats = {
+        fileCount: Number(data.fileCount) || 0,
+        totalBytes: Number(data.totalBytes) || 0,
+      };
+      setThumbnailCacheStats({ fileCount: 0, totalBytes: 0 });
+      setShowThumbnailCacheConfirm(false);
+      toast.success(
+        `${t.thumbnailCachePurged} (${new Intl.NumberFormat(lang === 'fr' ? 'fr-FR' : 'en-US').format(deletedStats.fileCount)} · ${formatBytes(deletedStats.totalBytes)})`,
+      );
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.thumbnailCachePurgeFailed);
+    } finally {
+      setIsPurgingThumbnailCache(false);
+    }
+  };
+
   useEffect(() => {
     if (showSettings) {
       setEditUsername(currentUser?.username || '');
@@ -581,6 +643,12 @@ export const SettingsModal = ({
       setModelSearch('');
     }
   }, [showSettings, currentUser, params.negativePrompt, params.llmSystemMessage]);
+
+  useEffect(() => {
+    if (!showThumbnailCacheConfirm) return;
+    const frame = window.requestAnimationFrame(() => thumbnailCacheCancelRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [showThumbnailCacheConfirm]);
 
   useEffect(() => {
     if (!showSettings || activeTab !== 'comfy' || !params.workflowFile) return;
@@ -1239,6 +1307,33 @@ export const SettingsModal = ({
                 >
                   {isFreeingComfyMemory ? t.comfyMemoryReleasing : t.comfyMemoryReleaseAction}
                 </button>
+              </section>
+
+              <section className="thumbnail-cache-card">
+                <div className="thumbnail-cache-heading">
+                  <span className="thumbnail-cache-icon" aria-hidden="true"><RefreshIcon size={22} /></span>
+                  <div>
+                    <h4>{t.thumbnailCacheTitle}</h4>
+                    <p>{t.thumbnailCacheHelp}</p>
+                  </div>
+                </div>
+                <div className="thumbnail-cache-actions">
+                  {thumbnailCacheStats && (
+                    <span className="thumbnail-cache-size" aria-live="polite">
+                      {new Intl.NumberFormat(lang === 'fr' ? 'fr-FR' : 'en-US').format(thumbnailCacheStats.fileCount)} {t.thumbnailCacheFiles}
+                      {' · '}{formatBytes(thumbnailCacheStats.totalBytes)}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="thumbnail-cache-purge-btn"
+                    onClick={() => void inspectThumbnailCache()}
+                    disabled={isInspectingThumbnailCache || isPurgingThumbnailCache}
+                  >
+                    <TrashIcon size={17} />
+                    {isInspectingThumbnailCache ? t.thumbnailCacheInspecting : t.thumbnailCachePurgeAction}
+                  </button>
+                </div>
               </section>
 
               <section className="session-management-card">
@@ -2089,6 +2184,57 @@ export const SettingsModal = ({
           </main>
         </div>
       </div>
+      {showThumbnailCacheConfirm && thumbnailCacheStats && (
+        <div
+          className="thumbnail-cache-confirm-overlay"
+          onKeyDown={event => {
+            event.stopPropagation();
+            if (event.key === 'Escape' && !isPurgingThumbnailCache) setShowThumbnailCacheConfirm(false);
+          }}
+          onClick={event => {
+            event.stopPropagation();
+            if (!isPurgingThumbnailCache) setShowThumbnailCacheConfirm(false);
+          }}
+        >
+          <div
+            className="thumbnail-cache-confirm-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="thumbnail-cache-confirm-title"
+            aria-describedby="thumbnail-cache-confirm-description"
+            onClick={event => event.stopPropagation()}
+          >
+            <span className="thumbnail-cache-confirm-icon" aria-hidden="true"><AlertTriangleIcon size={24} /></span>
+            <h3 id="thumbnail-cache-confirm-title">{t.thumbnailCacheConfirmTitle}</h3>
+            <p id="thumbnail-cache-confirm-description">
+              {t.thumbnailCacheConfirmHelp
+                .replace('{count}', new Intl.NumberFormat(lang === 'fr' ? 'fr-FR' : 'en-US').format(thumbnailCacheStats.fileCount))
+                .replace('{size}', formatBytes(thumbnailCacheStats.totalBytes))}
+            </p>
+            <p className="thumbnail-cache-confirm-note">{t.thumbnailCacheConfirmNote}</p>
+            <div className="thumbnail-cache-confirm-actions">
+              <button
+                ref={thumbnailCacheCancelRef}
+                type="button"
+                className="thumbnail-cache-cancel-btn"
+                onClick={() => setShowThumbnailCacheConfirm(false)}
+                disabled={isPurgingThumbnailCache}
+              >
+                {t.cancel}
+              </button>
+              <button
+                type="button"
+                className="thumbnail-cache-confirm-btn"
+                onClick={() => void purgeThumbnailCacheFiles()}
+                disabled={isPurgingThumbnailCache}
+              >
+                <TrashIcon size={17} />
+                {isPurgingThumbnailCache ? t.thumbnailCachePurging : t.thumbnailCacheConfirmAction}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
