@@ -34,12 +34,26 @@ const corsOptions = (req: Request): CorsOptions => ({
   exposedHeaders: ['X-Request-ID', 'X-ComfyForge-Settings-Source', 'X-CSRF-Token'],
 });
 
+const isImageFileRequest = (req: Request) => req.method === 'GET' && (
+  req.path.startsWith('/api/image-files/') || req.path.startsWith('/image-files/')
+);
+
 const apiRateLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
+  skip: isImageFileRequest,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   message: { error: 'Too many requests. Please try again shortly.' },
+});
+
+const imageRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 3000,
+  skip: req => !isImageFileRequest(req),
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Too many image requests. Please try again shortly.' },
 });
 
 export const createApp = (authSecret: string) => {
@@ -59,6 +73,7 @@ export const createApp = (authSecret: string) => {
   });
   app.use(cors((req, callback) => callback(null, corsOptions(req))));
   app.use(apiRateLimiter);
+  app.use(imageRateLimiter);
   const largeJsonParser = express.json({ limit: '160mb' });
   const legacyGenerationJsonParser = express.json({ limit: '32mb' });
   const companionAssetJsonParser = express.json({ limit: '8mb' });

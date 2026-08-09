@@ -22,6 +22,7 @@ services:
       - ALLOW_USER_LLM_URLS=${ALLOW_USER_LLM_URLS:-false}
       - MAX_QUEUE_PER_USER=${MAX_QUEUE_PER_USER:-25}
       - MAX_QUEUE_BATCH=${MAX_QUEUE_BATCH:-50}
+      - IMAGE_ACCEL_REDIRECT=${IMAGE_ACCEL_REDIRECT:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -42,6 +43,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    volumes:
+      - ./images:/srv/comfyforge-images:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]

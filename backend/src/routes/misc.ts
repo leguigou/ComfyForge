@@ -1,8 +1,16 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { authenticate, requireAdmin } from '../middleware/auth';
-import { imagesDir, importsDir, thumbnailsDir, generateThumbnail } from '../services/image';
+import { authenticate, authenticateImageFile, requireAdmin } from '../middleware/auth';
+import {
+  ensureThumbnail,
+  getThumbnailCacheStats,
+  imagesDir,
+  importsDir,
+  parseThumbnailFilename,
+  purgeThumbnailCache,
+  thumbnailsDir,
+} from '../services/image';
 import { analyzeWorkflow } from '../services/workflow-import';
 
 const router = express.Router();
@@ -17,6 +25,12 @@ const canAccessUserFiles = (req: express.Request, userId: string) => {
   return user?.id === userId || user?.isAdmin === 1;
 };
 
+const IMAGE_CACHE_CONTROL = 'private, max-age=31536000, immutable';
+const useAcceleratedImageDelivery = process.env.IMAGE_ACCEL_REDIRECT === 'true';
+const fileExists = (filePath: string) => fs.promises.access(filePath, fs.constants.R_OK)
+  .then(() => true)
+  .catch(() => false);
+
 const sendFileIfInside = (res: express.Response, baseDir: string, filePath: string) => {
   const resolvedBase = path.resolve(baseDir);
   const resolvedPath = path.resolve(filePath);
@@ -25,12 +39,25 @@ const sendFileIfInside = (res: express.Response, baseDir: string, filePath: stri
     return res.status(400).send('Invalid path');
   }
 
-  if (!fs.existsSync(resolvedPath)) {
-    return res.status(404).send('Not found');
+  res.setHeader('Cache-Control', IMAGE_CACHE_CONTROL);
+  res.vary('Cookie');
+  if (useAcceleratedImageDelivery) {
+    const relativePath = path.relative(path.resolve(imagesDir), resolvedPath);
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      return res.status(400).send('Invalid path');
+    }
+    const acceleratedPath = relativePath.split(path.sep).map(encodeURIComponent).join('/');
+    res.setHeader('X-Accel-Redirect', `/_protected-images/${acceleratedPath}`);
+    return res.status(200).end();
   }
 
-  res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
-  return res.sendFile(resolvedPath, { cacheControl: false });
+  // Using an explicit root avoids send's absolute Windows path edge cases and
+  // keeps its traversal protection enabled in local (non-Nginx) deployments.
+  return res.sendFile(path.basename(resolvedPath), {
+    root: path.dirname(resolvedPath),
+    cacheControl: false,
+    dotfiles: 'deny',
+  });
 };
 
 const getWorkflowsDir = () => {
@@ -101,27 +128,62 @@ const readWorkflowBundle = (filename: string) => {
   return { workflowsDir, workflowPath, configPath, workflow, configuredMapping };
 };
 
+router.get('/thumbnail-cache', authenticate, async (req, res) => {
+  try {
+    const stats = await getThumbnailCacheStats(req.user!.id);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(stats);
+  } catch (error) {
+    console.error('[Thumbnails] Cache inspection failed:', error);
+    return res.status(500).json({ error: 'Unable to inspect thumbnail cache' });
+  }
+});
+
+router.delete('/thumbnail-cache', authenticate, async (req, res) => {
+  try {
+    const stats = await purgeThumbnailCache(req.user!.id);
+    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    res.cookie('thumbnailCacheVersion', `${Date.now()}`, {
+      httpOnly: true,
+      maxAge: 365 * 24 * 60 * 60 * 1000,
+      path: '/',
+      sameSite: isHttps ? 'none' : 'lax',
+      secure: isHttps,
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ success: true, ...stats });
+  } catch (error) {
+    console.error('[Thumbnails] Cache purge failed:', error);
+    return res.status(500).json({ error: 'Unable to purge thumbnail cache' });
+  }
+});
+
 // Robust thumbnail serving with on-the-fly generation
-router.get('/thumbnails/:userId/:filename', authenticate, async (req, res) => {
+router.get('/thumbnails/:userId/:filename', authenticateImageFile, async (req, res) => {
   const userId = getRouteParam(req.params.userId);
-  const filename = getRouteParam(req.params.filename);
+  const filename = path.basename(getRouteParam(req.params.filename));
   if (!canAccessUserFiles(req, userId)) return res.status(403).send('Forbidden');
 
   const userThumbsDir = path.join(thumbnailsDir, userId);
   const thumbPath = path.join(userThumbsDir, filename);
   
-  if (fs.existsSync(thumbPath)) {
+  if (await fileExists(thumbPath)) {
     return sendFileIfInside(res, userThumbsDir, thumbPath);
   }
   
   try {
-    const originalName = filename.replace('_thumb.webp', '.webp');
+    const request = parseThumbnailFilename(filename);
+    if (!request) return res.status(404).send('Not found');
     const userImagesDir = path.join(imagesDir, userId);
-    const originalPath = path.join(userImagesDir, originalName);
-    
-    if (fs.existsSync(originalPath)) {
+    const originalPath = path.join(userImagesDir, request.originalName);
+    const canonicalThumbnailPath = path.join(userThumbsDir, `${request.baseName}_thumb.webp`);
+    const sourcePath = request.size < 400 && await fileExists(canonicalThumbnailPath)
+      ? canonicalThumbnailPath
+      : originalPath;
+
+    if (await fileExists(sourcePath)) {
       console.log(`[Thumbnails] Generating on-the-fly: ${filename} for user ${userId}`);
-      await generateThumbnail(originalPath, thumbPath);
+      await ensureThumbnail(sourcePath, thumbPath, request.size);
       return sendFileIfInside(res, userThumbsDir, thumbPath);
     }
   } catch (err: any) { 
@@ -132,19 +194,24 @@ router.get('/thumbnails/:userId/:filename', authenticate, async (req, res) => {
 
 // Legacy non-user-specific thumbnail route
 router.get('/thumbnails/:filename', authenticate, async (req, res) => {
-  const filename = getRouteParam(req.params.filename);
+  const filename = path.basename(getRouteParam(req.params.filename));
   const legacyThumbsDir = path.join(imagesDir, 'thumbnails');
   const thumbPath = path.join(legacyThumbsDir, filename);
 
-  if (fs.existsSync(thumbPath)) {
+  if (await fileExists(thumbPath)) {
     return sendFileIfInside(res, legacyThumbsDir, thumbPath);
   }
   
   try {
-    const originalName = filename.replace('_thumb.webp', '.webp');
-    const originalPath = path.join(imagesDir, originalName);
-    if (fs.existsSync(originalPath)) {
-      await generateThumbnail(originalPath, thumbPath);
+    const request = parseThumbnailFilename(filename);
+    if (!request) return res.status(404).send('Not found');
+    const originalPath = path.join(imagesDir, request.originalName);
+    const canonicalThumbnailPath = path.join(legacyThumbsDir, `${request.baseName}_thumb.webp`);
+    const sourcePath = request.size < 400 && await fileExists(canonicalThumbnailPath)
+      ? canonicalThumbnailPath
+      : originalPath;
+    if (await fileExists(sourcePath)) {
+      await ensureThumbnail(sourcePath, thumbPath, request.size);
       return sendFileIfInside(res, legacyThumbsDir, thumbPath);
     }
   } catch (err: any) { 
@@ -153,7 +220,7 @@ router.get('/thumbnails/:filename', authenticate, async (req, res) => {
   res.status(404).send('Not found');
 });
 
-router.get('/imports/:userId/:filename', authenticate, (req, res) => {
+router.get('/imports/:userId/:filename', authenticateImageFile, (req, res) => {
   const userId = getRouteParam(req.params.userId);
   const filename = path.basename(getRouteParam(req.params.filename));
   if (!canAccessUserFiles(req, userId)) return res.status(403).send('Forbidden');
@@ -285,9 +352,9 @@ router.delete('/workflows/:filename', requireAdmin, (req, res) => {
   return res.json({ success: true });
 });
 
-router.get('/:userId/:filename', authenticate, (req, res) => {
+router.get('/:userId/:filename', authenticateImageFile, (req, res) => {
   const userId = getRouteParam(req.params.userId);
-  const filename = getRouteParam(req.params.filename);
+  const filename = path.basename(getRouteParam(req.params.filename));
   if (!canAccessUserFiles(req, userId)) return res.status(403).send('Forbidden');
 
   const userImagesDir = path.join(imagesDir, userId);

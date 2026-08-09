@@ -34,6 +34,24 @@ export const getFullImageUrl = (url: string) => {
   return `${API_BASE}${url}`;
 };
 
+export type ThumbnailSize = 160 | 256 | 400;
+
+const RESPONSIVE_THUMBNAIL_PATTERN = /^(\/api\/image-files\/thumbnails\/.*)_thumb(?:-(?:160|256|400))?\.webp([?#].*)?$/i;
+
+export const getThumbnailVariantUrl = (url: string, size: ThumbnailSize) => {
+  const match = RESPONSIVE_THUMBNAIL_PATTERN.exec(url);
+  if (!match) return getFullImageUrl(url);
+  const suffix = size === 400 ? '' : `-${size}`;
+  return getFullImageUrl(`${match[1]}_thumb${suffix}.webp${match[2] || ''}`);
+};
+
+export const getThumbnailSrcSet = (url: string) => {
+  if (!RESPONSIVE_THUMBNAIL_PATTERN.test(url)) return undefined;
+  return ([160, 256, 400] as const)
+    .map(size => `${getThumbnailVariantUrl(url, size)} ${size}w`)
+    .join(', ');
+};
+
 export const getAvatarThumbnailUrl = (url: string | null | undefined) => {
   if (!url || url.startsWith('http')) return url || '';
 

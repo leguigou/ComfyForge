@@ -1,6 +1,6 @@
 {
   "name": "comfyforge-backend",
-  "version": "2.7.2",
+  "version": "2.7.3",
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch index.ts",
@@ -8,6 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "cache-breaker": "echo 1779785000",
+    "thumbnails:backfill": "node dist/scripts/backfill-thumbnails.js",
+    "thumbnails:backfill:dev": "tsx scripts/backfill-thumbnails.ts",
     "test": "vitest run --no-file-parallelism",
     "test:watch": "vitest"
   },

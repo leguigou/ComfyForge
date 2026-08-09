@@ -50,6 +50,12 @@ const ComparisonView = lazy(() => importWithRecovery(() => import('./components/
   default: module.ComparisonView
 })));
 
+const GALLERY_PAGE_SIZE = 48;
+
+const getGalleryPromptKey = (item: Pick<GalleryItem, 'generationPrompt' | 'prompt' | 'text'>) => (
+  item.generationPrompt || item.prompt || item.text || ''
+).trim();
+
 const isLuckyCoherenceTag = (tag: PromptTag) => (
   !['subject', 'count', 'lighting', 'pose', 'shot'].includes(tag.category)
   && !['photorealistic', 'nature'].includes(tag.slug)
@@ -575,6 +581,7 @@ function App() {
     messageId: string;
     source: 'chat' | 'gallery';
   } | null>(null);
+  const [lightboxGroupItems, setLightboxGroupItems] = useState<GalleryItem[] | null>(null);
   const [showLightboxMenu, setShowLightboxMenu] = useState(false);
   const [showLightboxPrompt, setShowLightboxPrompt] = useState(false);
   const [showLightboxModify, setShowLightboxModify] = useState(false);
@@ -604,6 +611,7 @@ function App() {
   const closeLightbox = useCallback(() => {
     const lightbox = activeLightbox;
     const shouldRealignChat = lightbox?.source === 'chat';
+    const shouldRealignGallery = lightbox?.source === 'gallery';
 
     if (shouldRealignChat) {
       if (scrollRequestTimeoutRef.current !== null) {
@@ -628,8 +636,29 @@ function App() {
       }
     }
 
+    if (shouldRealignGallery) {
+      const representativeId = lightboxGroupItems?.[0]?.messageId || lightbox.messageId;
+      const container = containerRef.current;
+      const element = container
+        ? Array.from(container.querySelectorAll<HTMLElement>('[data-gallery-message-id]'))
+            .find(candidate => candidate.dataset.galleryMessageId === representativeId)
+        : undefined;
+
+      if (element && container) {
+        const containerRect = container.getBoundingClientRect();
+        const elementRect = element.getBoundingClientRect();
+        const elementTop = container.scrollTop + elementRect.top - containerRect.top;
+        const targetScroll = elementTop - (container.clientHeight - elementRect.height) / 2;
+        container.scrollTop = Math.max(
+          0,
+          Math.min(targetScroll, container.scrollHeight - container.clientHeight)
+        );
+      }
+    }
+
     setActiveLightbox(null);
-  }, [activeLightbox]);
+    setLightboxGroupItems(null);
+  }, [activeLightbox, lightboxGroupItems]);
 
   const [hdLoaded, setHdLoaded] = useState<string | null>(null);
   const [loadedHdImages, setLoadedHdImages] = useState<Set<string>>(new Set());
@@ -734,6 +763,7 @@ function App() {
       lastPinchMidpoint.current = null;
       lightboxTapGesture.current = null;
       suppressLightboxClickRef.current = false;
+      setLightboxGroupItems(null);
     }
     setShowLightboxMenu(false);
     setShowLightboxPrompt(false);
@@ -941,6 +971,7 @@ function App() {
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);
   const [galleryTotal, setGalleryTotal] = useState(0);
   const [galleryStartIndex, setGalleryStartIndex] = useState(0);
+  const galleryStartIndexRef = useRef(0);
   const galleryItemsRef = useRef<GalleryItem[]>([]);
   const [hasMoreGallery, setHasMoreGallery] = useState(true);
   const hasMoreGalleryRef = useRef(true);
@@ -949,6 +980,8 @@ function App() {
   const galleryFetchPromiseRef = useRef<Promise<GalleryItem[]> | null>(null);
   const [showArchivedInGallery, setShowArchivedInGallery] = useState(false);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [promptFavoritesOnly, setPromptFavoritesOnly] = useState(false);
+  const [groupByPrompt, setGroupByPrompt] = useState(() => localStorage.getItem('galleryGroupByPrompt') === 'true');
   const [availablePromptTags, setAvailablePromptTags] = useState<PromptTag[]>([]);
   const [selectedPromptTags, setSelectedPromptTags] = useState<string[]>([]);
   const [gallerySearch, setGallerySearch] = useState('');
@@ -963,6 +996,10 @@ function App() {
   useEffect(() => {
     galleryItemsRef.current = galleryItems;
   }, [galleryItems]);
+
+  useEffect(() => {
+    localStorage.setItem('galleryGroupByPrompt', String(groupByPrompt));
+  }, [groupByPrompt]);
 
   const toggleFavorite = useCallback(async (sessionId: string, messageId: string, currentStatus: number | undefined) => {
     const newStatus = currentStatus === 1 ? 0 : 1;
@@ -979,12 +1016,35 @@ function App() {
       });
       if (res.ok) {
         setMessages(prev => prev.map(m => m.id === messageId ? { ...m, isFavorite: newStatus } : m));
-        setGalleryItems(prev => favoritesOnly && newStatus === 0
-          ? prev.filter(m => m.messageId !== messageId)
-          : prev.map(m => m.messageId === messageId ? { ...m, isFavorite: newStatus } : m));
+        const groupTarget = lightboxGroupItems?.find(item => item.messageId === messageId);
+        if (groupTarget && lightboxGroupItems) {
+          const updatedGroup = lightboxGroupItems.map(item => item.messageId === messageId
+            ? { ...item, isFavorite: newStatus }
+            : item);
+          const promptKey = getGalleryPromptKey(groupTarget);
+          const groupHasFavorite = updatedGroup.some(item => item.isFavorite === 1) ? 1 : 0;
+          const shouldRemoveGroup = favoritesOnly && groupHasFavorite === 0;
+          setLightboxGroupItems(updatedGroup);
+          setGalleryItems(prev => prev
+            .filter(item => !(shouldRemoveGroup && getGalleryPromptKey(item) === promptKey))
+            .map(item => getGalleryPromptKey(item) === promptKey
+              ? {
+                  ...item,
+                  isFavorite: item.messageId === messageId ? newStatus : item.isFavorite,
+                  groupHasFavorite,
+                }
+              : item));
+          if (shouldRemoveGroup && galleryItemsRef.current.some(item => getGalleryPromptKey(item) === promptKey)) {
+            setGalleryTotal(total => Math.max(0, total - 1));
+          }
+        } else {
+          setGalleryItems(prev => favoritesOnly && newStatus === 0
+            ? prev.filter(m => m.messageId !== messageId)
+            : prev.map(m => m.messageId === messageId ? { ...m, isFavorite: newStatus } : m));
+        }
       }
     } catch (err) { console.error('Error toggling favorite:', err); }
-  }, [setMessages, favoritesOnly]);
+  }, [favoritesOnly, lightboxGroupItems, setMessages]);
 
   const togglePromptFavorite = useCallback(async (sessionId: string, messageId: string, currentStatus: number | undefined) => {
     const newStatus = currentStatus === 1 ? 0 : 1;
@@ -999,15 +1059,38 @@ function App() {
       setMessages(prev => prev.map(message => message.id === messageId
         ? { ...message, isPromptFavorite: newStatus }
         : message));
-      setGalleryItems(prev => prev.map(item => (
-        item.messageId === messageId ? { ...item, isPromptFavorite: newStatus } : item
-      )));
+      const groupTarget = lightboxGroupItems?.find(item => item.messageId === messageId);
+      if (groupTarget && lightboxGroupItems) {
+        const updatedGroup = lightboxGroupItems.map(item => item.messageId === messageId
+          ? { ...item, isPromptFavorite: newStatus }
+          : item);
+        const promptKey = getGalleryPromptKey(groupTarget);
+        const groupHasPromptFavorite = updatedGroup.some(item => item.isPromptFavorite === 1) ? 1 : 0;
+        const shouldRemoveGroup = promptFavoritesOnly && groupHasPromptFavorite === 0;
+        setLightboxGroupItems(updatedGroup);
+        setGalleryItems(prev => prev
+          .filter(item => !(shouldRemoveGroup && getGalleryPromptKey(item) === promptKey))
+          .map(item => getGalleryPromptKey(item) === promptKey
+            ? {
+                ...item,
+                isPromptFavorite: item.messageId === messageId ? newStatus : item.isPromptFavorite,
+                groupHasPromptFavorite,
+              }
+            : item));
+        if (shouldRemoveGroup && galleryItemsRef.current.some(item => getGalleryPromptKey(item) === promptKey)) {
+          setGalleryTotal(total => Math.max(0, total - 1));
+        }
+      } else {
+        setGalleryItems(prev => promptFavoritesOnly && newStatus === 0
+          ? prev.filter(item => item.messageId !== messageId)
+          : prev.map(item => item.messageId === messageId ? { ...item, isPromptFavorite: newStatus } : item));
+      }
       toast.success(newStatus ? t.promptLiked : t.promptUnliked);
     } catch (error) {
       console.error('Error toggling prompt favorite:', error);
       toast.error(t.promptLikeFailed);
     }
-  }, [setMessages, t.promptLiked, t.promptUnliked, t.promptLikeFailed]);
+  }, [lightboxGroupItems, promptFavoritesOnly, setMessages, t.promptLiked, t.promptUnliked, t.promptLikeFailed]);
 
   const batchSetGalleryFlag = useCallback(async (
     items: GalleryItem[],
@@ -1027,14 +1110,18 @@ function App() {
     const updatedIds = new Set(results.filter(result => result.ok).map(result => result.id));
     const patch = kind === 'favorite' ? { isFavorite: value } : { isPromptFavorite: value };
     setMessages(previous => previous.map(message => updatedIds.has(message.id) ? { ...message, ...patch } : message));
+    const shouldRemoveUpdatedItems = value === 0 && (
+      (kind === 'favorite' && favoritesOnly)
+      || (kind === 'prompt-favorite' && promptFavoritesOnly)
+    );
     setGalleryItems(previous => previous
       .map(item => updatedIds.has(item.messageId) ? { ...item, ...patch } : item)
-      .filter(item => !(kind === 'favorite' && favoritesOnly && value === 0 && updatedIds.has(item.messageId))));
-    if (kind === 'favorite' && favoritesOnly && value === 0) {
+      .filter(item => !(shouldRemoveUpdatedItems && updatedIds.has(item.messageId))));
+    if (shouldRemoveUpdatedItems) {
       setGalleryTotal(total => Math.max(0, total - updatedIds.size));
     }
     if (updatedIds.size !== items.length) throw new Error(t.batchUpdateFailed);
-  }, [favoritesOnly, setMessages, t.batchUpdateFailed]);
+  }, [favoritesOnly, promptFavoritesOnly, setMessages, t.batchUpdateFailed]);
 
   const batchSetGalleryFavorites = useCallback((items: GalleryItem[], value: number) => (
     batchSetGalleryFlag(items, value, 'favorite')
@@ -1102,14 +1189,49 @@ function App() {
     setView('chat');
   }, [params.llmProviderId, t.batchLuckyLimit, t.luckyNeedsProvider]);
 
-  const handleImageClick = useCallback((item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, source: 'chat' | 'gallery' }) => {
+  const loadGalleryPromptGroup = useCallback(async (item: GalleryItem): Promise<GalleryItem[]> => {
+    if (!groupByPrompt || (item.groupCount || 1) <= 1) return [item];
+
+    try {
+      const response = await fetch(`${API_BASE}/api/gallery/group/${encodeURIComponent(item.messageId)}`, {
+        credentials: 'include'
+      });
+      const data = await response.json();
+      if (!response.ok || !Array.isArray(data?.items) || data.items.length === 0) {
+        throw new Error('Unable to load prompt group');
+      }
+      return data.items as GalleryItem[];
+    } catch (error) {
+      console.error('Error loading gallery prompt group:', error);
+      return [item];
+    }
+  }, [groupByPrompt]);
+
+  const handleImageClick = useCallback((item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, groupCount?: number, source: 'chat' | 'gallery' }) => {
     if (clickTimeoutRef.current) {
       clearTimeout(clickTimeoutRef.current);
       clickTimeoutRef.current = null;
       toggleFavorite(item.sessionId, item.messageId, item.isFavorite);
     } else {
-      clickTimeoutRef.current = window.setTimeout(() => {
+      clickTimeoutRef.current = window.setTimeout(async () => {
         clickTimeoutRef.current = null;
+        if (item.source === 'gallery' && groupByPrompt) {
+          const summary = galleryItemsRef.current.find(candidate => candidate.messageId === item.messageId);
+          if (summary) {
+            const groupItems = await loadGalleryPromptGroup(summary);
+            const first = groupItems[0];
+            setLightboxGroupItems(groupItems.length > 1 ? groupItems : null);
+            setActiveLightbox({
+              url: first.imageUrl,
+              thumbnailUrl: first.thumbnailUrl,
+              sessionId: first.sessionId,
+              messageId: first.messageId,
+              source: 'gallery'
+            });
+            return;
+          }
+        }
+        setLightboxGroupItems(null);
         setActiveLightbox({ 
           url: item.url, 
           thumbnailUrl: item.thumbnailUrl, 
@@ -1119,7 +1241,7 @@ function App() {
         });
       }, 300);
     }
-  }, [toggleFavorite]);
+  }, [groupByPrompt, loadGalleryPromptGroup, toggleFavorite]);
 
   const handleLightboxBackdropClick = useCallback((e: React.MouseEvent) => {
     if (suppressLightboxClickRef.current) {
@@ -1611,8 +1733,14 @@ function App() {
     }
   }, []);
 
-  const fetchGallery = useCallback(async (isInitial = false, requestedOffset?: number): Promise<GalleryItem[]> => {
+  const fetchGallery = useCallback(async (
+    isInitial = false,
+    requestedOffset?: number,
+    mode: 'replace' | 'prepend' = 'replace'
+  ): Promise<GalleryItem[]> => {
     const isSeek = Number.isInteger(requestedOffset) && (requestedOffset ?? 0) >= 0;
+    const isPrepend = mode === 'prepend';
+    if (isPrepend && isFetchingGalleryRef.current) return [];
     if (!isInitial && !isSeek && isFetchingGalleryRef.current) {
       return galleryFetchPromiseRef.current ?? [];
     }
@@ -1630,12 +1758,18 @@ function App() {
     setIsFetchingGallery(true);
     
     const currentOffset = isInitial ? 0 : (isSeek ? requestedOffset! : galleryOffsetRef.current);
+    const requestLimit = isPrepend
+      ? Math.max(1, Math.min(GALLERY_PAGE_SIZE, galleryStartIndexRef.current - currentOffset))
+      : GALLERY_PAGE_SIZE;
     try {
       const query = new URLSearchParams({
-        limit: '25',
+        limit: String(requestLimit),
         includeArchived: String(showArchivedInGallery),
         favoritesOnly: String(favoritesOnly),
-        includeTotal: 'true',
+        promptFavoritesOnly: String(promptFavoritesOnly),
+        groupByPrompt: String(groupByPrompt),
+        includeTotal: String(isInitial || (isSeek && !isPrepend)),
+        includeCursor: 'true',
       });
       if (!isInitial && !isSeek && galleryCursorRef.current) {
         query.set('cursorTimestamp', String(galleryCursorRef.current.timestamp));
@@ -1665,17 +1799,28 @@ function App() {
         ? responseData.nextCursor as { timestamp: number; id: string }
         : null;
 
-      if (isInitial || isSeek) {
+      if (isPrepend) {
+        const existingIds = new Set(galleryItemsRef.current.map(item => item.messageId));
+        loadedItems = data.filter(item => !existingIds.has(item.messageId));
+        if (loadedItems.length > 0) {
+          const nextItems = [...loadedItems, ...galleryItemsRef.current];
+          galleryItemsRef.current = nextItems;
+          setGalleryItems(nextItems);
+          galleryStartIndexRef.current = currentOffset;
+          setGalleryStartIndex(currentOffset);
+        }
+      } else if (isInitial || isSeek) {
         loadedItems = data;
         galleryItemsRef.current = data;
         setGalleryItems(data);
+        galleryStartIndexRef.current = currentOffset;
         setGalleryStartIndex(currentOffset);
         galleryOffsetRef.current = currentOffset + data.length;
         galleryCursorRef.current = nextCursor;
         const total = typeof responseData?.total === 'number'
           ? responseData.total
           : currentOffset + data.length + (nextCursor ? 1 : 0);
-        hasMoreGalleryRef.current = currentOffset + data.length < total && (Boolean(nextCursor) || data.length === 25);
+        hasMoreGalleryRef.current = currentOffset + data.length < total && (Boolean(nextCursor) || data.length === GALLERY_PAGE_SIZE);
         setHasMoreGallery(hasMoreGalleryRef.current);
       } else if (data.length > 0) {
         const existingIds = new Set(galleryItemsRef.current.map(item => item.messageId));
@@ -1704,17 +1849,28 @@ function App() {
       }
     }
     return loadedItems;
-  }, [showArchivedInGallery, favoritesOnly, selectedPromptTags, debouncedGallerySearch]);
+  }, [showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, selectedPromptTags, debouncedGallerySearch]);
 
   const seekGallery = useCallback((targetIndex: number) => {
     const lastIndex = Math.max(0, galleryTotal - 1);
     const target = Math.min(lastIndex, Math.max(0, Math.round(targetIndex)));
-    const offset = Math.min(target, Math.max(0, galleryTotal - 25));
+    // Keep the requested item near the middle of the loaded window. Starting
+    // the page at `target` makes it the first DOM item, so a user who jumps
+    // with the fast scrollbar cannot scroll back toward newer content.
+    const centeredOffset = Math.max(0, target - Math.floor(GALLERY_PAGE_SIZE / 2));
+    const offset = Math.min(centeredOffset, Math.max(0, galleryTotal - GALLERY_PAGE_SIZE));
     return fetchGallery(false, offset);
   }, [fetchGallery, galleryTotal]);
 
+  const fetchPreviousGallery = useCallback((): Promise<GalleryItem[]> => {
+    const currentStart = galleryStartIndexRef.current;
+    if (currentStart <= 0 || isFetchingGalleryRef.current) return Promise.resolve([]);
+    const previousOffset = Math.max(0, currentStart - GALLERY_PAGE_SIZE);
+    return fetchGallery(false, previousOffset, 'prepend');
+  }, [fetchGallery]);
+
   const observer = useRef<IntersectionObserver | null>(null);
-  const lastImageElementRef = useCallback((node: HTMLDivElement) => {
+  const lastImageElementRef = useCallback((node: HTMLDivElement | null) => {
     if (isFetchingGallery) return;
     if (observer.current) observer.current.disconnect();
     
@@ -1722,14 +1878,49 @@ function App() {
       if (entries[0].isIntersecting && hasMoreGallery && !isFetchingGalleryRef.current) {
         fetchGallery(false);
       }
-    }, { rootMargin: '600px', threshold: 0.1 });
+    }, { root: containerRef.current, rootMargin: '250px 0px', threshold: 0.01 });
     
     if (node) observer.current.observe(node);
-  }, [isFetchingGallery, hasMoreGallery, fetchGallery]);
+  }, [isFetchingGallery, hasMoreGallery, fetchGallery, containerRef]);
+
+  const previousGalleryObserver = useRef<IntersectionObserver | null>(null);
+  const firstImageElementRef = useCallback((node: HTMLDivElement | null) => {
+    previousGalleryObserver.current?.disconnect();
+    if (!node || galleryStartIndex <= 0) return;
+
+    previousGalleryObserver.current = new IntersectionObserver(async entries => {
+      if (!entries[0].isIntersecting || isFetchingGalleryRef.current) return;
+      const container = containerRef.current;
+      if (!container) return;
+
+      const previousHeight = container.scrollHeight;
+      const previousTop = container.scrollTop;
+      const previousOverflowAnchor = container.style.overflowAnchor;
+      container.style.overflowAnchor = 'none';
+      const loadedItems = await fetchPreviousGallery();
+
+      if (loadedItems.length === 0) {
+        container.style.overflowAnchor = previousOverflowAnchor;
+        return;
+      }
+
+      window.requestAnimationFrame(() => {
+        if (containerRef.current !== container) {
+          container.style.overflowAnchor = previousOverflowAnchor;
+          return;
+        }
+        container.scrollTop = previousTop + container.scrollHeight - previousHeight;
+        container.style.overflowAnchor = previousOverflowAnchor;
+      });
+    }, { root: containerRef.current, rootMargin: '250px 0px', threshold: 0.01 });
+
+    previousGalleryObserver.current.observe(node);
+  }, [containerRef, fetchPreviousGallery, galleryStartIndex]);
 
   const resetGallery = useCallback(() => {
     galleryOffsetRef.current = 0;
     galleryCursorRef.current = null;
+    galleryStartIndexRef.current = 0;
     setGalleryStartIndex(0);
     hasMoreGalleryRef.current = true;
     setGalleryItems([]);
@@ -1750,6 +1941,7 @@ function App() {
     setSelectedPromptTags([slug]);
     setGallerySearch('');
     setFavoritesOnly(false);
+    setPromptFavoritesOnly(false);
     setShowArchivedInGallery(false);
     setActiveInfoId(null);
     setView('gallery');
@@ -1782,7 +1974,7 @@ function App() {
       resetGallery();
       void fetchPromptTags();
     }
-  }, [view, showArchivedInGallery, favoritesOnly, selectedPromptTags, debouncedGallerySearch, resetGallery, fetchPromptTags]);
+  }, [view, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, selectedPromptTags, debouncedGallerySearch, resetGallery, fetchPromptTags]);
 
   const goToImage = useCallback((sessionId: string, messageId: string) => {
     pendingAnchorRef.current = messageId;
@@ -1865,11 +2057,12 @@ function App() {
 
     const currentItem = activeLightbox.source === 'chat'
       ? messages.find(message => message.id === activeLightbox.messageId)
-      : galleryItems.find(item => item.messageId === activeLightbox.messageId);
+      : lightboxGroupItems?.find(item => item.messageId === activeLightbox.messageId)
+        || galleryItems.find(item => item.messageId === activeLightbox.messageId);
     if (currentItem?.isFavorite === 1) return;
 
     void toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, 0);
-  }, [activeLightbox, galleryItems, messages, toggleFavorite]);
+  }, [activeLightbox, galleryItems, lightboxGroupItems, messages, toggleFavorite]);
 
   useEffect(() => {
     if (view !== 'chat' || !imageAnchorRequest) return;
@@ -1997,6 +2190,71 @@ function App() {
       return;
     }
 
+    if (groupByPrompt) {
+      const currentGroup = lightboxGroupItems && lightboxGroupItems.length > 1
+        ? lightboxGroupItems
+        : null;
+      const currentGroupIndex = currentGroup
+        ? currentGroup.findIndex(item => item.messageId === activeLightbox.messageId)
+        : -1;
+      const nextInsideGroup = currentGroupIndex >= 0
+        ? currentGroup?.[currentGroupIndex + direction]
+        : undefined;
+
+      if (nextInsideGroup) {
+        setHdLoaded(null);
+        setActiveLightbox({
+          url: nextInsideGroup.imageUrl,
+          thumbnailUrl: nextInsideGroup.thumbnailUrl,
+          sessionId: nextInsideGroup.sessionId,
+          messageId: nextInsideGroup.messageId,
+          source: 'gallery'
+        });
+        return;
+      }
+
+      const representativeId = currentGroup?.[0]?.messageId || activeLightbox.messageId;
+      let summaries = galleryItemsRef.current;
+      let summaryIndex = summaries.findIndex(item => item.messageId === representativeId);
+      if (summaryIndex === -1) return;
+
+      if (direction === 1 && summaryIndex >= summaries.length - 5 && hasMoreGalleryRef.current) {
+        void fetchGallery(false);
+      }
+      if (direction === 1 && summaryIndex === summaries.length - 1 && hasMoreGalleryRef.current) {
+        await fetchGallery(false);
+        summaries = galleryItemsRef.current;
+        summaryIndex = summaries.findIndex(item => item.messageId === representativeId);
+      }
+
+      let adjacentIndex = summaryIndex + direction;
+      if (adjacentIndex >= summaries.length) {
+        adjacentIndex = hasMoreGalleryRef.current ? summaryIndex : 0;
+      } else if (adjacentIndex < 0) {
+        adjacentIndex = hasMoreGalleryRef.current ? 0 : summaries.length - 1;
+      }
+
+      const adjacentSummary = summaries[adjacentIndex];
+      if (!adjacentSummary || adjacentSummary.messageId === representativeId) return;
+
+      const adjacentGroup = await loadGalleryPromptGroup(adjacentSummary);
+      const target = direction === 1
+        ? adjacentGroup[0]
+        : adjacentGroup[adjacentGroup.length - 1];
+      if (!target) return;
+
+      setHdLoaded(null);
+      setLightboxGroupItems(adjacentGroup.length > 1 ? adjacentGroup : null);
+      setActiveLightbox({
+        url: target.imageUrl,
+        thumbnailUrl: target.thumbnailUrl,
+        sessionId: target.sessionId,
+        messageId: target.messageId,
+        source: 'gallery'
+      });
+      return;
+    }
+
     const originalMessageId = activeLightbox.messageId;
     let items = galleryItemsRef.current;
     let currentIndex = items.findIndex(item => item.messageId === originalMessageId);
@@ -2038,7 +2296,7 @@ function App() {
         source: 'gallery'
       };
     });
-  }, [activeLightbox, currentSessionId, fetchGallery, messages]);
+  }, [activeLightbox, currentSessionId, fetchGallery, groupByPrompt, lightboxGroupItems, loadGalleryPromptGroup, messages]);
 
   const handleTouchEnd = useCallback((cancelled = false) => {
     if (touchStart.current === null || touchEnd.current === null) return;
@@ -2608,8 +2866,13 @@ function App() {
   const currentLightboxItem = activeLightbox ? (
     activeLightbox.source === 'chat' 
       ? messages.find(m => m.id === activeLightbox.messageId)
-      : galleryItems.find(m => m.messageId === activeLightbox.messageId)
+      : lightboxGroupItems?.find(m => m.messageId === activeLightbox.messageId)
+        || galleryItems.find(m => m.messageId === activeLightbox.messageId)
   ) : null;
+  const currentLightboxGroupIndex = activeLightbox && lightboxGroupItems
+    ? lightboxGroupItems.findIndex(item => item.messageId === activeLightbox.messageId)
+    : -1;
+  const isPromptGroupLightbox = currentLightboxGroupIndex >= 0 && (lightboxGroupItems?.length || 0) > 1;
 
   const isAlreadyLoaded = activeLightbox ? loadedHdImages.has(activeLightbox.messageId) : false;
   const currentLightboxPrompt = currentLightboxItem
@@ -2725,6 +2988,11 @@ function App() {
             <img ref={lightboxImageRef} src={getFullImageUrl(activeLightbox.url)} alt="Fullscreen" className="lightbox-hd" style={{ position: 'relative', zIndex: 2, opacity: (hdLoaded === activeLightbox.messageId || isAlreadyLoaded) ? 1 : 0, transition: isAlreadyLoaded ? 'none' : 'opacity 0.4s ease-in', transform: `translate(${zoomOffset.x}px, ${zoomOffset.y}px) scale(${zoomScale})` }} onLoad={() => { setHdLoaded(activeLightbox.messageId); setLoadedHdImages(prev => new Set(prev).add(activeLightbox.messageId)); }} />
             {favoritedId === activeLightbox.messageId && <div className="image-overlay-heart"><HeartIcon size={128} filled /></div>}
           </div>
+          {isPromptGroupLightbox && (
+            <div className="lightbox-group-counter" role="status" aria-live="polite">
+              {currentLightboxGroupIndex + 1} / {lightboxGroupItems!.length}
+            </div>
+          )}
           {showLightboxPrompt && (
             <section
               className="lightbox-prompt-panel"
@@ -3170,13 +3438,15 @@ function App() {
           setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} favoritedId={favoritedId}
           galleryItems={galleryItems} galleryTotal={galleryTotal} galleryStartIndex={galleryStartIndex} seekGallery={seekGallery}
           isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
+          promptFavoritesOnly={promptFavoritesOnly} setPromptFavoritesOnly={setPromptFavoritesOnly}
+          groupByPrompt={groupByPrompt} setGroupByPrompt={setGroupByPrompt}
           batchDeleteGalleryItems={batchDeleteGalleryItems} batchRegenerateGalleryItems={batchRegenerateGalleryItems}
           batchLuckyGalleryItems={batchLuckyGalleryItems} batchSetGalleryFavorites={batchSetGalleryFavorites}
           batchSetGalleryPromptFavorites={batchSetGalleryPromptFavorites}
           availablePromptTags={availablePromptTags} selectedPromptTags={selectedPromptTags} setSelectedPromptTags={setSelectedPromptTags}
           gallerySearch={gallerySearch} setGallerySearch={setGallerySearch} openPromptTag={openPromptTag}
           showArchivedInGallery={showArchivedInGallery} setShowArchivedInGallery={setShowArchivedInGallery}
-          setHasMoreGallery={setHasMoreGallery} lastImageElementRef={lastImageElementRef} containerRef={containerRef} textareaRef={textareaRef}
+          setHasMoreGallery={setHasMoreGallery} firstImageElementRef={firstImageElementRef} lastImageElementRef={lastImageElementRef} containerRef={containerRef} textareaRef={textareaRef}
           messagesEndRef={messagesEndRef} params={params} setParams={setParams} smoothScrollTo={smoothScrollTo} handleScroll={handleScroll}
           showScrollBottom={showScrollBottom} onScrollToBottom={onScrollToBottom}
           openOptionsRequest={openOptionsRequest}

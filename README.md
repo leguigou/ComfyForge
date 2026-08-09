@@ -17,6 +17,18 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.7.3
+
+Version 2.7.3 makes very large image libraries faster to browse, easier to organize, and simpler to maintain without sacrificing authenticated access.
+
+- **Bidirectional gallery pagination:** after a fast-scroll jump, approaching either edge loads the next or previous 48 results, preserves the visible position while prepending, and lets users return continuously to the very first image.
+- **Prompt-grouped browsing:** identical generation prompts can be collapsed into one gallery card with a result count, aggregate favorite indicators, and seamless navigation through every image in the group.
+- **Sharper gallery filters:** dedicated controls expose image favorites, liked prompts, grouped prompts, and archived content while preserving total counts and direct indexed jumps.
+- **Responsive thumbnail pipeline:** the gallery selects 160, 256, or 400 px WebP files for the actual screen density, prioritizes the first rows, and creates missing variants on demand or through an idempotent backfill command.
+- **Faster protected image delivery:** short-lived authentication caching avoids repeated SQLite lookups for image grids, while Docker deployments can delegate authorized transfers to the bundled Nginx through `X-Accel-Redirect`.
+- **Self-service thumbnail maintenance:** users can inspect and purge their own thumbnail cache from Settings without deleting originals; variants are recreated automatically when needed.
+- **Storage visibility:** statistics now separate full-resolution originals from thumbnail-cache usage for each user, with responsive storage summaries on smaller screens.
+
 ## What's new in 2.7.2
 
 Version 2.7.2 makes large mobile galleries dramatically faster to navigate, strengthens Lucky prompt creation and recovery, and polishes the first-run and administration experience.
@@ -115,6 +127,7 @@ Version 2.5.0 focuses on safer upgrades, fair multi-user operation, faster large
 - Generated images, attempts, failures, success rate, average render time, and conversation counts.
 - Activity charts for generations, model usage, LLM text/vision calls, favorites, and liked prompts.
 - All-time totals, ranked models, top workflows, and LLM failure/performance summaries.
+- Per-user disk usage split between full-resolution originals and the thumbnail cache, without extra statistics queries in SQLite.
 - Searchable tag analytics with category and favorite/liked-prompt scopes.
 
 ### Administration, privacy, and UX
@@ -222,6 +235,19 @@ Persistent data lives in:
 
 Back up all three locations regularly. Never commit them to Git.
 
+Responsive thumbnail variants are created for every new generation and lazily
+for older libraries. Each user can inspect and purge their own generated
+thumbnail cache from **Settings → General**; originals are preserved and the
+variants are recreated on demand. To pre-generate every missing 160 px and
+256 px variant after an upgrade, run:
+
+```bash
+docker compose exec backend npm run thumbnails:backfill
+```
+
+The command is idempotent: existing variants are skipped. In a local source
+checkout, use `npm run thumbnails:backfill:dev` from the `backend` directory.
+
 On Windows, a consistent SQLite snapshot plus workflows, images, version, and
 private configuration can be created outside the repository with:
 
@@ -247,6 +273,7 @@ contain `AUTH_SECRET` and must be stored privately.
 | `ALLOW_USER_LLM_URLS` | Allow each user to choose an arbitrary LLM URL | `false` |
 | `MAX_QUEUE_PER_USER` | Initial pending/processing quota assigned to users (then editable per user, including unlimited) | `25` |
 | `MAX_QUEUE_BATCH` | Maximum generations accepted by one batch request | `50` |
+| `IMAGE_ACCEL_REDIRECT` | Delegate authorized image transfers to the bundled Nginx (recommended with Docker) | `true` in Docker |
 | `PORT` | Internal API port | `3001` |
 
 Do not change `AUTH_SECRET` after saving API keys unless you plan to enter them again: provider credentials are encrypted with a key derived from this secret.

@@ -4,8 +4,8 @@ import type { Message, Language, GalleryItem, GenParameters, PromptTag } from '.
 import { WelcomeScreen, type WelcomeSuggestionAction } from './WelcomeScreen';
 import { MessageText } from './MessageText';
 import { SeedyCompanion } from './SeedyCompanion';
-import { AlertTriangleIcon, CameraIcon, ChatIcon, ChevronDownIcon, ComposeIcon, DiceIcon, HeartIcon, InfoIcon, LockIcon, MagicWandIcon, PlusIcon, RefreshIcon, SendIcon, ThumbUpIcon, TrashIcon, XIcon } from '../ui/Icons';
-import { API_BASE, getFullImageUrl, formatDuration } from '../../services/api';
+import { AlertTriangleIcon, ArchiveIcon, CameraIcon, ChatIcon, ChevronDownIcon, ComposeIcon, DiceIcon, HeartIcon, InfoIcon, LockIcon, MagicWandIcon, PlusIcon, PromptGroupIcon, RefreshIcon, SendIcon, ThumbUpIcon, TrashIcon, XIcon } from '../ui/Icons';
+import { API_BASE, getFullImageUrl, getThumbnailSrcSet, formatDuration } from '../../services/api';
 import {
   getEstimatedGenerationProgress,
   getGenerationElapsedSeconds,
@@ -78,6 +78,10 @@ interface ReservedImageProps {
   objectFit?: React.CSSProperties['objectFit'];
   width?: number;
   height?: number;
+  srcSet?: string;
+  sizes?: string;
+  loading?: 'eager' | 'lazy';
+  fetchPriority?: 'high' | 'low' | 'auto';
 }
 
 const ReservedImage = ({
@@ -88,6 +92,10 @@ const ReservedImage = ({
   objectFit = 'contain',
   width,
   height,
+  srcSet,
+  sizes,
+  loading = 'lazy',
+  fetchPriority = 'auto',
 }: ReservedImageProps) => {
   const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
   const isLoaded = loadedSrc === src;
@@ -103,9 +111,12 @@ const ReservedImage = ({
       </div>
       <img
         src={src}
+        srcSet={srcSet}
+        sizes={sizes}
         alt={alt}
         className={`${className || ''} reserved-image ${isLoaded ? 'is-loaded' : ''}`.trim()}
-        loading="lazy"
+        loading={loading}
+        fetchPriority={fetchPriority}
         decoding="async"
         width={width}
         height={height}
@@ -238,7 +249,7 @@ interface ChatInterfaceProps {
   setMessageToDelete: (id: string | null) => void;
   toggleFavorite: (sessionId: string, messageId: string, currentStatus: number | undefined) => void;
   togglePromptFavorite: (sessionId: string, messageId: string, currentStatus: number | undefined) => void;
-  handleImageClick: (item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, source: 'chat' | 'gallery' }) => void;
+  handleImageClick: (item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, groupCount?: number, source: 'chat' | 'gallery' }) => void;
   favoritedId: string | null;
   galleryItems: GalleryItem[];
   batchDeleteGalleryItems: (items: GalleryItem[]) => Promise<void>;
@@ -252,6 +263,10 @@ interface ChatInterfaceProps {
   isFetchingGallery: boolean;
   favoritesOnly: boolean;
   setFavoritesOnly: (val: boolean) => void;
+  promptFavoritesOnly: boolean;
+  setPromptFavoritesOnly: (val: boolean) => void;
+  groupByPrompt: boolean;
+  setGroupByPrompt: (val: boolean) => void;
   availablePromptTags: PromptTag[];
   selectedPromptTags: string[];
   setSelectedPromptTags: (tags: string[]) => void;
@@ -261,7 +276,8 @@ interface ChatInterfaceProps {
   showArchivedInGallery: boolean;
   setShowArchivedInGallery: (val: boolean) => void;
   setHasMoreGallery: (val: boolean) => void;
-  lastImageElementRef: (node: HTMLDivElement) => void;
+  firstImageElementRef: (node: HTMLDivElement | null) => void;
+  lastImageElementRef: (node: HTMLDivElement | null) => void;
   containerRef: React.RefObject<HTMLDivElement | null>;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
@@ -317,6 +333,10 @@ export const ChatInterface = ({
   isFetchingGallery,
   favoritesOnly,
   setFavoritesOnly,
+  promptFavoritesOnly,
+  setPromptFavoritesOnly,
+  groupByPrompt,
+  setGroupByPrompt,
   availablePromptTags,
   selectedPromptTags,
   setSelectedPromptTags,
@@ -325,6 +345,7 @@ export const ChatInterface = ({
   openPromptTag,
   showArchivedInGallery,
   setShowArchivedInGallery,
+  firstImageElementRef,
   lastImageElementRef,
   containerRef,
   textareaRef,
@@ -469,6 +490,13 @@ export const ChatInterface = ({
       galleryLongPressRef.current = null;
     }
   }, [view]);
+
+  useEffect(() => {
+    if (!groupByPrompt) return;
+    gallerySelectionModeRef.current = false;
+    setSelectedGalleryIds(new Set());
+    setGalleryBatchMenuOpen(false);
+  }, [groupByPrompt]);
 
   useEffect(() => () => {
     if (analysisPreview?.url) URL.revokeObjectURL(analysisPreview.url);
@@ -1887,19 +1915,51 @@ export const ChatInterface = ({
                     </div>
                   )}
                 </div>
-                <button className={`gallery-filter-fav ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly(!favoritesOnly)} aria-pressed={favoritesOnly}>
-                  <HeartIcon size={18} filled={favoritesOnly} /> {t.favorites}
-                </button>
-                <div className="control-group">
-                  <button className={`control-pill ${!showArchivedInGallery ? 'active' : ''}`} onClick={() => setShowArchivedInGallery(false)}>
-                    {t.active}
+                <div className="gallery-filter-toggles">
+                  <button
+                    type="button"
+                    className={`gallery-filter-round group-prompts ${groupByPrompt ? 'active' : ''}`}
+                    onClick={() => setGroupByPrompt(!groupByPrompt)}
+                    title={t.groupByPrompt}
+                    aria-label={t.groupByPrompt}
+                    aria-pressed={groupByPrompt}
+                  >
+                    <PromptGroupIcon size={20} />
                   </button>
-                  <button className={`control-pill ${showArchivedInGallery ? 'active' : ''}`} onClick={() => setShowArchivedInGallery(true)}>
-                    {t.archived}
+                  <button
+                    type="button"
+                    className={`gallery-filter-fav ${favoritesOnly ? 'active' : ''}`}
+                    onClick={() => setFavoritesOnly(!favoritesOnly)}
+                    title={t.favoritesOnly}
+                    aria-label={t.favoritesOnly}
+                    aria-pressed={favoritesOnly}
+                  >
+                    <HeartIcon size={18} filled={favoritesOnly} /> <span>{t.favorites}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`gallery-filter-prompt ${promptFavoritesOnly ? 'active' : ''}`}
+                    onClick={() => setPromptFavoritesOnly(!promptFavoritesOnly)}
+                    title={t.promptFavoritesOnly}
+                    aria-label={t.promptFavoritesOnly}
+                    aria-pressed={promptFavoritesOnly}
+                  >
+                    <ThumbUpIcon size={18} /> <span>{t.likedPrompts}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`gallery-filter-round archives ${showArchivedInGallery ? 'active' : ''}`}
+                    onClick={() => setShowArchivedInGallery(!showArchivedInGallery)}
+                    title={t.archivedOnly}
+                    aria-label={t.archivedOnly}
+                    aria-pressed={showArchivedInGallery}
+                  >
+                    <ArchiveIcon size={20} />
                   </button>
                 </div>
               </div>}
             </div>
+            <div ref={firstImageElementRef} className="gallery-page-sentinel" aria-hidden="true" />
             <div
               ref={galleryGridRef}
               className={`gallery-grid ${isPinchingGallery ? 'is-pinching' : ''}`}
@@ -1921,13 +1981,14 @@ export const ChatInterface = ({
                   ref={galleryItems.length === index + 1 ? lastImageElementRef : undefined}
                   key={item.messageId} 
                   data-gallery-index={galleryStartIndex + index}
-                  className={`gallery-item ${selectedGalleryIds.has(item.messageId) ? 'selected' : ''}`}
+                  data-gallery-message-id={item.messageId}
+                  className={`gallery-item ${(item.groupCount || 0) > 1 ? 'grouped' : ''} ${selectedGalleryIds.has(item.messageId) ? 'selected' : ''}`}
                   style={{ 
                     aspectRatio: (item.width && item.height) ? `${item.width}/${item.height}` : 'auto',
                     backgroundColor: 'var(--social-bg)'
                   }}
                   aria-pressed={selectedGalleryIds.size ? selectedGalleryIds.has(item.messageId) : undefined}
-                  onPointerDown={event => startGalleryLongPress(event, item.messageId)}
+                  onPointerDown={event => { if (!groupByPrompt) startGalleryLongPress(event, item.messageId); }}
                   onPointerMove={moveGalleryLongPress}
                   onPointerUp={event => cancelGalleryLongPress(event.pointerId)}
                   onPointerCancel={event => cancelGalleryLongPress(event.pointerId)}
@@ -1935,7 +1996,7 @@ export const ChatInterface = ({
                   onContextMenu={event => event.preventDefault()}
                   onClick={(event) => {
                     if (suppressGalleryClickRef.current) return;
-                    if (event.shiftKey && !selectedGalleryIds.size) {
+                    if (!groupByPrompt && event.shiftKey && !selectedGalleryIds.size) {
                       gallerySelectionModeRef.current = true;
                       setSelectedGalleryIds(new Set([item.messageId]));
                       return;
@@ -1950,15 +2011,20 @@ export const ChatInterface = ({
                       sessionId: item.sessionId,
                       messageId: item.messageId,
                       isFavorite: item.isFavorite,
+                      groupCount: item.groupCount,
                       source: 'gallery'
                     });
                   }}
                 >
                   <ReservedImage
                     src={getFullImageUrl(item.thumbnailUrl || item.imageUrl)} 
+                    srcSet={getThumbnailSrcSet(item.thumbnailUrl || item.imageUrl)}
+                    sizes={`${Math.ceil(100 / galleryColumns)}vw`}
                     alt={item.prompt} 
                     loadingLabel={t.loading}
                     objectFit="cover"
+                    loading={index < galleryColumns * 3 ? 'eager' : 'lazy'}
+                    fetchPriority={index < galleryColumns ? 'high' : 'auto'}
                   />
                   {galleryColumns < 3 && selectedGalleryIds.size === 0 && (
                     <div className="gallery-item-actions">
@@ -1982,10 +2048,16 @@ export const ChatInterface = ({
                       </button>
                     </div>
                   )}
-                  {item.isFavorite === 1 && <div className="gallery-item-favorite"><HeartIcon size={22} filled /></div>}
-                  {item.isPromptFavorite === 1 && (
-                    <div className="gallery-item-prompt-favorite" title={t.likePrompt}>
+                  {(item.groupHasFavorite ?? item.isFavorite) === 1 && <div className="gallery-item-favorite" title={(item.groupCount || 0) > 1 ? t.groupContainsFavorite : t.favorites}><HeartIcon size={22} filled /></div>}
+                  {(item.groupHasPromptFavorite ?? item.isPromptFavorite) === 1 && (
+                    <div className="gallery-item-prompt-favorite" title={(item.groupCount || 0) > 1 ? t.groupContainsLikedPrompt : t.likePrompt}>
                       <ThumbUpIcon size={18} />
+                    </div>
+                  )}
+                  {(item.groupCount || 0) > 1 && selectedGalleryIds.size === 0 && (
+                    <div className="gallery-group-count" title={`${item.groupCount} ${t.results}`} aria-label={`${item.groupCount} ${t.results}`}>
+                      <PromptGroupIcon size={13} />
+                      <span>{item.groupCount}</span>
                     </div>
                   )}
                   {item.comparisonMessageId && selectedGalleryIds.size === 0 && (

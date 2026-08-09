@@ -52,6 +52,9 @@ export interface GalleryItem {
   tags?: PromptTag[];
   randomSelections?: RandomPromptSelection[];
   comparisonMessageId?: string;
+  groupCount?: number;
+  groupHasFavorite?: number;
+  groupHasPromptFavorite?: number;
 }
 
 export interface PromptTag {

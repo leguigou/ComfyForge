@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import path from 'path';
 import fs from 'fs';
 import db from '../services/database';
-import { requireAdmin, authenticate } from '../middleware/auth';
+import { requireAdmin, authenticate, invalidateImageAuthCache } from '../middleware/auth';
 import { imagesDir } from '../services/image';
 import { deleteCompanionAssetsForUser } from '../services/companion-assets';
 import { getQueueLimits, getUserQueueCapacity } from '../services/queue';
@@ -42,6 +42,7 @@ router.patch('/me', authenticate, (req, res) => {
       db.prepare('UPDATE users SET avatarUrl = ? WHERE id = ?').run(avatarUrl, user.id);
     }
     
+    invalidateImageAuthCache(user.id);
     const updatedUser = db.prepare('SELECT id, username, isAdmin, avatarUrl FROM users WHERE id = ?').get(user.id) as any;
     res.json({ success: true, user: { username: updatedUser.username, isAdmin: updatedUser.isAdmin === 1, avatarUrl: updatedUser.avatarUrl } });
   } catch (err: any) {
@@ -128,6 +129,7 @@ router.delete('/:id', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Cannot delete yourself' });
   }
   db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  invalidateImageAuthCache(userId);
   deleteCompanionAssetsForUser(userId);
   res.json({ success: true });
 });
@@ -137,6 +139,7 @@ router.patch('/:id/password', requireAdmin, (req, res) => {
   if (!password) return res.status(400).json({ error: 'New password required' });
   const passwordHash = bcrypt.hashSync(password.trim(), 10);
   db.prepare('UPDATE users SET password = ? WHERE id = ?').run(passwordHash, req.params.id);
+  invalidateImageAuthCache(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
   res.json({ success: true });
 });
 
@@ -212,6 +215,7 @@ router.patch('/:id', requireAdmin, (req, res) => {
       SET username = ?, password = ?, isAdmin = ?, avatarUrl = ?, queueLimit = ?
       WHERE id = ?
     `).run(username, passwordHash, isAdmin ? 1 : 0, avatarUrl, queueLimit, userId);
+    invalidateImageAuthCache(userId);
 
     res.json({
       success: true,
