@@ -613,6 +613,9 @@ div:focus:not(:focus-visible) {
   color: #f4f4f5;
   cursor: default;
   backdrop-filter: blur(18px);
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
   transform: translate(-50%, -50%);
   animation: lightbox-prompt-in 0.16s ease-out;
 }
@@ -1045,8 +1048,6 @@ div:focus:not(:focus-visible) {
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
-.lightbox-btn.go-to-chat { background: var(--accent); border-color: transparent; color: white; }
-
 .image-overlay-heart {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
   color: #ff4b4b; z-index: 10; animation: heartBurst 0.8s ease-out forwards; pointer-events: none;
@@ -1242,10 +1243,116 @@ div:focus:not(:focus-visible) {
   text-wrap: balance;
 }
 
+.welcome-suggestions-shell {
+  width: min(100%, 34rem);
+  margin-top: clamp(2.5rem, 8vh, 5rem);
+}
+
+.welcome-suggestions-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin: 0 0 0.25rem auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  opacity: 0.62;
+  transition: color 0.2s, background-color 0.2s, opacity 0.2s, transform 0.2s;
+}
+
+.welcome-suggestions-refresh:hover,
+.welcome-suggestions-refresh:focus-visible {
+  background: var(--accent-bg);
+  color: var(--accent);
+  opacity: 1;
+  transform: rotate(45deg);
+}
+
+.welcome-suggestions {
+  display: grid;
+  gap: 0.15rem;
+  animation: welcome-suggestions-in 0.28s ease-out;
+}
+
+@keyframes welcome-suggestions-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.welcome-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  min-height: 52px;
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border: 0;
+  border-radius: 0.85rem;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.2s, background-color 0.2s, transform 0.2s;
+}
+
+.welcome-suggestion:hover,
+.welcome-suggestion:focus-visible {
+  background: var(--social-bg);
+  color: var(--text-h);
+  transform: translateX(4px);
+}
+
+.welcome-suggestion-icon {
+  display: grid;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.welcome-suggestion[data-suggestion='image'] .welcome-suggestion-icon { color: #38a3ff; }
+.welcome-suggestion[data-suggestion='favorite'] .welcome-suggestion-icon { color: #ff5f73; }
+.welcome-suggestion[data-suggestion='portrait'] .welcome-suggestion-icon { color: #f1a93b; }
+.welcome-suggestion[data-suggestion='cinematic'] .welcome-suggestion-icon { color: #9b7cff; }
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome-suggestions { animation: none; }
+  .welcome-suggestions-refresh,
+  .welcome-suggestion { transition: none; }
+}
+
 @media (max-width: 768px) {
   .welcome-screen h1 {
     max-width: 28rem;
     line-height: 1.15;
+  }
+
+  .welcome-screen {
+    justify-content: flex-start;
+    padding: 11vh 1rem 1rem;
+  }
+
+  .welcome-icon {
+    margin-bottom: 1.25rem;
+  }
+
+  .welcome-suggestions-shell {
+    margin-top: clamp(2rem, 7vh, 3.5rem);
+  }
+
+  .welcome-suggestion {
+    min-height: 48px;
+    font-size: 0.95rem;
   }
 }
 

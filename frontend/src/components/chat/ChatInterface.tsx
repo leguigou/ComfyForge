@@ -1,7 +1,7 @@
 import React, { useState, useLayoutEffect, useEffect, useRef, useCallback } from 'react';
 import './ChatInterface.css';
 import type { Message, Language, GalleryItem, GenParameters, PromptTag } from '../../types';
-import { WelcomeScreen } from './WelcomeScreen';
+import { WelcomeScreen, type WelcomeSuggestionAction } from './WelcomeScreen';
 import { MessageText } from './MessageText';
 import { SeedyCompanion } from './SeedyCompanion';
 import { AlertTriangleIcon, CameraIcon, ChatIcon, ChevronDownIcon, ComposeIcon, DiceIcon, HeartIcon, InfoIcon, LockIcon, MagicWandIcon, PlusIcon, RefreshIcon, SendIcon, ThumbUpIcon, TrashIcon, XIcon } from '../ui/Icons';
@@ -28,6 +28,7 @@ const MAX_GALLERY_COLUMNS = 6;
 const GALLERY_PINCH_STEP = 1.16;
 const GALLERY_LONG_PRESS_MS = 1000;
 const GALLERY_LONG_PRESS_MOVE_TOLERANCE = 12;
+const GALLERY_FAST_SCROLL_THUMB_SIZE = 58;
 const VISION_RECOVERY_STORAGE_KEY = 'comfyforge.pendingVisionRecovery';
 
 const createVisionRecoveryId = () => {
@@ -246,6 +247,8 @@ interface ChatInterfaceProps {
   batchSetGalleryFavorites: (items: GalleryItem[], value: number) => Promise<void>;
   batchSetGalleryPromptFavorites: (items: GalleryItem[], value: number) => Promise<void>;
   galleryTotal: number;
+  galleryStartIndex: number;
+  seekGallery: (targetIndex: number) => Promise<GalleryItem[]>;
   isFetchingGallery: boolean;
   favoritesOnly: boolean;
   setFavoritesOnly: (val: boolean) => void;
@@ -309,6 +312,8 @@ export const ChatInterface = ({
   batchSetGalleryFavorites,
   batchSetGalleryPromptFavorites,
   galleryTotal,
+  galleryStartIndex,
+  seekGallery,
   isFetchingGallery,
   favoritesOnly,
   setFavoritesOnly,
@@ -367,6 +372,8 @@ export const ChatInterface = ({
   const [selectedGalleryIds, setSelectedGalleryIds] = useState<Set<string>>(() => new Set());
   const [galleryBatchMenuOpen, setGalleryBatchMenuOpen] = useState(false);
   const [galleryBatchBusy, setGalleryBatchBusy] = useState(false);
+  const [isGalleryFastScrolling, setIsGalleryFastScrolling] = useState(false);
+  const [galleryFastScrollIndex, setGalleryFastScrollIndex] = useState(0);
   const hadPromptTextRef = useRef(hasPromptText);
   const promptHighlightRef = useRef<HTMLDivElement>(null);
   const imageImportRef = useRef<HTMLInputElement>(null);
@@ -393,6 +400,12 @@ export const ChatInterface = ({
     startX: number;
     startY: number;
   } | null>(null);
+  const galleryGridRef = useRef<HTMLDivElement>(null);
+  const galleryFastScrollRef = useRef<HTMLDivElement>(null);
+  const galleryFastScrollPointerRef = useRef<number | null>(null);
+  const galleryFastScrollTimerRef = useRef<number | null>(null);
+  const galleryFastScrollRequestRef = useRef(0);
+  const galleryScrollFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     localStorage.setItem('galleryColumns', String(galleryColumns));
@@ -416,7 +429,22 @@ export const ChatInterface = ({
     if (suppressGalleryClickTimerRef.current !== null) {
       window.clearTimeout(suppressGalleryClickTimerRef.current);
     }
+    if (galleryFastScrollTimerRef.current !== null) {
+      window.clearTimeout(galleryFastScrollTimerRef.current);
+    }
+    if (galleryScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(galleryScrollFrameRef.current);
+    }
   }, []);
+
+  useEffect(() => {
+    setGalleryFastScrollIndex(current => {
+      const lastLoadedIndex = galleryStartIndex + Math.max(0, galleryItems.length - 1);
+      return current >= galleryStartIndex && current <= lastLoadedIndex
+        ? Math.min(current, Math.max(0, galleryTotal - 1))
+        : Math.min(galleryStartIndex, Math.max(0, galleryTotal - 1));
+    });
+  }, [galleryItems.length, galleryStartIndex, galleryTotal]);
 
   useEffect(() => {
     const visibleIds = new Set(galleryItems.map(item => item.messageId));
@@ -888,6 +916,67 @@ export const ChatInterface = ({
     }
   };
 
+  const focusPrompt = () => {
+    window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+  };
+
+  const openImageImport = () => {
+    if (!params.visionProviderId || !params.visionModel) {
+      toast.error(t.visionSetupRequired || 'Choose a vision provider and model in LLM settings first.');
+      return;
+    }
+    imageImportRef.current?.click();
+  };
+
+  const loadLatestPrompt = async () => {
+    setIsResolvingSlashCommand(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/gallery?limit=1`, { credentials: 'include' });
+      const data = await response.json();
+      const items = Array.isArray(data) ? data : data.items;
+      const latest = items?.[0];
+      const latestPrompt = (latest?.generationPrompt || latest?.prompt || latest?.text || '').trim();
+      if (!response.ok || !latestPrompt) throw new Error(t.welcomeNoRecentCreation);
+      setInput(latestPrompt);
+      toast.success(t.slashPromptLoaded);
+      focusPrompt();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.welcomeNoRecentCreation);
+    } finally {
+      setIsResolvingSlashCommand(false);
+    }
+  };
+
+  const handleWelcomeSuggestion = (suggestion: WelcomeSuggestionAction) => {
+    if (suggestion === 'surprise' || suggestion === 'remix') {
+      void createLuckyGeneration();
+      return;
+    }
+    if (suggestion === 'image') {
+      openImageImport();
+      return;
+    }
+    if (suggestion === 'favorite') {
+      void loadSavedPrompt('favorite');
+      return;
+    }
+    if (suggestion === 'resume') {
+      void loadLatestPrompt();
+      return;
+    }
+
+    const prompts: Partial<Record<WelcomeSuggestionAction, string>> = {
+      imagine: t.welcomeImaginePrompt,
+      portrait: t.welcomePortraitPrompt,
+      cinematic: t.welcomeCinematicPrompt,
+    };
+    const prompt = prompts[suggestion];
+    if (prompt) {
+      setInput(prompt);
+      focusPrompt();
+    }
+  };
+
   const executePromptInput = async () => {
     const trimmedInput = input.trim();
     if (!trimmedInput) return;
@@ -1215,13 +1304,139 @@ export const ChatInterface = ({
     }
   }, [input, textareaRef]);
 
+  const scrollToGalleryIndex = useCallback((targetIndex: number) => {
+    const container = containerRef.current;
+    const grid = galleryGridRef.current;
+    if (!container || !grid) return;
+
+    const items = Array.from(grid.querySelectorAll<HTMLElement>('[data-gallery-index]'));
+    if (items.length === 0) return;
+    const target = items.reduce((closest, candidate) => {
+      const closestIndex = Number(closest.dataset.galleryIndex);
+      const candidateIndex = Number(candidate.dataset.galleryIndex);
+      return Math.abs(candidateIndex - targetIndex) < Math.abs(closestIndex - targetIndex) ? candidate : closest;
+    });
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const headerClearance = window.innerWidth <= 768 ? 62 : 76;
+    container.scrollTop += targetRect.top - containerRect.top - headerClearance;
+  }, [containerRef]);
+
+  const performGalleryFastSeek = useCallback(async (targetIndex: number) => {
+    if (galleryTotal <= 0) return;
+    const requestId = ++galleryFastScrollRequestRef.current;
+    await seekGallery(targetIndex);
+    if (requestId !== galleryFastScrollRequestRef.current) return;
+    window.requestAnimationFrame(() => scrollToGalleryIndex(targetIndex));
+  }, [galleryTotal, scrollToGalleryIndex, seekGallery]);
+
+  const queueGalleryFastSeek = useCallback((targetIndex: number, immediate = false) => {
+    if (galleryFastScrollTimerRef.current !== null) {
+      window.clearTimeout(galleryFastScrollTimerRef.current);
+      galleryFastScrollTimerRef.current = null;
+    }
+    if (immediate) {
+      void performGalleryFastSeek(targetIndex);
+      return;
+    }
+    galleryFastScrollTimerRef.current = window.setTimeout(() => {
+      galleryFastScrollTimerRef.current = null;
+      void performGalleryFastSeek(targetIndex);
+    }, 120);
+  }, [performGalleryFastSeek]);
+
+  const getGalleryIndexAtClientY = useCallback((clientY: number) => {
+    const track = galleryFastScrollRef.current;
+    if (!track || galleryTotal <= 1) return 0;
+    const rect = track.getBoundingClientRect();
+    const thumbRadius = GALLERY_FAST_SCROLL_THUMB_SIZE / 2;
+    const progress = Math.min(1, Math.max(0,
+      (clientY - rect.top - thumbRadius) / Math.max(1, rect.height - GALLERY_FAST_SCROLL_THUMB_SIZE)
+    ));
+    return Math.round(progress * (galleryTotal - 1));
+  }, [galleryTotal]);
+
+  const updateGalleryFastScroll = useCallback((clientY: number, immediate = false) => {
+    const targetIndex = getGalleryIndexAtClientY(clientY);
+    setGalleryFastScrollIndex(targetIndex);
+    queueGalleryFastSeek(targetIndex, immediate);
+  }, [getGalleryIndexAtClientY, queueGalleryFastSeek]);
+
+  const handleGalleryFastScrollPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    galleryFastScrollPointerRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsGalleryFastScrolling(true);
+    updateGalleryFastScroll(event.clientY, true);
+    if ('vibrate' in navigator) navigator.vibrate(12);
+  };
+
+  const handleGalleryFastScrollPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (galleryFastScrollPointerRef.current !== event.pointerId) return;
+    event.preventDefault();
+    updateGalleryFastScroll(event.clientY);
+  };
+
+  const finishGalleryFastScroll = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (galleryFastScrollPointerRef.current !== event.pointerId) return;
+    event.preventDefault();
+    updateGalleryFastScroll(event.clientY, true);
+    galleryFastScrollPointerRef.current = null;
+    setIsGalleryFastScrolling(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handleGalleryFastScrollKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    let targetIndex = galleryFastScrollIndex;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') targetIndex += 1;
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') targetIndex -= 1;
+    else if (event.key === 'PageDown') targetIndex += Math.max(galleryColumns, galleryColumns * 5);
+    else if (event.key === 'PageUp') targetIndex -= Math.max(galleryColumns, galleryColumns * 5);
+    else if (event.key === 'Home') targetIndex = 0;
+    else if (event.key === 'End') targetIndex = galleryTotal - 1;
+    else return;
+    event.preventDefault();
+    targetIndex = Math.min(Math.max(0, galleryTotal - 1), Math.max(0, targetIndex));
+    setGalleryFastScrollIndex(targetIndex);
+    queueGalleryFastSeek(targetIndex, true);
+  };
+
+  const updateGalleryFastScrollFromViewport = useCallback(() => {
+    if (view !== 'gallery' || isGalleryFastScrolling) return;
+    const container = containerRef.current;
+    const grid = galleryGridRef.current;
+    if (!container || !grid) return;
+    const items = Array.from(grid.querySelectorAll<HTMLElement>('[data-gallery-index]'));
+    if (items.length === 0) return;
+
+    const viewportTop = container.getBoundingClientRect().top + (window.innerWidth <= 768 ? 62 : 76);
+    const firstVisible = items.find(item => item.getBoundingClientRect().bottom > viewportTop) || items[items.length - 1];
+    const visibleIndex = Number(firstVisible.dataset.galleryIndex);
+    if (Number.isFinite(visibleIndex)) setGalleryFastScrollIndex(visibleIndex);
+  }, [containerRef, isGalleryFastScrolling, view]);
+
+  const handleMessagesScroll = () => {
+    handleScroll(true);
+    if (view !== 'gallery' || galleryScrollFrameRef.current !== null) return;
+    galleryScrollFrameRef.current = window.requestAnimationFrame(() => {
+      galleryScrollFrameRef.current = null;
+      updateGalleryFastScrollFromViewport();
+    });
+  };
+
   return (
     <>
-      <div className={`messages-container view-${view}`} ref={containerRef} onScroll={() => handleScroll(true)}>
+      <div className={`messages-container view-${view}`} ref={containerRef} onScroll={handleMessagesScroll}>
         {view === 'chat' || view === 'archives' ? (
           <>
             {messages.length === 0 && (
-              view === 'chat' ? <WelcomeScreen lang={lang} /> : <div className="empty-state"><p>{t.noArchives}</p></div>
+              view === 'chat'
+                ? <WelcomeScreen lang={lang} onSelectSuggestion={handleWelcomeSuggestion} />
+                : <div className="empty-state"><p>{t.noArchives}</p></div>
             )}
             {messages.map((msg, index) => {
               const messageText = (msg.text || msg.prompt || '').trim();
@@ -1686,6 +1901,7 @@ export const ChatInterface = ({
               </div>}
             </div>
             <div
+              ref={galleryGridRef}
               className={`gallery-grid ${isPinchingGallery ? 'is-pinching' : ''}`}
               style={{ gridTemplateColumns: `repeat(${galleryColumns}, minmax(0, 1fr))` }}
               onTouchStart={handleGalleryTouchStart}
@@ -1704,6 +1920,7 @@ export const ChatInterface = ({
                 <div 
                   ref={galleryItems.length === index + 1 ? lastImageElementRef : undefined}
                   key={item.messageId} 
+                  data-gallery-index={galleryStartIndex + index}
                   className={`gallery-item ${selectedGalleryIds.has(item.messageId) ? 'selected' : ''}`}
                   style={{ 
                     aspectRatio: (item.width && item.height) ? `${item.width}/${item.height}` : 'auto',
@@ -1851,10 +2068,51 @@ export const ChatInterface = ({
             )}
           </div>
         )}
+        {view === 'gallery' && galleryTotal > 1 && selectedGalleryIds.size === 0 && (
+          <div
+            ref={galleryFastScrollRef}
+            className={`gallery-fast-scroll ${isGalleryFastScrolling ? 'is-active' : ''}`}
+            role="slider"
+            tabIndex={0}
+            aria-label={lang === 'fr' ? 'Défilement rapide des contenus' : 'Fast content scroll'}
+            aria-orientation="vertical"
+            aria-valuemin={1}
+            aria-valuemax={galleryTotal}
+            aria-valuenow={Math.min(galleryTotal, galleryFastScrollIndex + 1)}
+            aria-valuetext={`${galleryFastScrollIndex + 1} / ${galleryTotal}`}
+            onPointerDown={handleGalleryFastScrollPointerDown}
+            onPointerMove={handleGalleryFastScrollPointerMove}
+            onPointerUp={finishGalleryFastScroll}
+            onPointerCancel={finishGalleryFastScroll}
+            onKeyDown={handleGalleryFastScrollKeyDown}
+          >
+            <span className="gallery-fast-scroll-rail" aria-hidden="true" />
+            <span
+              className="gallery-fast-scroll-thumb"
+              style={{ '--gallery-scroll-progress': String(galleryFastScrollIndex / Math.max(1, galleryTotal - 1)) } as React.CSSProperties}
+              aria-hidden="true"
+            >
+              <span className="gallery-fast-scroll-count">
+                {galleryFastScrollIndex + 1} / {galleryTotal}
+              </span>
+            </span>
+          </div>
+        )}
       </div>
 
       {view === 'chat' && (
         <div className="input-container">
+          <input
+            ref={imageImportRef}
+            className="vision-file-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/avif"
+            onChange={event => {
+              const file = event.target.files?.[0];
+              event.currentTarget.value = '';
+              if (file) void analyzeImportedImage(file);
+            }}
+          />
           {showOptions && (
             <div
               className="generation-options-overlay"
@@ -1897,28 +2155,11 @@ export const ChatInterface = ({
                 </button>
                 <div className="generation-options-content">
               <div className="options-group lucky-prompt-group">
-                <input
-                  ref={imageImportRef}
-                  className="vision-file-input"
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,image/avif"
-                  onChange={event => {
-                    const file = event.target.files?.[0];
-                    event.currentTarget.value = '';
-                    if (file) void analyzeImportedImage(file);
-                  }}
-                />
                 <div className="lucky-prompt-actions">
                   <button
                     type="button"
                     className="image-import-btn"
-                    onClick={() => {
-                      if (!params.visionProviderId || !params.visionModel) {
-                        toast.error(t.visionSetupRequired || 'Choose a vision provider and model in LLM settings first.');
-                        return;
-                      }
-                      imageImportRef.current?.click();
-                    }}
+                    onClick={openImageImport}
                     disabled={isAnalyzingImage}
                     title={t.importImageHelp || 'Analyze a photo and recreate it from a detailed prompt'}
                   >

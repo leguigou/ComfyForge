@@ -190,7 +190,11 @@ export const LuckyReferencesModal = ({
       </label>
 
       <div className="lucky-reference-grid">
-        {references.map((reference, index) => (
+        {references.map((reference, index) => {
+          const linkedReferences = reference.connections
+            .map(connection => references.findIndex(candidate => candidate.messageId === connection.messageId) + 1)
+            .filter(linkedIndex => linkedIndex > 0);
+          return (
           <article className="lucky-reference-card" key={reference.messageId}>
             <div className="lucky-reference-image-wrap">
               <img
@@ -212,12 +216,14 @@ export const LuckyReferencesModal = ({
               </button>
             </div>
             <div className="lucky-reference-card-body">
+              <div className="lucky-reference-links">
+                <strong>
+                  {reference.connections.length} {reference.connections.length === 1 ? t.luckyDirectLink : t.luckyDirectLinks}
+                </strong>
+                <span>#{linkedReferences.join(', #')}</span>
+              </div>
               <ScrollableLuckyTags
-                tags={reference.tags.filter((tag) => (
-                  tag.category !== 'subject'
-                  && tag.category !== 'count'
-                  && tag.slug !== 'photorealistic'
-                ))}
+                tags={reference.matchingTags}
                 lang={lang}
                 activeTagSlug={activeTagSlug}
                 busy={busy}
@@ -227,7 +233,8 @@ export const LuckyReferencesModal = ({
               <p title={reference.prompt}>{reference.prompt}</p>
             </div>
           </article>
-        ))}
+          );
+        })}
       </div>
 
       <footer className="lucky-reference-actions">

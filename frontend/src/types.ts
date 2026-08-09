@@ -179,6 +179,10 @@ export interface LuckyReference {
   isFavorite?: number;
   tags: PromptTag[];
   matchingTags: PromptTag[];
+  connections: Array<{
+    messageId: string;
+    tags: PromptTag[];
+  }>;
 }
 
 export interface Session {

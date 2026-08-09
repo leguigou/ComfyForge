@@ -65,6 +65,11 @@ const parseStoredParams = (value: string | null) => {
   }
 };
 
+const isLuckyPromptReady = (message: RetryableMessage) => {
+  const storedParams = parseStoredParams(message.generationParams);
+  return storedParams.recoveryKind !== 'lucky' || storedParams.recoveryStage === 'prompt-ready';
+};
+
 router.get('/estimate', authenticate, (req, res) => {
   const user = (req as any).user;
   const model = typeof req.query.model === 'string' ? req.query.model.trim() : '';
@@ -173,6 +178,13 @@ router.post('/generate', authenticate, async (req, res) => {
       if (!recovery) {
         return res.status(404).json({ success: false, error: 'Prompt récupérable introuvable' });
       }
+      if (!isLuckyPromptReady(recovery)) {
+        return res.status(409).json({
+          success: false,
+          code: 'LUCKY_PROMPT_NOT_READY',
+          error: 'Le prompt Chance n’est pas encore prêt à être généré',
+        });
+      }
 
       messageId = recovery.id;
       tags = db.transaction(() => {
@@ -262,6 +274,13 @@ router.post('/retry/:messageId', authenticate, (req, res) => {
         AND m.imageUrl IS NULL AND m.status IN ('failed', 'pending', 'preparing', 'processing')
     `).get(req.params.messageId, user.id) as RetryableMessage | undefined;
     if (!message) return res.status(404).json({ success: false, error: 'Génération inachevée introuvable' });
+    if (!isLuckyPromptReady(message)) {
+      return res.status(409).json({
+        success: false,
+        code: 'LUCKY_PROMPT_NOT_READY',
+        error: 'Le prompt Chance n’est pas encore prêt à être généré',
+      });
+    }
 
     const transaction = db.transaction(() => enqueueRetry(message, user.id, req.body?.params, Date.now()));
     transaction();
@@ -288,11 +307,12 @@ router.post('/retry-incomplete', authenticate, (req, res) => {
       ORDER BY m.timestamp ASC
       LIMIT 500
     `).all(user.id) as RetryableMessage[];
+    const retryableGenerations = retryableMessages.filter(isLuckyPromptReady);
 
     const capacity = getUserQueueCapacity(user.id);
     if (capacity.remaining === 0) throw new QueueCapacityError(capacity, 1);
     const availableSlots = capacity.remaining ?? capacity.batchLimit;
-    const messages = retryableMessages.slice(0, Math.min(availableSlots, capacity.batchLimit));
+    const messages = retryableGenerations.slice(0, Math.min(availableSlots, capacity.batchLimit));
 
     const now = Date.now();
     const transaction = db.transaction(() => {
@@ -304,7 +324,7 @@ router.post('/retry-incomplete', authenticate, (req, res) => {
     return res.json({
       success: true,
       queued: messages.length,
-      skipped: Math.max(0, retryableMessages.length - messages.length),
+      skipped: Math.max(0, retryableGenerations.length - messages.length),
       messageIds: messages.map(message => message.id),
       capacity: getUserQueueCapacity(user.id)
     });

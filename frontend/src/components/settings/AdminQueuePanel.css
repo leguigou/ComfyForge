@@ -1,26 +1,80 @@
-.admin-queue-panel { display: grid; gap: 1rem; }
+.admin-queue-panel { display: grid; min-width: 0; width: 100%; gap: 1rem; }
 .admin-queue-heading { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
-.admin-queue-heading > div { flex: 1 1 260px; }
+.admin-queue-heading > div { min-width: 0; flex: 1 1 260px; }
 .admin-queue-heading h3 { margin: 0 0 0.25rem; }
-.admin-queue-heading p { opacity: 0.68; }
+.admin-queue-heading p { margin: 0; opacity: 0.68; overflow-wrap: anywhere; }
 .admin-queue-heading > button,
 .admin-queue-cancel { border: 1px solid var(--border); border-radius: 10px; min-height: 40px; padding: 0.55rem 0.8rem; background: var(--input-bg, transparent); color: var(--text); cursor: pointer; }
 .admin-queue-auto-refresh { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.8rem; }
-.admin-queue-summary { display: flex; gap: 0.6rem; flex-wrap: wrap; }
-.admin-queue-summary span { padding: 0.55rem 0.7rem; border: 1px solid var(--border); border-radius: 10px; font-size: 0.78rem; }
-.admin-queue-list { display: grid; gap: 0.65rem; }
-.admin-queue-item { display: flex; align-items: center; gap: 1rem; padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: 14px; }
+.admin-queue-summary { display: flex; min-width: 0; gap: 0.6rem; flex-wrap: wrap; }
+.admin-queue-summary span { min-width: 0; padding: 0.55rem 0.7rem; border: 1px solid var(--border); border-radius: 10px; font-size: 0.78rem; }
+.admin-queue-list { display: grid; min-width: 0; gap: 0.65rem; }
+.admin-queue-item { display: flex; min-width: 0; max-width: 100%; align-items: center; gap: 1rem; padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: 14px; }
 .admin-queue-item.processing { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
 .admin-queue-item-main { min-width: 0; flex: 1; }
 .admin-queue-item-title { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; }
 .admin-queue-item-title span { padding: 0.2rem 0.45rem; border-radius: 99px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 0.7rem; font-weight: 700; }
 .admin-queue-item-title time { margin-left: auto; opacity: 0.6; font-variant-numeric: tabular-nums; }
 .admin-queue-item p { margin: 0.45rem 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.admin-queue-item small { opacity: 0.55; }
+.admin-queue-item small { display: block; min-width: 0; opacity: 0.55; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-queue-cancel { color: #ef6a75; border-color: color-mix(in srgb, #ef6a75 35%, var(--border)); }
 .admin-queue-empty { padding: 2rem; text-align: center; border: 1px dashed var(--border); border-radius: 14px; opacity: 0.65; }
 
 @media (max-width: 640px) {
-  .admin-queue-item { align-items: stretch; flex-direction: column; }
-  .admin-queue-item-title time { width: 100%; margin-left: 0; }
+  .admin-queue-panel { gap: 0.8rem; }
+  .admin-queue-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.65rem;
+  }
+  .admin-queue-heading > div { grid-column: 1 / -1; }
+  .admin-queue-heading > button { min-width: 92px; }
+  .admin-queue-auto-refresh { min-width: 0; line-height: 1.3; }
+  .admin-queue-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+  .admin-queue-summary span {
+    display: flex;
+    min-height: 48px;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    padding: 0.5rem;
+    text-align: center;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+  .admin-queue-item {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.85rem;
+    overflow: hidden;
+  }
+  .admin-queue-item-title { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .admin-queue-item-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .admin-queue-item-title span { justify-self: end; }
+  .admin-queue-item-title time { grid-column: 1 / -1; width: auto; margin-left: 0; }
+  .admin-queue-item p {
+    display: -webkit-box;
+    margin: 0.65rem 0 0.5rem;
+    overflow: hidden;
+    line-height: 1.45;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+  .admin-queue-item small {
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .admin-queue-cancel { width: 100%; }
 }

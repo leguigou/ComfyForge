@@ -17,6 +17,17 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.7.2
+
+Version 2.7.2 makes large mobile galleries dramatically faster to navigate, strengthens Lucky prompt creation and recovery, and polishes the first-run and administration experience.
+
+- **Android-style gallery fast scroll:** a full-height touch rail maps directly to the complete result count, enlarges while active, displays the current image number, and jumps to the oldest generations without loading thousands of cards into the page.
+- **More coherent Lucky references:** reference groups now require direct semantic connections, exclude generic pose, lighting, and composition matches, show their verified shared themes, and support rerolling one reference or the complete selection.
+- **Recoverable Lucky creation:** pending Lucky prompts are persisted before the LLM responds, protected from premature retries, and restored as retryable prompts if generation cannot be queued.
+- **Safer recovery cleanup:** expired Vision recovery records and temporary imports are cleaned together, with dedicated regression coverage.
+- **Faster creation shortcuts:** rotating welcome suggestions can open image analysis, reuse recent or favorite prompts, or start focused portrait and cinematic ideas immediately.
+- **Mobile and administration polish:** queue and settings layouts fit smaller screens more reliably, dialogs remain bounded, and empty chats can be removed immediately without bypassing confirmation for chats containing messages.
+
 ## What's new in 2.7.1
 
 Version 2.7.1 streamlines account creation and adds an opt-in desktop workflow for prompts copied from other applications.
@@ -83,6 +94,7 @@ Version 2.5.0 focuses on safer upgrades, fair multi-user operation, faster large
 ### Library and discovery
 
 - Progressively loaded conversation history, archives, bulk archive/delete tools, gallery browsing, image favorites, and liked prompts.
+- Android-style gallery fast scroll with a global image counter and direct paginated jumps across very large libraries.
 - Long-press/Shift-click gallery selection with batch regeneration, Lucky creation, favorite and prompt-like changes, and deletion.
 - Automatic prompt tags, tag search and filtering, tag-focused browsing, prompt reuse, and random selection from liked or favorite content.
 - Lucky generations built from weighted, coherent, non-duplicate liked-prompt references, with a visual preview and reroll controls.
