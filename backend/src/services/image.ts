@@ -62,12 +62,24 @@ export const parseThumbnailFilename = (filename: string) => {
   return { baseName: match[1], originalName: `${match[1]}.webp`, size: size as ThumbnailSize };
 };
 
+const resolvePathInside = (baseDir: string, filePath: string) => {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedPath = path.resolve(filePath);
+  const relativePath = path.relative(resolvedBase, resolvedPath);
+  if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    throw new Error('Thumbnail output path is outside the allowed directory');
+  }
+  return resolvedPath;
+};
+
 export const generateThumbnail = async (
   originalPath: string | Buffer,
   thumbPath: string,
   size: ThumbnailSize = 400,
+  outputRoot: string = thumbnailsDir,
 ) => {
-  const dir = path.dirname(thumbPath);
+  const resolvedThumbPath = resolvePathInside(outputRoot, thumbPath);
+  const dir = path.dirname(resolvedThumbPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const variant = thumbnailVariantBySize.get(size) || thumbnailVariantBySize.get(400)!;
 
@@ -76,8 +88,8 @@ export const generateThumbnail = async (
     .resize(variant.size, variant.size, { fit: 'inside', withoutEnlargement: true })
     .webp({ quality: variant.quality, effort: 4, smartSubsample: true })
     .toBuffer({ resolveWithObject: true });
-  await fs.promises.writeFile(thumbPath, data);
-  invalidateStorageStatsForPath(thumbPath, thumbnailsDir);
+  await fs.promises.writeFile(resolvedThumbPath, data);
+  invalidateStorageStatsForPath(resolvedThumbPath, thumbnailsDir);
   return info;
 };
 
@@ -85,18 +97,19 @@ export const ensureThumbnail = (
   originalPath: string,
   thumbPath: string,
   size: ThumbnailSize,
+  outputRoot: string = thumbnailsDir,
 ) => {
-  const existing = pendingThumbnailJobs.get(thumbPath);
+  const resolvedThumbPath = resolvePathInside(outputRoot, thumbPath);
+  const existing = pendingThumbnailJobs.get(resolvedThumbPath);
   if (existing) return existing;
-  const resolvedThumbPath = path.resolve(thumbPath);
   const activePurge = [...activeThumbnailPurges.entries()].find(([directory]) => (
     resolvedThumbPath.startsWith(directory + path.sep)
   ))?.[1];
   const job = (activePurge
-    ? activePurge.then(() => generateThumbnail(originalPath, thumbPath, size))
-    : generateThumbnail(originalPath, thumbPath, size))
-    .finally(() => pendingThumbnailJobs.delete(thumbPath));
-  pendingThumbnailJobs.set(thumbPath, job);
+    ? activePurge.then(() => generateThumbnail(originalPath, resolvedThumbPath, size, outputRoot))
+    : generateThumbnail(originalPath, resolvedThumbPath, size, outputRoot))
+    .finally(() => pendingThumbnailJobs.delete(resolvedThumbPath));
+  pendingThumbnailJobs.set(resolvedThumbPath, job);
   return job;
 };
 

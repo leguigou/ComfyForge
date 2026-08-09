@@ -27,9 +27,17 @@ const canAccessUserFiles = (req: express.Request, userId: string) => {
 
 const IMAGE_CACHE_CONTROL = 'private, max-age=31536000, immutable';
 const useAcceleratedImageDelivery = process.env.IMAGE_ACCEL_REDIRECT === 'true';
-const fileExists = (filePath: string) => fs.promises.access(filePath, fs.constants.R_OK)
-  .then(() => true)
-  .catch(() => false);
+const fileExistsInside = (baseDir: string, filePath: string) => {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedPath = path.resolve(filePath);
+  const relativePath = path.relative(resolvedBase, resolvedPath);
+  if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    return Promise.resolve(false);
+  }
+  return fs.promises.access(resolvedPath, fs.constants.R_OK)
+    .then(() => true)
+    .catch(() => false);
+};
 
 const sendFileIfInside = (res: express.Response, baseDir: string, filePath: string) => {
   const resolvedBase = path.resolve(baseDir);
@@ -167,7 +175,7 @@ router.get('/thumbnails/:userId/:filename', authenticateImageFile, async (req, r
   const userThumbsDir = path.join(thumbnailsDir, userId);
   const thumbPath = path.join(userThumbsDir, filename);
   
-  if (await fileExists(thumbPath)) {
+  if (await fileExistsInside(imagesDir, thumbPath)) {
     return sendFileIfInside(res, userThumbsDir, thumbPath);
   }
   
@@ -177,11 +185,11 @@ router.get('/thumbnails/:userId/:filename', authenticateImageFile, async (req, r
     const userImagesDir = path.join(imagesDir, userId);
     const originalPath = path.join(userImagesDir, request.originalName);
     const canonicalThumbnailPath = path.join(userThumbsDir, `${request.baseName}_thumb.webp`);
-    const sourcePath = request.size < 400 && await fileExists(canonicalThumbnailPath)
+    const sourcePath = request.size < 400 && await fileExistsInside(imagesDir, canonicalThumbnailPath)
       ? canonicalThumbnailPath
       : originalPath;
 
-    if (await fileExists(sourcePath)) {
+    if (await fileExistsInside(imagesDir, sourcePath)) {
       console.log(`[Thumbnails] Generating on-the-fly: ${filename} for user ${userId}`);
       await ensureThumbnail(sourcePath, thumbPath, request.size);
       return sendFileIfInside(res, userThumbsDir, thumbPath);
@@ -198,7 +206,7 @@ router.get('/thumbnails/:filename', authenticate, async (req, res) => {
   const legacyThumbsDir = path.join(imagesDir, 'thumbnails');
   const thumbPath = path.join(legacyThumbsDir, filename);
 
-  if (await fileExists(thumbPath)) {
+  if (await fileExistsInside(imagesDir, thumbPath)) {
     return sendFileIfInside(res, legacyThumbsDir, thumbPath);
   }
   
@@ -207,10 +215,10 @@ router.get('/thumbnails/:filename', authenticate, async (req, res) => {
     if (!request) return res.status(404).send('Not found');
     const originalPath = path.join(imagesDir, request.originalName);
     const canonicalThumbnailPath = path.join(legacyThumbsDir, `${request.baseName}_thumb.webp`);
-    const sourcePath = request.size < 400 && await fileExists(canonicalThumbnailPath)
+    const sourcePath = request.size < 400 && await fileExistsInside(imagesDir, canonicalThumbnailPath)
       ? canonicalThumbnailPath
       : originalPath;
-    if (await fileExists(sourcePath)) {
+    if (await fileExistsInside(imagesDir, sourcePath)) {
       await ensureThumbnail(sourcePath, thumbPath, request.size);
       return sendFileIfInside(res, legacyThumbsDir, thumbPath);
     }
