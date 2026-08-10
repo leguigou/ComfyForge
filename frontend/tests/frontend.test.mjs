@@ -20,6 +20,7 @@ let config;
 let webSocketHelpers;
 let moduleRecovery;
 let clipboardAutoGenerate;
+let runtimeVersionReminder;
 
 before(async () => {
   vite = await createServer({
@@ -39,6 +40,7 @@ before(async () => {
   webSocketHelpers = await vite.ssrLoadModule('/src/hooks/useWebSocket.ts');
   moduleRecovery = await vite.ssrLoadModule('/src/utils/moduleRecovery.ts');
   clipboardAutoGenerate = await vite.ssrLoadModule('/src/utils/clipboardAutoGenerate.ts');
+  runtimeVersionReminder = await vite.ssrLoadModule('/src/utils/runtimeVersionReminder.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
   ({ MessageText } = await vite.ssrLoadModule('/src/components/chat/MessageText.tsx'));
   ({ SeedyCompanion } = await vite.ssrLoadModule('/src/components/chat/SeedyCompanion.tsx'));
@@ -53,6 +55,21 @@ test('formats generation durations and storage sizes', () => {
   assert.equal(api.formatDuration(65), '1m05s');
   assert.equal(api.formatBytes(0), '0 B');
   assert.equal(api.formatBytes(1024), '1 KB');
+});
+
+test('snoozes runtime version reminders for two hours', () => {
+  const values = new Map();
+  const storage = {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const now = 1_000;
+
+  assert.equal(runtimeVersionReminder.isRuntimeVersionReminderSnoozed(storage, now), false);
+  const snoozedUntil = runtimeVersionReminder.snoozeRuntimeVersionReminder(storage, now);
+  assert.equal(snoozedUntil, now + (2 * 60 * 60 * 1000));
+  assert.equal(runtimeVersionReminder.isRuntimeVersionReminderSnoozed(storage, snoozedUntil - 1), true);
+  assert.equal(runtimeVersionReminder.isRuntimeVersionReminderSnoozed(storage, snoozedUntil), false);
 });
 
 test('normalizes and validates clipboard prompts without accepting unsupported browsers', () => {
@@ -96,6 +113,42 @@ test('wires clipboard permission, change detection, and the general-settings act
   assert.match(settingsSource, /companion-enabled \$\{companionSettings\.enabled \? 'active' : ''\}/);
   assert.match(settingsCss, /\.clipboard-auto-toggle input\s*\{[\s\S]*?clip-path:\s*inset\(50%\)/);
   assert.match(settingsCss, /\.companion-enabled\.active\s*\{[\s\S]*?background:\s*var\(--accent\)/);
+});
+
+test('persists the gallery favorite, liked-prompt, archive, and tag filters', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /localStorage\.getItem\('galleryShowArchived'\) === 'true'/);
+  assert.match(appSource, /localStorage\.getItem\('galleryFavoritesOnly'\) === 'true'/);
+  assert.match(appSource, /localStorage\.getItem\('galleryPromptFavoritesOnly'\) === 'true'/);
+  assert.match(appSource, /JSON\.parse\(localStorage\.getItem\('galleryPromptTags'\) \|\| '\[\]'\)/);
+  assert.match(appSource, /localStorage\.setItem\('galleryShowArchived', String\(showArchivedInGallery\)\)/);
+  assert.match(appSource, /localStorage\.setItem\('galleryFavoritesOnly', String\(favoritesOnly\)\)/);
+  assert.match(appSource, /localStorage\.setItem\('galleryPromptFavoritesOnly', String\(promptFavoritesOnly\)\)/);
+  assert.match(appSource, /localStorage\.setItem\('galleryPromptTags', JSON\.stringify\(selectedPromptTags\)\)/);
+});
+
+test('distinguishes interface, server, and GitHub versions in update settings', () => {
+  const settingsSource = readFileSync('src/components/settings/SettingsModal.tsx', 'utf8');
+  const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
+
+  assert.match(settingsSource, /updateInfo\.currentVersion !== APP_CONFIG\.VERSION/);
+  assert.match(settingsSource, /update-version-flow[\s\S]*?t\.interfaceVersion[\s\S]*?APP_CONFIG\.VERSION/);
+  assert.match(settingsSource, /update-version-flow[\s\S]*?t\.serverVersion[\s\S]*?updateInfo\.currentVersion/);
+  assert.match(settingsSource, /update-version-flow[\s\S]*?t\.githubVersion[\s\S]*?updateInfo\.latestVersion/);
+  assert.match(settingsSource, /interfaceServerMismatch && \([\s\S]*?t\.interfaceServerVersionMismatch/);
+  assert.match(settingsCss, /\.update-version-flow\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) 1rem minmax\(0, 1fr\) 1rem minmax\(0, 1fr\)/);
+  assert.match(settingsCss, /@media \(hover: hover\)\s*\{[\s\S]*?\.refresh-models-btn:hover:not\(:disabled\)[\s\S]*?\}\s*\}/);
+  assert.match(settingsCss, /\.refresh-models-btn:hover:not\(:disabled\)[\s\S]*?\}\s*\}\s*\.update-status-card\s*\{/);
+  assert.match(settingsCss, /--update-warning:\s*#f59e0b/);
+  assert.match(settingsCss, /\.update-version-node\s*\{[\s\S]*?border:\s*0;[\s\S]*?background:\s*transparent;/);
+});
+
+test('opens update settings when the runtime version warning is selected', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /className="runtime-version-toast-link"[\s\S]*?setActiveTab\('update'\);[\s\S]*?setShowSettings\(true\)/);
+  assert.match(appSource, /Voir les détails →/);
 });
 
 test('renders the localized welcome screen', () => {
@@ -377,6 +430,15 @@ test('lets the final prompt scroll on touch devices without closing the lightbox
   assert.match(appCss, /\.lightbox-prompt-panel\s*\{[^}]*overflow:\s*auto;[^}]*touch-action:\s*pan-y;[^}]*overscroll-behavior-y:\s*contain;[^}]*-webkit-overflow-scrolling:\s*touch;/);
 });
 
+test('opens My Content and adds the selected lightbox tag without removing existing tags', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const appCss = readFileSync('src/App.css', 'utf8');
+
+  assert.match(appSource, /const openPromptTag = useCallback[\s\S]*?setSelectedPromptTags\(current => current\.includes\(slug\) \? current : \[\.\.\.current, slug\]\)[\s\S]*?setActiveLightbox\(null\)[\s\S]*?setView\('gallery'\)/);
+  assert.match(appSource, /className="lightbox-prompt-tags-list"[\s\S]*?<button[\s\S]*?onClick=\{\(\) => openPromptTag\(tag\.slug\)\}[\s\S]*?aria-label=\{`\$\{t\.filterByTag\}/);
+  assert.match(appCss, /\.lightbox-prompt-tags-list button\s*\{[\s\S]*?cursor:\s*pointer/);
+});
+
 test('uses stacked, bounded admin cards on mobile settings screens', () => {
   const queueCss = readFileSync('src/components/settings/AdminQueuePanel.css', 'utf8');
   const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
@@ -524,6 +586,22 @@ test('does not globally cancel loaders and continuous status animations', () => 
   assert.doesNotMatch(globalCss, /animation-iteration-count:\s*1\s*!important/);
   assert.match(appCss, /\.workspace-loading span\s*\{[\s\S]*?animation-duration:\s*1\.6s\s*!important;[\s\S]*?animation-iteration-count:\s*infinite\s*!important/);
   assert.match(sidebarCss, /\.session-processing-loader\s*\{[\s\S]*?animation-duration:\s*1\.5s\s*!important;[\s\S]*?animation-iteration-count:\s*infinite\s*!important/);
+});
+
+test('aligns the sidebar navigation labels with equal-sized icon slots', () => {
+  const sidebarSource = readFileSync('src/components/sidebar/Sidebar.tsx', 'utf8');
+  const sidebarCss = readFileSync('src/components/sidebar/Sidebar.css', 'utf8');
+
+  assert.match(sidebarSource, /sidebar-nav-icon new-chat-icon[\s\S]*?<PlusIcon size=\{13\}/);
+  assert.equal((sidebarSource.match(/className="sidebar-nav-icon"/g) || []).length, 2);
+  assert.match(sidebarCss, /\.new-chat-btn \.sidebar-nav-icon\s*\{[\s\S]*?flex:\s*0 0 20px;[\s\S]*?width:\s*20px;[\s\S]*?height:\s*20px/);
+  assert.match(sidebarCss, /\.new-chat-btn \.new-chat-icon\s*\{[\s\S]*?border-radius:\s*50%/);
+});
+
+test('keeps the archive view active when opening an archived conversation', () => {
+  const sidebarSource = readFileSync('src/components/sidebar/Sidebar.tsx', 'utf8');
+
+  assert.match(sidebarSource, /setCurrentSessionId\(s\.id\);\s*setView\(view === 'archives' \? 'archives' : 'chat'\);\s*closeSidebarOnMobile\(\)/);
 });
 
 test('removes duplicate companion IDs while normalizing settings', () => {

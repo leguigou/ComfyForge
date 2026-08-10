@@ -11,7 +11,7 @@ import toast from 'react-hot-toast';
 import { LLMProvidersPanel } from './LLMProvidersPanel';
 import { AdminLogsPanel } from './AdminLogsPanel';
 import { AdminQueuePanel } from './AdminQueuePanel';
-import { DEFAULT_LLM_SYSTEM_MESSAGE } from '../../config';
+import { APP_CONFIG, DEFAULT_LLM_SYSTEM_MESSAGE } from '../../config';
 
 interface WorkflowMappingData {
   filename: string;
@@ -2253,6 +2253,11 @@ interface UpdateInfo {
 const UpdateTab = ({ t }: { t: Record<string, string> }) => {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const interfaceServerMismatch = Boolean(
+    updateInfo
+    && updateInfo.currentVersion !== '?'
+    && updateInfo.currentVersion !== APP_CONFIG.VERSION
+  );
 
   const checkUpdate = async () => {
     setIsLoading(true);
@@ -2283,39 +2288,65 @@ const UpdateTab = ({ t }: { t: Record<string, string> }) => {
         </div>
 
         {updateInfo && (
-          <div className="update-status-card" style={{
-            background: 'rgba(255, 255, 255, 0.05)',
-            padding: '1.5rem',
-            borderRadius: '12px',
-            border: `1px solid ${updateInfo.updateAvailable ? 'var(--accent)' : 'var(--border)'}`,
-            marginBottom: '1.5rem'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <div className={`update-status-card ${interfaceServerMismatch ? 'is-mismatch' : updateInfo.updateAvailable ? 'has-update' : 'is-synchronized'}`}>
+            <div className="update-status-heading">
+              <span className="update-status-icon" aria-hidden="true">
+                {interfaceServerMismatch || updateInfo.updateAvailable
+                  ? <AlertTriangleIcon size={20} />
+                  : <CheckCircleIcon size={20} />}
+              </span>
               <div>
-                <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: '0.2rem' }}>Locale</div>
-                <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>v{updateInfo.currentVersion}</div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: '0.2rem' }}>GitHub</div>
-                <div style={{ fontSize: '1.2rem', fontWeight: 'bold', color: updateInfo.updateAvailable ? 'var(--accent)' : 'inherit' }}>
-                  {updateInfo.latestVersion ? `v${updateInfo.latestVersion}` : '---'}
-                </div>
+                <span>{t.versionStatus}</span>
+                <strong>
+                  {interfaceServerMismatch
+                    ? t.versionSyncRequired
+                    : updateInfo.updateAvailable
+                      ? t.updateAvailable
+                      : t.versionSynchronized}
+                </strong>
               </div>
             </div>
 
+            <div className="update-version-flow">
+              <div className={`update-version-node ${interfaceServerMismatch ? 'is-warning' : 'is-current'}`}>
+                <span>{t.interfaceVersion}</span>
+                <strong>v{APP_CONFIG.VERSION}</strong>
+                <small><i aria-hidden="true" />{interfaceServerMismatch ? t.versionDifferent : t.versionCurrent}</small>
+              </div>
+              <span className="update-version-connector" aria-hidden="true">→</span>
+              <div className={`update-version-node ${updateInfo.updateAvailable ? 'is-warning' : 'is-current'}`}>
+                <span>{t.serverVersion}</span>
+                <strong>v{updateInfo.currentVersion}</strong>
+                <small><i aria-hidden="true" />{updateInfo.updateAvailable ? t.versionDifferent : t.versionCurrent}</small>
+              </div>
+              <span className="update-version-connector" aria-hidden="true">→</span>
+              <div className="update-version-node is-reference">
+                <span>{t.githubVersion}</span>
+                <strong>{updateInfo.latestVersion ? `v${updateInfo.latestVersion}` : '---'}</strong>
+                <small><i aria-hidden="true" />{t.versionReference}</small>
+              </div>
+            </div>
+
+            {interfaceServerMismatch && (
+              <div className="update-remediation">
+                <span aria-hidden="true"><RefreshIcon size={18} /></span>
+                <div>
+                  <strong>{t.versionMismatchTitle}</strong>
+                  <p>{t.interfaceServerVersionMismatch}</p>
+                </div>
+              </div>
+            )}
+
             {updateInfo.updateAvailable ? (
-              <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-                <p style={{ color: 'var(--accent)', fontWeight: 'bold', marginBottom: '1rem' }}><SparklesIcon size={18} /> {t.updateAvailable}</p>
-                <a href={updateInfo.releaseUrl} target="_blank" rel="noopener noreferrer" className="action-btn-large" style={{ textDecoration: 'none', display: 'inline-block' }}>
+              <div className="update-available-action">
+                <a href={updateInfo.releaseUrl} target="_blank" rel="noopener noreferrer" className="action-btn-large">
                   {t.viewOnGitHub}
                 </a>
               </div>
             ) : updateInfo.localVersionAhead ? (
-              <p style={{ textAlign: 'center', color: 'var(--accent)', margin: '1rem 0 0' }}><SparklesIcon size={18} /> {t.localVersionAhead}</p>
-            ) : updateInfo.latestVersion ? (
-              <p style={{ textAlign: 'center', opacity: 0.7, margin: '1rem 0 0' }}><CheckCircleIcon size={18} /> {t.upToDate}</p>
+              <p className="update-version-note"><SparklesIcon size={18} /> {t.localVersionAhead}</p>
             ) : updateInfo.error ? (
-              <p style={{ textAlign: 'center', color: '#ff4b4b', margin: '1rem 0 0' }}><AlertTriangleIcon size={18} /> {updateInfo.error}</p>
+              <p className="update-version-error"><AlertTriangleIcon size={18} /> {updateInfo.error}</p>
             ) : null}
           </div>
         )}

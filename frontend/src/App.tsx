@@ -39,6 +39,7 @@ import {
   normalizeClipboardPrompt,
 } from './utils/clipboardAutoGenerate';
 import { toGenerationRequestParams } from './utils/generationParams';
+import { isRuntimeVersionReminderSnoozed, snoozeRuntimeVersionReminder } from './utils/runtimeVersionReminder';
 
 const SettingsModal = lazy(() => importWithRecovery(() => import('./components/settings/SettingsModal')).then(module => ({
   default: module.SettingsModal
@@ -183,6 +184,9 @@ function App() {
     return (localStorage.getItem('theme') as Theme) || 'dark';
   });
   const t = translations[lang];
+  const [showSettings, setShowSettings] = useState(false);
+  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs'>('images');
+  const runtimeVersionReminderSnoozedUntilRef = useRef(0);
 
   useEffect(() => {
     const handleUpdateReady = (event: Event) => {
@@ -219,15 +223,51 @@ function App() {
     let cancelled = false;
 
     const checkRuntimeVersion = async () => {
+      const now = Date.now();
+      if (
+        runtimeVersionReminderSnoozedUntilRef.current > now
+        || isRuntimeVersionReminderSnoozed(localStorage, now)
+      ) return;
+
       try {
         const response = await fetch(`${API_BASE}/api/health?dependencies=0`, { credentials: 'include' });
         if (!response.ok) return;
         const health = await response.json() as { version?: string };
         if (!cancelled && health.version && health.version !== APP_CONFIG.VERSION) {
           toast.error(
-            lang === 'fr'
-              ? `Versions différentes : interface ${APP_CONFIG.VERSION}, serveur ${health.version}`
-              : `Version mismatch: interface ${APP_CONFIG.VERSION}, server ${health.version}`,
+            (instance) => (
+              <div className="runtime-version-toast">
+                <button
+                  type="button"
+                  className="runtime-version-toast-link"
+                  onClick={() => {
+                    runtimeVersionReminderSnoozedUntilRef.current = snoozeRuntimeVersionReminder(localStorage);
+                    toast.dismiss(instance.id);
+                    setActiveTab('update');
+                    setShowSettings(true);
+                  }}
+                >
+                  <span>
+                    {lang === 'fr'
+                      ? `Versions différentes : interface ${APP_CONFIG.VERSION}, serveur ${health.version}`
+                      : `Version mismatch: interface ${APP_CONFIG.VERSION}, server ${health.version}`}
+                  </span>
+                  <strong>{lang === 'fr' ? 'Voir les détails →' : 'View details →'}</strong>
+                </button>
+                <button
+                  type="button"
+                  className="runtime-version-toast-close"
+                  aria-label={lang === 'fr' ? 'Fermer et ne plus rappeler pendant 2 heures' : 'Close and snooze for 2 hours'}
+                  title={lang === 'fr' ? 'Ne plus rappeler pendant 2 h' : 'Snooze for 2 hours'}
+                  onClick={() => {
+                    runtimeVersionReminderSnoozedUntilRef.current = snoozeRuntimeVersionReminder(localStorage);
+                    toast.dismiss(instance.id);
+                  }}
+                >
+                  <XIcon size={20} />
+                </button>
+              </div>
+            ),
             { id: 'runtime-version-mismatch', duration: 12_000 }
           );
         }
@@ -370,7 +410,6 @@ function App() {
 
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
   const [comparisonMessageId, setComparisonMessageId] = useState<string | null>(null);
   const [queueRemaining, setQueueRemaining] = useState<number | null>(null);
   const [showQueueIndicator, setShowQueueIndicator] = useState(
@@ -386,7 +425,6 @@ function App() {
     guidance: string;
     activeTagSlug: string;
   } | null>(null);
-  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs'>('images');
   
   const [input, setInput] = useState('');
   const [openOptionsRequest, setOpenOptionsRequest] = useState(0);
@@ -978,12 +1016,27 @@ function App() {
   const [isFetchingGallery, setIsFetchingGallery] = useState(false);
   const isFetchingGalleryRef = useRef(false);
   const galleryFetchPromiseRef = useRef<Promise<GalleryItem[]> | null>(null);
-  const [showArchivedInGallery, setShowArchivedInGallery] = useState(false);
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [promptFavoritesOnly, setPromptFavoritesOnly] = useState(false);
+  const [showArchivedInGallery, setShowArchivedInGallery] = useState(
+    () => localStorage.getItem('galleryShowArchived') === 'true'
+  );
+  const [favoritesOnly, setFavoritesOnly] = useState(
+    () => localStorage.getItem('galleryFavoritesOnly') === 'true'
+  );
+  const [promptFavoritesOnly, setPromptFavoritesOnly] = useState(
+    () => localStorage.getItem('galleryPromptFavoritesOnly') === 'true'
+  );
   const [groupByPrompt, setGroupByPrompt] = useState(() => localStorage.getItem('galleryGroupByPrompt') === 'true');
   const [availablePromptTags, setAvailablePromptTags] = useState<PromptTag[]>([]);
-  const [selectedPromptTags, setSelectedPromptTags] = useState<string[]>([]);
+  const [selectedPromptTags, setSelectedPromptTags] = useState<string[]>(() => {
+    try {
+      const storedTags = JSON.parse(localStorage.getItem('galleryPromptTags') || '[]');
+      return Array.isArray(storedTags)
+        ? [...new Set(storedTags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0))]
+        : [];
+    } catch {
+      return [];
+    }
+  });
   const [gallerySearch, setGallerySearch] = useState('');
   const [debouncedGallerySearch, setDebouncedGallerySearch] = useState('');
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
@@ -1000,6 +1053,16 @@ function App() {
   useEffect(() => {
     localStorage.setItem('galleryGroupByPrompt', String(groupByPrompt));
   }, [groupByPrompt]);
+
+  useEffect(() => {
+    localStorage.setItem('galleryShowArchived', String(showArchivedInGallery));
+    localStorage.setItem('galleryFavoritesOnly', String(favoritesOnly));
+    localStorage.setItem('galleryPromptFavoritesOnly', String(promptFavoritesOnly));
+  }, [showArchivedInGallery, favoritesOnly, promptFavoritesOnly]);
+
+  useEffect(() => {
+    localStorage.setItem('galleryPromptTags', JSON.stringify(selectedPromptTags));
+  }, [selectedPromptTags]);
 
   const toggleFavorite = useCallback(async (sessionId: string, messageId: string, currentStatus: number | undefined) => {
     const newStatus = currentStatus === 1 ? 0 : 1;
@@ -1938,12 +2001,15 @@ function App() {
   }, [fetchGallery]);
 
   const openPromptTag = useCallback((slug: string) => {
-    setSelectedPromptTags([slug]);
+    setSelectedPromptTags(current => current.includes(slug) ? current : [...current, slug]);
     setGallerySearch('');
     setFavoritesOnly(false);
     setPromptFavoritesOnly(false);
     setShowArchivedInGallery(false);
     setActiveInfoId(null);
+    setActiveLightbox(null);
+    setShowLightboxPrompt(false);
+    setShowLightboxMenu(false);
     setView('gallery');
   }, [setActiveInfoId]);
 
@@ -3023,9 +3089,16 @@ function App() {
                   <span className="lightbox-prompt-tags-title">{t.promptTags}</span>
                   <div className="lightbox-prompt-tags-list" role="list">
                     {currentLightboxTags.map((tag) => (
-                      <span key={tag.slug} role="listitem">
+                      <button
+                        key={tag.slug}
+                        type="button"
+                        role="listitem"
+                        onClick={() => openPromptTag(tag.slug)}
+                        title={t.viewTagContents}
+                        aria-label={`${t.filterByTag}: ${lang === 'fr' ? tag.labelFr : tag.labelEn}`}
+                      >
                         {lang === 'fr' ? tag.labelFr : tag.labelEn}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 </div>
