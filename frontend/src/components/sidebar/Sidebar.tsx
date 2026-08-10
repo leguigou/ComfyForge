@@ -12,6 +12,7 @@ import {
   ImageIcon,
   LogOutIcon,
   MoonIcon,
+  PlusIcon,
   SettingsIcon,
   SmartphoneIcon,
   SunIcon,
@@ -109,13 +110,16 @@ export const Sidebar = ({
           {backendError && <div className="backend-warning" title={t.backendOffline}><AlertTriangleIcon size={20} /></div>}
         </div>
         <button className="new-chat-btn" onClick={() => { void createNewSession(); closeSidebarOnMobile(); }}>
-          <span>+</span> {t.newChat}
+          <span className="sidebar-nav-icon new-chat-icon" aria-hidden="true"><PlusIcon size={13} /></span>
+          <span className="sidebar-nav-label">{t.newChat}</span>
         </button>
         <button className={`new-chat-btn gallery-btn ${view === 'gallery' ? 'active' : ''}`} onClick={() => { setView('gallery'); fetchGallery(true); closeSidebarOnMobile(); }}>
-          <span><ImageIcon size={19} /></span> {t.myContent}
+          <span className="sidebar-nav-icon" aria-hidden="true"><ImageIcon size={19} /></span>
+          <span className="sidebar-nav-label">{t.myContent}</span>
         </button>
         <button className="new-chat-btn" onClick={() => { setView(view === 'archives' ? 'chat' : 'archives'); }}>
-          <span>{view === 'archives' ? <ChatIcon size={19} /> : <ArchiveIcon size={19} />}</span> {view === 'archives' ? t.viewActive : t.viewArchives}
+          <span className="sidebar-nav-icon" aria-hidden="true">{view === 'archives' ? <ChatIcon size={19} /> : <ArchiveIcon size={19} />}</span>
+          <span className="sidebar-nav-label">{view === 'archives' ? t.viewActive : t.viewArchives}</span>
         </button>
         
         <div className="sessions-list">
@@ -135,7 +139,7 @@ export const Sidebar = ({
                 }
                 setMessages([]);
                 setCurrentSessionId(s.id); 
-                setView('chat'); 
+                setView(view === 'archives' ? 'archives' : 'chat');
                 closeSidebarOnMobile();
               }}
               onKeyDown={(event) => {

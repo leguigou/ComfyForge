@@ -17,6 +17,16 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.7.4
+
+Version 2.7.4 makes gallery filters easier to build and retain, clarifies deployment-version mismatches, and fixes archived-chat navigation on mobile.
+
+- **Cumulative prompt-tag filters:** tags in image prompt details are interactive and add to the existing gallery filters without duplicates instead of replacing them.
+- **Persistent gallery filtering:** selected prompt tags, favorites, liked prompts, and archived-content filters survive page refreshes.
+- **Clearer deployment diagnostics:** the update panel compares interface, server, and GitHub versions, while mismatch reminders link directly to remediation details and can be snoozed for two hours.
+- **Aligned sidebar navigation:** the main navigation uses equal-sized icon slots and a consistent circled new-chat icon so labels stay perfectly aligned.
+- **Stable archived conversations:** selecting a conversation from the archive list keeps the archive context while opening its message feed instead of switching back to active chats.
+
 ## What's new in 2.7.3
 
 Version 2.7.3 makes very large image libraries faster to browse, easier to organize, and simpler to maintain without sacrificing authenticated access.

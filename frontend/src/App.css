@@ -854,14 +854,30 @@ div:focus:not(:focus-visible) {
   gap: 0.38rem;
 }
 
-.lightbox-prompt-tags-list span {
+.lightbox-prompt-tags-list button {
+  appearance: none;
   padding: 0.3rem 0.55rem;
   border: 1px solid rgba(183, 135, 255, 0.18);
   border-radius: 999px;
   color: #d9c4ff;
   background: rgba(139, 92, 246, 0.14);
+  font-family: inherit;
   font-size: 0.68rem;
   line-height: 1.2;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+.lightbox-prompt-tags-list button:hover,
+.lightbox-prompt-tags-list button:focus-visible {
+  border-color: rgba(183, 135, 255, 0.48);
+  color: #fff;
+  background: rgba(139, 92, 246, 0.28);
+}
+
+.lightbox-prompt-tags-list button:focus-visible {
+  outline: 2px solid rgba(196, 160, 255, 0.85);
+  outline-offset: 2px;
 }
 
 .light .lightbox-prompt-panel {
@@ -883,10 +899,17 @@ div:focus:not(:focus-visible) {
   color: rgba(24, 24, 27, 0.56);
 }
 
-.light .lightbox-prompt-tags-list span {
+.light .lightbox-prompt-tags-list button {
   border-color: rgba(109, 40, 217, 0.14);
   color: #6d28d9;
   background: rgba(139, 92, 246, 0.1);
+}
+
+.light .lightbox-prompt-tags-list button:hover,
+.light .lightbox-prompt-tags-list button:focus-visible {
+  border-color: rgba(109, 40, 217, 0.4);
+  color: #581cba;
+  background: rgba(139, 92, 246, 0.18);
 }
 
 .light .lightbox-prompt-close {
@@ -1135,6 +1158,67 @@ div:focus:not(:focus-visible) {
   font: inherit;
   font-weight: 700;
   cursor: pointer;
+}
+
+.runtime-version-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.runtime-version-toast-link {
+  display: grid;
+  flex: 1;
+  gap: 0.28rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.runtime-version-toast-link strong {
+  color: #c96b00;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.runtime-version-toast-link:hover strong,
+.runtime-version-toast-link:focus-visible strong {
+  text-decoration: underline;
+}
+
+.runtime-version-toast-link:focus-visible {
+  border-radius: 0.35rem;
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
+.runtime-version-toast-close {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  margin: -0.35rem -0.45rem -0.35rem 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+  opacity: 0.72;
+}
+
+.runtime-version-toast-close:hover,
+.runtime-version-toast-close:focus-visible {
+  background: rgba(0, 0, 0, 0.08);
+  opacity: 1;
 }
 
 .workspace-loading span {

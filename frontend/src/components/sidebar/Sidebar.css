@@ -137,9 +137,28 @@
   color: var(--accent);
 }
 
-.new-chat-btn span {
-  font-size: 1.2rem;
+.new-chat-btn .sidebar-nav-icon {
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   color: var(--accent);
+}
+
+.new-chat-btn .sidebar-nav-icon svg {
+  display: block;
+}
+
+.new-chat-btn .new-chat-icon {
+  border: 1.75px solid currentColor;
+  border-radius: 50%;
+}
+
+.new-chat-btn .sidebar-nav-label {
+  min-width: 0;
+  line-height: 1.25;
 }
 
 .sessions-list {
