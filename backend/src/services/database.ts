@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { syncPromptTags } from './prompt-tags';
 
-export const DATABASE_SCHEMA_VERSION = 5;
+export const DATABASE_SCHEMA_VERSION = 7;
 
 // Standardized path for Docker, local development, and isolated tests.
 let dbPath: string;
@@ -79,6 +79,8 @@ export const initDatabase = () => {
       generationStartedAt INTEGER,
       isFavorite INTEGER DEFAULT 0,
       isPromptFavorite INTEGER DEFAULT 0,
+      isGroupCover INTEGER DEFAULT 0,
+      manualGroupId TEXT,
       sampler TEXT,
       scheduler TEXT,
       randomSelections TEXT,
@@ -366,6 +368,34 @@ export const initDatabase = () => {
         : 25;
       db.prepare('UPDATE users SET queueLimit = ? WHERE queueLimit IS NULL').run(defaultQueueLimit);
       db.pragma('user_version = 5');
+    })();
+    currentSchemaVersion = 5;
+  }
+
+  if (currentSchemaVersion < 6) {
+    db.transaction(() => {
+      try {
+        db.prepare('SELECT isGroupCover FROM messages LIMIT 1').get();
+      } catch {
+        db.exec('ALTER TABLE messages ADD COLUMN isGroupCover INTEGER DEFAULT 0');
+      }
+      db.pragma('user_version = 6');
+    })();
+    currentSchemaVersion = 6;
+  }
+
+  if (currentSchemaVersion < 7) {
+    db.transaction(() => {
+      try {
+        db.prepare('SELECT manualGroupId FROM messages LIMIT 1').get();
+      } catch {
+        db.exec('ALTER TABLE messages ADD COLUMN manualGroupId TEXT');
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_messages_manual_group
+          ON messages(manualGroupId) WHERE manualGroupId IS NOT NULL;
+      `);
+      db.pragma('user_version = 7');
     })();
   }
 

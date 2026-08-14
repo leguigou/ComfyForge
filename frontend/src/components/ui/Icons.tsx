@@ -233,6 +233,28 @@ export const ClipboardIcon = ({ size = 20, className }: IconProps) => (
   </svg>
 );
 
+export const FilterIcon = ({ size = 20, className }: IconProps) => (
+  <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4 5h16" />
+    <path d="M7 12h10" />
+    <path d="M10 19h4" />
+  </svg>
+);
+
+export const GridIcon = ({ size = 20, className }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={iconClassName(className)}>
+    <rect x="3" y="3" width="7" height="7" rx="1.25" /><rect x="14" y="3" width="7" height="7" rx="1.25" />
+    <rect x="3" y="14" width="7" height="7" rx="1.25" /><rect x="14" y="14" width="7" height="7" rx="1.25" />
+  </svg>
+);
+
+export const TextSelectIcon = ({ size = 20, className }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={iconClassName(className)}>
+    <rect x="4" y="3" width="16" height="18" rx="3" />
+    <path d="M8 8h8M8 12h8M8 16h5" />
+  </svg>
+);
+
 export const KeyIcon = ({ size = 20, className }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={iconClassName(className)}>
     <circle cx="8" cy="15" r="4" /><path d="m11 12 9-9M17 6l2 2M14 9l2 2" />

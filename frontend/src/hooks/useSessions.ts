@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { API_BASE } from '../services/api';
 import type { Session, Message, AppView } from '../types';
 import { resolveGenerationStartedAt } from '../utils/generationTimer';
+import { getLinkedMessageIds } from '../utils/messagePairs';
 
 const MESSAGE_PAGE_SIZE = 60;
 
@@ -70,7 +71,7 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
       if (!res.ok) throw new Error('Failed to fetch history');
       const data = await res.json();
       setSessions(data);
-      if (data.length > 0 && view !== 'archives') {
+      if (data.length > 0 && view !== 'archives' && view !== 'thread-gallery') {
         setCurrentSessionId(prev => (
           prev && data.some((session: Session) => session.id === prev)
             ? prev
@@ -331,8 +332,16 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
 
   const deleteMessage = async (messageId: string) => {
     if (!currentSessionId) return;
-    await fetch(`${API_BASE}/api/history/${currentSessionId}/message/${messageId}`, { method: 'DELETE', credentials: 'include' });
-    setMessages(prev => prev.filter(m => m.id !== messageId));
+    const response = await fetch(`${API_BASE}/api/history/${currentSessionId}/message/${messageId}`, { method: 'DELETE', credentials: 'include' });
+    if (!response.ok) throw new Error('Failed to delete message');
+    const data = await response.json() as { deletedMessageIds?: string[] };
+    setMessages(previous => {
+      const deletedIds = new Set([
+        ...getLinkedMessageIds(previous, messageId),
+        ...(Array.isArray(data.deletedMessageIds) ? data.deletedMessageIds : []),
+      ]);
+      return previous.filter(message => !deletedIds.has(message.id));
+    });
     setMessageToDelete(null);
   };
 

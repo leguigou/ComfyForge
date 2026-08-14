@@ -17,6 +17,17 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.8.0
+
+Version 2.8.0 turns the gallery into a more flexible image library, adds opt-in Civitai-compatible exports, and makes generation actions more precise across desktop and mobile.
+
+- **Advanced content filters:** a compact responsive menu filters the complete gallery by multiple models, workflows, and square, portrait, or landscape formats, with clear active states, result counts, and one-click reset.
+- **Adjustable gallery density:** desktop users can move from one to twelve columns with a persistent `− / +` control, while touch devices retain pinch-based column changes.
+- **Manual and conversation-scoped galleries:** any compatible selection can become a custom image group with a chosen cover, groups can be dissolved safely, and each conversation exposes its own photo library without leaking results from other threads.
+- **Civitai-ready downloads:** users can link local checkpoints or diffusion models to Civitai resources and optionally embed generation and model metadata into downloaded WebP files without modifying stored originals.
+- **Safer image and prompt actions:** custom long-press menus expose image actions on touch devices, text can be translated through the active LLM provider, paired prompts and generations are deleted together, and batch gallery operations keep grouped results aligned.
+- **Targeted cancellation:** cancelling a queued generation removes only that job, while an active ComfyUI render is interrupted only when it is the selected target; unrelated work remains in the queue.
+
 ## What's new in 2.7.4
 
 Version 2.7.4 makes gallery filters easier to build and retain, clarifies deployment-version mismatches, and fixes archived-chat navigation on mobile.
@@ -97,6 +108,7 @@ Version 2.5.0 focuses on safer upgrades, fair multi-user operation, faster large
 ### Generation and queue management
 
 - Real-time ComfyUI progress, queue status, elapsed time, cancellation, retry, and retry-all for incomplete generations.
+- Targeted cancellation distinguishes pending jobs from the active ComfyUI render and preserves unrelated queued work.
 - Optional desktop clipboard automation on supported Chromium browsers: copy new text to fill the prompt and start generation immediately.
 - Prompt, negative prompt, checkpoint or diffusion model, workflow, width, height, seed, steps, CFG, sampler, and scheduler controls.
 - Fixed or random seeds, reusable random prompt lists such as `[R-Color]`, and regeneration with fresh dynamic selections.
@@ -116,11 +128,14 @@ Version 2.5.0 focuses on safer upgrades, fair multi-user operation, faster large
 ### Library and discovery
 
 - Progressively loaded conversation history, archives, bulk archive/delete tools, gallery browsing, image favorites, and liked prompts.
+- Multi-select filtering by model, workflow, and image orientation, plus a persistent one-to-twelve-column desktop density control.
+- Conversation-scoped photo libraries and manual image groups with selectable covers, safe ungrouping, and complete group navigation.
 - Android-style gallery fast scroll with a global image counter and direct paginated jumps across very large libraries.
 - Long-press/Shift-click gallery selection with batch regeneration, Lucky creation, favorite and prompt-like changes, and deletion.
 - Automatic prompt tags, tag search and filtering, tag-focused browsing, prompt reuse, and random selection from liked or favorite content.
 - Lucky generations built from weighted, coherent, non-duplicate liked-prompt references, with a visual preview and reroll controls.
 - Full-resolution lightbox, metadata, downloads, thumbnails, and direct navigation back to the originating chat.
+- Optional Civitai resource linking and Civitai-compatible metadata embedded into downloaded WebP copies without altering stored images.
 
 ### Model comparison
 

@@ -3324,6 +3324,105 @@
   opacity: 0.72;
 }
 
+/* Plugins / Civitai */
+.plugins-settings-stack { max-width: 900px; }
+.plugin-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+  overflow: hidden;
+}
+.plugin-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.plugin-brand { display: flex; gap: 0.9rem; min-width: 0; }
+.plugin-brand-mark {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: #fff;
+  font-size: 1.25rem;
+  font-weight: 850;
+  background: linear-gradient(145deg, #915eff, #6c3ce3);
+  box-shadow: 0 8px 22px rgba(113, 65, 220, 0.28);
+}
+.plugin-eyebrow { color: #a98aff; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.plugin-brand h4 { margin: 0.15rem 0 0.3rem; font-size: 1.06rem; }
+.plugin-brand p, .civitai-sync-help { margin: 0; color: var(--text-secondary); font-size: 0.84rem; line-height: 1.45; }
+.civitai-add-button {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: var(--accent-bg);
+  color: var(--accent);
+  cursor: pointer;
+}
+.civitai-add-button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.12); }
+.civitai-add-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.civitai-sync-summary { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 1.25rem 0.6rem; }
+.civitai-sync-summary > div { display: flex; align-items: baseline; gap: 0.5rem; }
+.civitai-sync-summary strong { font-size: 1.25rem; }
+.civitai-sync-summary span { color: var(--text-secondary); font-size: 0.82rem; }
+.civitai-sync-button, .civitai-inline-field button, .civitai-row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 9px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  padding: 0.55rem 0.75rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.civitai-sync-button:disabled, .civitai-inline-field button:disabled { opacity: 0.45; cursor: not-allowed; }
+.civitai-sync-help { padding: 0 1.25rem 1rem; }
+.civitai-linker { margin: 0 1.25rem 1rem; padding: 1rem; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); border-radius: 12px; background: rgba(0,0,0,0.12); }
+.civitai-linker-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; }
+.civitai-linker-title > button { border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.civitai-linker-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.8rem; }
+.civitai-linker label, .civitai-version-field { display: flex; flex-direction: column; gap: 0.4rem; }
+.civitai-linker label > span, .civitai-version-field > span { color: var(--text-secondary); font-size: 0.75rem; font-weight: 700; }
+.civitai-linker select, .civitai-linker input { min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary); padding: 0.62rem 0.7rem; }
+.civitai-inline-field { display: flex; gap: 0.45rem; }
+.civitai-version-field { margin-top: 0.8rem; }
+.civitai-candidate-list { display: grid; gap: 0.4rem; max-height: 250px; overflow-y: auto; margin-top: 0.85rem; }
+.civitai-candidate-list > button { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; width: 100%; text-align: left; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-secondary); color: var(--text-primary); padding: 0.65rem 0.75rem; cursor: pointer; }
+.civitai-candidate-list > button:hover { border-color: var(--accent); }
+.civitai-candidate-list > button > span:first-child { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.civitai-candidate-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.civitai-candidate-list .exact { color: #62d99c; font-weight: 800; }
+.civitai-linked-list { border-top: 1px solid var(--border); }
+.civitai-linked-row { display: grid; grid-template-columns: 28px minmax(135px, 1fr) minmax(150px, 1fr) auto auto; align-items: center; gap: 0.7rem; padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--border); }
+.civitai-linked-row:last-child { border-bottom: 0; }
+.civitai-link-state { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; font-size: 0.75rem; font-weight: 850; background: rgba(235, 94, 94, 0.14); color: #ef7777; }
+.civitai-linked-row.linked .civitai-link-state { background: rgba(75, 197, 133, 0.14); color: #62d99c; }
+.civitai-local-name, .civitai-remote-name { min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.civitai-local-name strong, .civitai-remote-name strong, .civitai-local-name small, .civitai-remote-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.civitai-local-name small, .civitai-remote-name small { color: var(--text-secondary); font-size: 0.72rem; }
+.civitai-row-action { padding: 0.42rem 0.6rem; font-size: 0.75rem; }
+.civitai-row-remove { border: 0; background: transparent; color: #ef7777; cursor: pointer; padding: 0.4rem; }
+
+@media (max-width: 720px) {
+  .civitai-linker-fields { grid-template-columns: 1fr; }
+  .civitai-linked-row { grid-template-columns: 28px minmax(0, 1fr) auto auto; }
+  .civitai-remote-name { grid-column: 2 / -1; grid-row: 2; }
+  .civitai-sync-summary { align-items: flex-start; flex-direction: column; }
+}
+
 .settings-panel .tab-btn.active {
   border-color: var(--accent-border);
   background: var(--accent-bg);

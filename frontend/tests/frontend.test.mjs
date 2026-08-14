@@ -21,6 +21,9 @@ let webSocketHelpers;
 let moduleRecovery;
 let clipboardAutoGenerate;
 let runtimeVersionReminder;
+let textLanguage;
+let manualGalleryGroups;
+let messagePairs;
 
 before(async () => {
   vite = await createServer({
@@ -41,6 +44,9 @@ before(async () => {
   moduleRecovery = await vite.ssrLoadModule('/src/utils/moduleRecovery.ts');
   clipboardAutoGenerate = await vite.ssrLoadModule('/src/utils/clipboardAutoGenerate.ts');
   runtimeVersionReminder = await vite.ssrLoadModule('/src/utils/runtimeVersionReminder.ts');
+  textLanguage = await vite.ssrLoadModule('/src/utils/textLanguage.ts');
+  manualGalleryGroups = await vite.ssrLoadModule('/src/services/manualGalleryGroups.ts');
+  messagePairs = await vite.ssrLoadModule('/src/utils/messagePairs.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
   ({ MessageText } = await vite.ssrLoadModule('/src/components/chat/MessageText.tsx'));
   ({ SeedyCompanion } = await vite.ssrLoadModule('/src/components/chat/SeedyCompanion.tsx'));
@@ -110,6 +116,9 @@ test('wires clipboard permission, change detection, and the general-settings act
   assert.match(appSource, /await onHandleSendRef\.current\(prompt\)/);
   assert.match(settingsSource, /clipboardAutoGenerateTitle/);
   assert.match(settingsSource, /onClipboardAutoGenerateChange\(event\.target\.checked\)/);
+  assert.match(appSource, /civitaiMetadataOnDownload:\s*false/);
+  assert.match(settingsSource, /checked=\{params\.civitaiMetadataOnDownload\}/);
+  assert.match(settingsSource, /civitaiMetadataOnDownload:\s*event\.target\.checked/);
   assert.match(settingsSource, /companion-enabled \$\{companionSettings\.enabled \? 'active' : ''\}/);
   assert.match(settingsCss, /\.clipboard-auto-toggle input\s*\{[\s\S]*?clip-path:\s*inset\(50%\)/);
   assert.match(settingsCss, /\.companion-enabled\.active\s*\{[\s\S]*?background:\s*var\(--accent\)/);
@@ -393,13 +402,155 @@ test('keeps fullscreen image navigation available and supports mouse-wheel zoom'
   assert.match(appSource, /onTouchStart=\{handleLightboxTouchStart\}[\s\S]*?onTouchMove=\{handleLightboxTouchMove\}/);
 });
 
-test('adds a fullscreen image to favorites on double click without removing an existing favorite', () => {
+test('targets cancellation at the selected generation instead of the whole queue', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const generationSource = readFileSync('src/hooks/useGeneration.ts', 'utf8');
+
+  assert.match(chatSource, /onClick=\{\(\) => interruptGeneration\(msg\.id\)\}/);
+  assert.match(generationSource, /body: JSON\.stringify\(\{ messageId \}\)/);
+  assert.match(generationSource, /cancelledTemporaryMessages\.current\.delete\(botMsgId\)/);
+});
+
+test('deletes a user prompt and its linked generation as one pair in either direction', () => {
+  const messages = [
+    { id: 'user', role: 'user', text: 'paired prompt', timestamp: 1 },
+    { id: 'bot', role: 'bot', text: "Interrompu par l'utilisateur", prompt: 'paired prompt', status: 'failed', timestamp: 2 },
+    { id: 'unrelated', role: 'bot', text: 'other', prompt: 'other prompt', status: 'failed', timestamp: 3 },
+  ];
+
+  assert.deepEqual(messagePairs.getLinkedMessageIds(messages, 'user'), ['user', 'bot']);
+  assert.deepEqual(messagePairs.getLinkedMessageIds(messages, 'bot'), ['user', 'bot']);
+  assert.deepEqual(messagePairs.getLinkedMessageIds(messages, 'unrelated'), ['unrelated']);
+});
+
+test('opens a conversation-scoped photo gallery from the session menu', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+
+  assert.match(appSource, /threadGalleryMatch = pathname\.match\(\/\^\\\/chat\\\/\(\[\^\/\]\+\)\\\/photos\$\/\)/);
+  assert.match(appSource, /setView\('thread-gallery'\);[\s\S]*?setShowSessionMenu\(false\)/);
+  assert.match(appSource, /view === 'thread-gallery'[\s\S]*?setView\('chat'\)/);
+  assert.match(appSource, /view === 'thread-gallery' \? t\.backToThread : t\.threadPhotos/);
+  assert.match(appSource, /view === 'thread-gallery' && currentSessionId[\s\S]*?query\.set\('sessionId', currentSessionId\)/);
+  assert.match(appSource, /api\/gallery\/group\/\$\{encodeURIComponent\(item\.messageId\)\}\$\{suffix\}/);
+  assert.match(chatSource, /const isGalleryView = view === 'gallery' \|\| view === 'thread-gallery'/);
+  assert.match(chatSource, /view === 'thread-gallery' \? t\.threadPhotos : t\.myContent/);
+  assert.match(chatSource, /view !== 'thread-gallery' && <button[\s\S]*?gallery-filter-round archives/);
+});
+
+test('replaces the native long-press image menu with lightbox actions', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const appCss = readFileSync('src/App.css', 'utf8');
+  const imageClipboardSource = readFileSync('src/utils/imageClipboard.ts', 'utf8');
+
+  assert.match(appSource, /const handleLightboxContextMenu = useCallback[\s\S]*?event\.preventDefault\(\)[\s\S]*?setLightboxContextMenu/);
+  assert.match(appSource, /className="lightbox-content"[^>]*onContextMenu=\{handleLightboxContextMenu\}/);
+  assert.match(appSource, /className="lightbox-thumb" draggable=\{false\}/);
+  assert.match(appSource, /className="lightbox-hd" draggable=\{false\}/);
+  assert.match(appCss, /\.lightbox-thumb, \.lightbox-hd\s*\{[^}]*-webkit-touch-callout:\s*none;[^}]*user-select:\s*none;/);
+  assert.match(appSource, /className="lightbox-context-menu"[\s\S]*?featureCurrentGroupImage[\s\S]*?setShowLightboxInfo\(true\)[\s\S]*?copyLightboxImage[\s\S]*?downloadImage/);
+  assert.match(appSource, /const copyLightboxImage = useCallback[\s\S]*?copyImageToClipboard[\s\S]*?t\.imageCopied/);
+  assert.match(imageClipboardSource, /const pngPromise = fetch/);
+  assert.match(imageClipboardSource, /new ClipboardItem\(\{ 'image\/png': pngPromise \}\)/);
+  assert.match(appSource, /className="lightbox-prompt-panel lightbox-info-panel"[\s\S]*?currentLightboxMetadata\.map/);
+  assert.match(appCss, /\.lightbox-context-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*45/);
+});
+
+test('offers a confirmed red image deletion action at the bottom of both lightbox menus', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const appCss = readFileSync('src/App.css', 'utf8');
+
+  assert.equal((appSource.match(/className="lightbox-menu-item danger"/g) || []).length, 2);
+  assert.match(appSource, /const requestLightboxImageDeletion = \(\) => \{[\s\S]*?setLightboxImageToDelete/);
+  assert.match(appSource, /const confirmLightboxImageDeletion = async \(\) => \{[\s\S]*?method: 'DELETE'[\s\S]*?fetchGallery\(false, refreshOffset\)/);
+  assert.match(appSource, /lightboxImageToDelete && \([\s\S]*?confirmLightboxImageDeletion\(\)/);
+  assert.match(appCss, /\.lightbox-menu-item\.danger\s*\{[^}]*color:\s*#ff6f78/);
+});
+
+test('keeps gallery lightbox navigation and counters aligned after deleting an image', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const handlerStart = appSource.indexOf('const confirmLightboxImageDeletion = async');
+  const handlerEnd = appSource.indexOf('const featureCurrentGroupImage = async', handlerStart);
+  const handlerSource = appSource.slice(handlerStart, handlerEnd);
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  assert.match(handlerSource, /const remainingGroup = groupBeforeDelete\.filter/);
+  assert.match(handlerSource, /groupCount: remainingGroup\.length/);
+  assert.match(handlerSource, /galleryEntryWasRemoved = false/);
+  assert.match(handlerSource, /if \(galleryEntryWasRemoved\) \{[\s\S]*?setGalleryTotal\(total => Math\.max\(0, total - 1\)\)/);
+  assert.match(handlerSource, /fetchGallery\(false, refreshOffset\)/);
+  assert.match(handlerSource, /setActiveLightbox\(nextGalleryItem \? \{[\s\S]*?source: 'gallery'/);
+});
+
+test('distinguishes manual gallery groups without recoloring their count', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+
+  assert.match(appSource, /manualGroupId\?\.trim\(\)[\s\S]*?return `__manual__:/);
+  assert.match(chatSource, /PromptGroupIcon size=\{13\} className=\{item\.manualGroupId \? 'manual-gallery-group-icon' : undefined\}/);
+  assert.match(chatSource, /const canSelect = !groupByPrompt \|\| !item\.manualGroupId/);
+  assert.match(chatSource, /onPointerDown=\{event => \{ if \(canSelect\) startGalleryLongPress/);
+  assert.match(chatSource, /selectedGalleryIds\.size > 0 && canSelect &&/);
+  assert.match(chatSource, /selectionContainsPromptGroup = selectedGalleryItems\.some/);
+  assert.match(chatSource, /!selectionContainsPromptGroup && <>/);
+  assert.match(appSource, /helpers\.createPositionedGroup\(/);
+  assert.match(appSource, /refreshGalleryRef\.current\?\.\(centeredOffset\)\.then/);
+  assert.match(chatCss, /\.gallery-group-count \.manual-gallery-group-icon\s*\{[^}]*color:\s*#4da3ff/);
+  assert.doesNotMatch(chatCss, /\.gallery-group-count\.manual[^}]*color:/);
+});
+
+test('keeps a newly created manual group centered after refreshing the gallery', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const handlerStart = appSource.indexOf('const batchCreateManualGroup = useCallback');
+  const handlerEnd = appSource.indexOf('const batchDeleteGalleryItems', handlerStart);
+  const handlerSource = appSource.slice(handlerStart, handlerEnd);
+
+  assert.equal(manualGalleryGroups.getCenteredGalleryOffset(5, 200, 48), 0);
+  assert.equal(manualGalleryGroups.getCenteredGalleryOffset(125, 200, 48), 101);
+  assert.equal(manualGalleryGroups.getCenteredGalleryOffset(195, 200, 48), 152);
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
+  assert.match(handlerSource, /galleryStartIndexRef\.current/);
+  assert.match(handlerSource, /helpers\.centerGroupAfterRender\(containerRef\.current, coverId\)/);
+  const helpersSource = readFileSync('src/services/manualGalleryGroups.ts', 'utf8');
+  assert.match(helpersSource, /querySelectorAll<HTMLElement>\('\[data-gallery-message-id\]'\)/);
+  assert.match(helpersSource, /candidate\.dataset\.galleryMessageId === messageId/);
+  assert.match(helpersSource, /targetScroll = elementTop - \(container\.clientHeight - elementRect\.height\) \/ 2/);
+  assert.match(helpersSource, /behavior: 'smooth'/);
+  assert.match(helpersSource, /centerGalleryItem\(container, messageId\) \|\| attempts <= 0/);
+});
+
+test('expands selected prompt groups before creating a manual group', async () => {
+  const originalFetch = globalThis.fetch;
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    const messageId = String(url).split('/').at(-1);
+    return new Response(JSON.stringify({
+      items: [{ messageId }, { messageId: `${messageId}-second` }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const ids = await manualGalleryGroups.expandGalleryGroupMessageIds([
+      { messageId: 'prompt-a', groupCount: 4 },
+      { messageId: 'single', groupCount: 1 },
+      { messageId: 'prompt-b', groupCount: 2 },
+    ]);
+    assert.deepEqual(ids, ['prompt-a', 'prompt-a-second', 'single', 'prompt-b', 'prompt-b-second']);
+    assert.equal(requested.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('toggles a fullscreen image favorite on double click', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
 
   assert.match(appSource, /const handleLightboxImageDoubleClick = useCallback/);
   assert.match(appSource, /closest\('\.lightbox-hd, \.lightbox-thumb'\)/);
-  assert.match(appSource, /if \(currentItem\?\.isFavorite === 1\) return;/);
-  assert.match(appSource, /toggleFavorite\(activeLightbox\.sessionId, activeLightbox\.messageId, 0\)/);
+  assert.doesNotMatch(appSource, /if \(currentItem\?\.isFavorite === 1\) return;/);
+  assert.match(appSource, /toggleFavorite\(activeLightbox\.sessionId, activeLightbox\.messageId, currentItem\?\.isFavorite\)/);
   assert.match(appSource, /onDoubleClick=\{handleLightboxImageDoubleClick\}/);
 });
 
@@ -598,6 +749,15 @@ test('aligns the sidebar navigation labels with equal-sized icon slots', () => {
   assert.match(sidebarCss, /\.new-chat-btn \.new-chat-icon\s*\{[\s\S]*?border-radius:\s*50%/);
 });
 
+test('separates the desktop gallery fast navigator from the native scrollbar', () => {
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+  const desktopRulesStart = chatCss.indexOf('@media (min-width: 769px)', chatCss.indexOf('.gallery-fast-scroll {'));
+  const desktopRules = chatCss.slice(desktopRulesStart, chatCss.indexOf('.gallery-fast-scroll-rail', desktopRulesStart));
+
+  assert.match(desktopRules, /\.gallery-fast-scroll\s*\{[\s\S]*?right:\s*max\(26px,/);
+  assert.match(desktopRules, /\.gallery-fast-scroll::before\s*\{[\s\S]*?width:\s*16px;[\s\S]*?border:/);
+});
+
 test('keeps the archive view active when opening an archived conversation', () => {
   const sidebarSource = readFileSync('src/components/sidebar/Sidebar.tsx', 'utf8');
 
@@ -710,6 +870,80 @@ test('allows one-shot AI enhancement without enabling the global toggle', () => 
   assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, forceEnhancement: true }), true);
   assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, hasProvider: false, forceEnhancement: true }), false);
   assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, skipEnhancement: true, forceEnhancement: true }), false);
+});
+
+test('opens a custom long-press menu for draft and message text', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+  const menuSource = chatSource.slice(
+    chatSource.indexOf('{textContextMenu && ('),
+    chatSource.indexOf('{showRetryAllConfirm && (')
+  );
+
+  assert.match(chatSource, /const TEXT_LONG_PRESS_MS = 550/);
+  assert.match(chatSource, /onContextMenu=\{\(event\) => handleTextContextMenu\(event, \{ kind: 'draft', text: input \}\)\}/);
+  assert.match(chatSource, /className="message-text-context-target"/);
+  assert.match(menuSource, /copyTextContextTarget/);
+  assert.match(menuSource, /selectTextContextTarget/);
+  assert.match(menuSource, /editTextContextTarget/);
+  assert.match(menuSource, /deleteTextContextTarget/);
+  assert.doesNotMatch(menuSource, /share|partager/i);
+  assert.match(chatSource, /handleEdit\(text\)/);
+  assert.match(chatSource, /setInput\(''\)/);
+  assert.match(chatSource, /setMessageToDelete\(target\.messageId\)/);
+  assert.match(chatCss, /\.text-context-menu-item\.danger\s*\{[\s\S]*?border:\s*0;[\s\S]*?background:\s*transparent;[\s\S]*?color:\s*#ff5c67;/);
+});
+
+test('detects whether prompt text can be translated to the interface language', () => {
+  assert.equal(textLanguage.detectTextLanguage('A young woman standing in warm light'), 'en');
+  assert.equal(textLanguage.detectTextLanguage('Une jeune femme debout dans une lumière chaude'), 'fr');
+  assert.equal(textLanguage.canTranslateText('A young woman standing in warm light', 'fr'), true);
+  assert.equal(textLanguage.canTranslateText('Une jeune femme dans une lumière chaude', 'fr'), false);
+  assert.equal(textLanguage.canTranslateText('Bonjour', 'fr'), false);
+  assert.equal(textLanguage.canTranslateText('Fuji', 'fr'), true);
+});
+
+test('offers LLM translation in the text menu and a copyable result dialog', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+
+  assert.match(chatSource, /disabled=\{!params\.llmProviderId \|\| !canTranslateText\(textContextMenu\.target\.text, lang\)\}/);
+  assert.match(chatSource, /fetch\(`\$\{API_BASE\}\/api\/llm\/translate-text`/);
+  assert.match(chatSource, /className="translation-modal"/);
+  assert.match(chatSource, /copyTranslatedText/);
+  assert.match(chatSource, /closeTextTranslation/);
+  assert.match(chatCss, /\.text-context-menu-item:disabled\s*\{[\s\S]*?opacity:\s*0\.38/);
+  assert.match(chatCss, /\.translation-modal\s*\{[\s\S]*?width:\s*min\(620px, 100%\)/);
+});
+
+test('opens image actions from a long press in the message thread', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+  const imageClipboardSource = readFileSync('src/utils/imageClipboard.ts', 'utf8');
+  const imageDownloadSource = readFileSync('src/utils/imageDownload.ts', 'utf8');
+  const imageMenuSource = chatSource.slice(
+    chatSource.indexOf('{chatImageContextMenu && ('),
+    chatSource.indexOf('{showRetryAllConfirm && (')
+  );
+
+  assert.match(chatSource, /startChatImageLongPress/);
+  assert.match(chatSource, /onContextMenu=\{\(event\) => handleChatImageContextMenu/);
+  assert.match(chatSource, /suppressChatImageClickRef\.current = true/);
+  assert.match(imageMenuSource, /copyChatImage/);
+  assert.match(imageMenuSource, /downloadChatImage/);
+  assert.match(imageMenuSource, /modifyChatImage/);
+  assert.match(imageMenuSource, /deleteChatImage/);
+  assert.doesNotMatch(imageMenuSource, /share|partager/i);
+  assert.match(chatSource, /copyImageToClipboard\(getFullImageUrl\(url\)\)/);
+  assert.match(chatSource, /downloadImageByMessageId\(messageId, `img-\$\{messageId\}\.webp`\)/);
+  assert.match(imageDownloadSource, /\/api\/gallery\/download\/\$\{encodeURIComponent\(messageId\)\}/);
+  assert.match(imageDownloadSource, /link\.download = filename/);
+  assert.match(imageClipboardSource, /new ClipboardItem\(\{ 'image\/png': pngPromise \}\)/);
+  assert.match(chatSource, /setMessageToDelete\(messageId\)/);
+  assert.match(appSource, /const handleImageModify = useCallback[\s\S]*?setActiveLightbox\(\{ \.\.\.item, source: 'chat' \}\)/);
+  assert.match(appSource, /setShowLightboxModify\(Boolean\(pendingModify\)\)/);
+  assert.match(chatCss, /\.image-wrapper\s*\{[\s\S]*?-webkit-touch-callout:\s*none;[\s\S]*?user-select:\s*none;/);
 });
 
 test('parses slash commands and their numeric values', () => {

@@ -18,6 +18,7 @@ let isProcessingQueue = false;
 let wss: WebSocketServer | null = null;
 const websocketUsers = new WeakMap<WebSocket, string>();
 const lastServedByUser = new Map<string, number>();
+const cancelledQueueTaskIds = new Set<number>();
 const COMFY_HISTORY_POLL_INTERVAL_MS = 250;
 const COMFY_UNAVAILABLE_MESSAGE = 'ComfyUI est inaccessible. Toutes les générations ont été arrêtées. Vérifiez que ComfyUI est démarré et que son URL est correcte.';
 
@@ -77,6 +78,15 @@ export const assertUserQueueCapacity = (userId: string, requested = 1) => {
   }
   return capacity;
 };
+
+export const disconnectQueueTask = (queueTaskId: number) => {
+  cancelledQueueTaskIds.add(queueTaskId);
+};
+
+const isQueueTaskConnected = (task: QueueTask) => (
+  !cancelledQueueTaskIds.has(task.id)
+  && Boolean(db.prepare('SELECT 1 FROM queue WHERE id = ?').get(task.id))
+);
 
 const getNextFairTask = (): QueueTask | null => {
   const pending = db.prepare(`
@@ -150,6 +160,8 @@ export const processQueue = async () => {
       }
     }
 
+    if (!isQueueTaskConnected(task)) return;
+
     const workflow = getWorkflow(task.prompt, params);
     
     console.log(`[Queue] Submitting to ComfyUI at ${targetComfyUrl}...`);
@@ -194,6 +206,14 @@ export const processQueue = async () => {
     try {
       const response = await axios.post(`${targetComfyUrl}/prompt`, { prompt: workflow, client_id: uuidv4() }, { timeout: 10000 });
       promptId = response.data.prompt_id;
+      if (!isQueueTaskConnected(task)) {
+        try {
+          await axios.post(`${targetComfyUrl}/interrupt`);
+        } catch {
+          // The targeted cancellation was already persisted; ComfyUI may be idle.
+        }
+        return;
+      }
       writeAuditLog({
         source: 'comfyui',
         direction: 'inbound',
@@ -227,6 +247,7 @@ export const processQueue = async () => {
     let lastReportedDuration = 0;
 
     while (!completedImage) {
+      if (!isQueueTaskConnected(task)) return;
       if (Date.now() - startTime > POLLING_TIMEOUT) throw new Error('Generation timed out after 5 minutes.');
       
       const currentDuration = Math.floor((Date.now() - startTime) / 1000);
@@ -282,6 +303,8 @@ export const processQueue = async () => {
         }
       }
     }
+
+    if (!isQueueTaskConnected(task)) return;
     
     const finalDuration = Math.floor((Date.now() - startTime) / 1000);
     const { filename, subfolder = '', type = 'output', nodeId: outputNodeId } = completedImage;
@@ -309,6 +332,7 @@ export const processQueue = async () => {
       if (isComfyConnectionRefused(err)) throw new ComfyUnavailableError();
       throw new Error(`Failed to retrieve image: ${parseComfyError(err)}`); 
     }
+    if (!isQueueTaskConnected(task)) return;
     
     const sessionRecord = db.prepare('SELECT userId FROM sessions WHERE id = ?').get(task.sessionId) as { userId: string } | undefined;
     const userId = sessionRecord?.userId || 'unknown';
@@ -329,6 +353,7 @@ export const processQueue = async () => {
         .toFile(path.join(userImagesDir, fullWebpName)),
       generateThumbnailVariants(imgResp.data, userThumbnailsDir, baseName)
     ]);
+    if (!isQueueTaskConnected(task)) return;
     
     const imageUrl = `/api/image-files/${userId}/${fullWebpName}`;
     const thumbnailUrl = `/api/image-files/thumbnails/${userId}/${thumbWebpName}`;
@@ -414,6 +439,7 @@ export const processQueue = async () => {
       });
     }
   } finally { 
+    if (task) cancelledQueueTaskIds.delete(task.id);
     isProcessingQueue = false; 
     setImmediate(() => void processQueue());
   }

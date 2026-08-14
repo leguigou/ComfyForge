@@ -1,0 +1,218 @@
+import fs from 'fs';
+import http from 'http';
+import path from 'path';
+import type { AddressInfo } from 'net';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+const authSecret = 'gallery-test-secret-with-more-than-32-characters';
+const runtimeDir = path.join(process.cwd(), '.test-runtime', `gallery-${process.pid}`);
+
+let server: http.Server;
+let baseUrl: string;
+let authCookie: string;
+let csrfToken: string;
+let db: typeof import('../services/database').default;
+
+const responseCookies = (response: Response) => {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  const values = headers.getSetCookie?.() || [response.headers.get('set-cookie') || ''];
+  return values.flatMap(value => value.match(/(?:userId|csrfToken)=[^;,\s]+/g) || []);
+};
+
+const request = (pathname: string, options: RequestInit = {}) => {
+  const headers = new Headers(options.headers);
+  headers.set('Cookie', authCookie);
+  if (options.body) headers.set('Content-Type', 'application/json');
+  if (csrfToken && !['GET', 'HEAD'].includes((options.method || 'GET').toUpperCase())) {
+    headers.set('X-CSRF-Token', csrfToken);
+  }
+  return fetch(`${baseUrl}${pathname}`, { ...options, headers });
+};
+
+beforeAll(async () => {
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  process.env.NODE_ENV = 'test';
+  process.env.DATABASE_PATH = path.join(runtimeDir, 'history.db');
+  process.env.IMAGES_DIR = path.join(runtimeDir, 'images');
+  process.env.APP_PASSWORD = 'gallery-test-password';
+
+  const [{ createApp }, databaseModule] = await Promise.all([
+    import('../app'),
+    import('../services/database'),
+  ]);
+  db = databaseModule.default;
+  server = http.createServer(createApp(authSecret));
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const login = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'gallery-test-password' }),
+  });
+  expect(login.status).toBe(200);
+  const cookies = responseCookies(login);
+  authCookie = [
+    [...cookies].reverse().find(cookie => cookie.startsWith('csrfToken=')),
+    [...cookies].reverse().find(cookie => cookie.startsWith('userId=')),
+  ].filter(Boolean).join('; ');
+  csrfToken = login.headers.get('x-csrf-token') || '';
+  expect(authCookie).toContain('userId=s%3A');
+  expect(authCookie).toContain('csrfToken=');
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  db.close();
+  fs.rmSync(runtimeDir, { recursive: true, force: true });
+});
+
+describe('manual gallery groups', () => {
+  it('groups different prompts only in grouped view and can dissolve the manual group', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string };
+    const sessionId = 'manual-gallery-session';
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO sessions (id, userId, title, updatedAt)
+      VALUES (?, ?, 'Manual gallery groups', ?)
+    `).run(sessionId, user.id, now);
+    const insert = db.prepare(`
+      INSERT INTO messages (id, sessionId, role, prompt, generationPrompt, imageUrl, timestamp)
+      VALUES (?, ?, 'bot', ?, ?, ?, ?)
+    `);
+    insert.run('manual-a', sessionId, 'portrait prompt', 'portrait prompt', '/a.webp', now + 3);
+    insert.run('manual-b', sessionId, 'landscape prompt', 'landscape prompt', '/b.webp', now + 2);
+    insert.run('manual-c', sessionId, 'portrait prompt', 'portrait prompt', '/c.webp', now + 1);
+
+    const create = await request('/api/gallery/manual-groups', {
+      method: 'POST',
+      body: JSON.stringify({ messageIds: ['manual-a', 'manual-b'] }),
+    });
+    const created = await create.json() as { manualGroupId: string };
+    expect(create.status, JSON.stringify(created)).toBe(201);
+    expect(created.manualGroupId).toBeTruthy();
+
+    const normal = await request('/api/gallery?groupByPrompt=false&includeTotal=true');
+    const normalBody = await normal.json() as { items: Array<{ messageId: string; groupCount?: number }> };
+    expect(normalBody.items).toHaveLength(3);
+    expect(normalBody.items.every(item => item.groupCount === undefined)).toBe(true);
+
+    const grouped = await request('/api/gallery?groupByPrompt=true&includeTotal=true');
+    const groupedBody = await grouped.json() as {
+      total: number;
+      items: Array<{ messageId: string; groupCount: number; manualGroupId?: string }>;
+    };
+    expect(groupedBody.total).toBe(2);
+    expect(groupedBody.items.find(item => item.manualGroupId === created.manualGroupId)?.groupCount).toBe(2);
+
+    const group = await request('/api/gallery/group/manual-a');
+    const groupBody = await group.json() as { items: Array<{ messageId: string; generationPrompt: string }> };
+    expect(groupBody.items.map(item => item.generationPrompt)).toEqual(['portrait prompt', 'landscape prompt']);
+
+    const cover = await request('/api/gallery/group/manual-b/cover', { method: 'PUT' });
+    expect(cover.status).toBe(200);
+    const coveredGroup = await request('/api/gallery/group/manual-b');
+    const coveredBody = await coveredGroup.json() as { items: Array<{ messageId: string; isGroupCover: number }> };
+    expect(coveredBody.items[0]).toMatchObject({ messageId: 'manual-b', isGroupCover: 1 });
+
+    const dissolve = await request('/api/gallery/group/manual-b/manual', { method: 'DELETE' });
+    expect(dissolve.status).toBe(200);
+    const automaticUngroupAttempt = await request('/api/gallery/group/manual-a/manual', { method: 'DELETE' });
+    expect(automaticUngroupAttempt.status).toBe(409);
+
+    const regrouped = await request('/api/gallery?groupByPrompt=true&includeTotal=true');
+    const regroupedBody = await regrouped.json() as {
+      total: number;
+      items: Array<{ groupCount: number; manualGroupId?: string | null }>;
+    };
+    expect(regroupedBody.total).toBe(2);
+    expect(regroupedBody.items.some(item => item.groupCount === 2 && !item.manualGroupId)).toBe(true);
+  });
+});
+
+describe('session-scoped gallery', () => {
+  it('returns only the requested conversation and keeps prompt groups inside it', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string };
+    const firstSessionId = 'thread-gallery-first';
+    const secondSessionId = 'thread-gallery-second';
+    const now = Date.now();
+    const insertSession = db.prepare(`
+      INSERT INTO sessions (id, userId, title, updatedAt, isArchived)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    insertSession.run(firstSessionId, user.id, 'First thread gallery', now, 0);
+    insertSession.run(secondSessionId, user.id, 'Second thread gallery', now, 1);
+
+    const insertMessage = db.prepare(`
+      INSERT INTO messages (id, sessionId, role, prompt, generationPrompt, imageUrl, timestamp)
+      VALUES (?, ?, 'bot', 'shared prompt', 'shared prompt', ?, ?)
+    `);
+    insertMessage.run('thread-gallery-a', firstSessionId, '/thread-a.webp', now + 3);
+    insertMessage.run('thread-gallery-b', firstSessionId, '/thread-b.webp', now + 2);
+    insertMessage.run('thread-gallery-c', secondSessionId, '/thread-c.webp', now + 1);
+
+    const first = await request(`/api/gallery?sessionId=${firstSessionId}&groupByPrompt=true&includeTotal=true`);
+    const firstBody = await first.json() as {
+      total: number;
+      items: Array<{ sessionId: string; messageId: string; groupCount: number }>;
+    };
+    expect(first.status).toBe(200);
+    expect(firstBody.total).toBe(1);
+    expect(firstBody.items).toHaveLength(1);
+    expect(firstBody.items[0]).toMatchObject({ sessionId: firstSessionId, groupCount: 2 });
+
+    const group = await request(`/api/gallery/group/${firstBody.items[0].messageId}?sessionId=${firstSessionId}`);
+    const groupBody = await group.json() as { items: Array<{ sessionId: string }> };
+    expect(groupBody.items).toHaveLength(2);
+    expect(groupBody.items.every(item => item.sessionId === firstSessionId)).toBe(true);
+
+    const mismatchedGroup = await request(`/api/gallery/group/thread-gallery-a?sessionId=${secondSessionId}`);
+    expect(mismatchedGroup.status).toBe(404);
+
+    const archived = await request(`/api/gallery?sessionId=${secondSessionId}&includeTotal=true`);
+    const archivedBody = await archived.json() as { total: number; items: Array<{ sessionId: string }> };
+    expect(archivedBody.total).toBe(1);
+    expect(archivedBody.items[0].sessionId).toBe(secondSessionId);
+  });
+});
+
+describe('gallery metadata filters', () => {
+  it('lists available values and combines model, workflow, and aspect filters', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string };
+    const sessionId = 'gallery-filter-session';
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO sessions (id, userId, title, updatedAt)
+      VALUES (?, ?, 'Gallery filters', ?)
+    `).run(sessionId, user.id, now);
+    const insert = db.prepare(`
+      INSERT INTO messages (id, sessionId, role, imageUrl, timestamp, model, workflow, width, height)
+      VALUES (?, ?, 'bot', ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run('filter-a', sessionId, '/filter-a.webp', now + 3, 'Realism XL', 'portrait.json', 832, 1216);
+    insert.run('filter-b', sessionId, '/filter-b.webp', now + 2, 'Realism XL', 'cinema.json', 1216, 832);
+    insert.run('filter-c', sessionId, '/filter-c.webp', now + 1, 'Flux Dev', 'portrait.json', 1024, 1024);
+
+    const options = await request(`/api/gallery/filters?sessionId=${sessionId}`);
+    const optionsBody = await options.json() as {
+      models: Array<{ value: string; count: number }>;
+      workflows: Array<{ value: string; count: number }>;
+      aspects: Record<string, number>;
+    };
+    expect(options.status).toBe(200);
+    expect(optionsBody.models).toContainEqual({ value: 'Realism XL', count: 2 });
+    expect(optionsBody.workflows).toContainEqual({ value: 'portrait.json', count: 2 });
+    expect(optionsBody.aspects).toEqual({ square: 1, portrait: 1, landscape: 1 });
+
+    const filtered = await request(`/api/gallery?sessionId=${sessionId}&model=${encodeURIComponent('Realism XL')}&workflow=${encodeURIComponent('portrait.json')}&aspect=portrait&includeTotal=true`);
+    const filteredBody = await filtered.json() as { total: number; items: Array<{ messageId: string }> };
+    expect(filtered.status).toBe(200);
+    expect(filteredBody.total).toBe(1);
+    expect(filteredBody.items.map(item => item.messageId)).toEqual(['filter-a']);
+
+    const multipleAspects = await request(`/api/gallery?sessionId=${sessionId}&aspect=square&aspect=landscape&includeTotal=true`);
+    const multipleAspectsBody = await multipleAspects.json() as { total: number; items: Array<{ messageId: string }> };
+    expect(multipleAspectsBody.total).toBe(2);
+    expect(multipleAspectsBody.items.map(item => item.messageId)).toEqual(['filter-b', 'filter-c']);
+  });
+});

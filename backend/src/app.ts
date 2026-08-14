@@ -20,6 +20,7 @@ import comparisonRoutes from './routes/comparisons';
 import healthRoutes from './routes/health';
 import adminQueueRoutes from './routes/admin-queue';
 import companionRoutes from './routes/companions';
+import civitaiRoutes from './routes/civitai';
 import { configureProviderEncryption } from './services/llm-providers';
 import { startAuditLogRetention } from './services/audit-log';
 import { compressJsonResponses } from './middleware/response-compression';
@@ -120,6 +121,7 @@ export const createApp = (authSecret: string) => {
   apiRouter.use('/admin/logs', adminLogRoutes);
   apiRouter.use('/admin/queue', adminQueueRoutes);
   apiRouter.use('/companions', companionRoutes);
+  apiRouter.use('/civitai', civitaiRoutes);
   apiRouter.use('/statistics', statisticsRoutes);
   apiRouter.use('/comparisons', comparisonRoutes);
   apiRouter.use('/image-files', miscRoutes);
