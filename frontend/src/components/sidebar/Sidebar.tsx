@@ -126,11 +126,11 @@ export const Sidebar = ({
           {sessions.map(s => (
             <div 
               key={s.id} 
-              className={`session-item status-${s.generationStatus || 'idle'} ${currentSessionId === s.id && (view === 'chat' || view === 'archives') ? 'active' : ''}`}
+              className={`session-item status-${s.generationStatus || 'idle'} ${currentSessionId === s.id && (view === 'chat' || view === 'thread-gallery' || view === 'archives') ? 'active' : ''}`}
               data-generation-status={s.generationStatus || 'idle'}
               role="button"
               tabIndex={renamingId === s.id ? -1 : 0}
-              aria-current={currentSessionId === s.id && (view === 'chat' || view === 'archives') ? 'page' : undefined}
+              aria-current={currentSessionId === s.id && (view === 'chat' || view === 'thread-gallery' || view === 'archives') ? 'page' : undefined}
               onClick={() => { 
                 onSessionViewed(s.id);
                 if (currentSessionId === s.id && view === 'chat') {

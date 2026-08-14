@@ -4,7 +4,7 @@ import type { Message, Language, GalleryItem, GenParameters, PromptTag } from '.
 import { WelcomeScreen, type WelcomeSuggestionAction } from './WelcomeScreen';
 import { MessageText } from './MessageText';
 import { SeedyCompanion } from './SeedyCompanion';
-import { AlertTriangleIcon, ArchiveIcon, CameraIcon, ChatIcon, ChevronDownIcon, ComposeIcon, DiceIcon, HeartIcon, InfoIcon, LockIcon, MagicWandIcon, PlusIcon, PromptGroupIcon, RefreshIcon, SendIcon, ThumbUpIcon, TrashIcon, XIcon } from '../ui/Icons';
+import { AlertTriangleIcon, ArchiveIcon, CameraIcon, ChatIcon, ChevronDownIcon, ClipboardIcon, ComposeIcon, DiceIcon, DownloadIcon, FilterIcon, GlobeIcon, HeartIcon, InfoIcon, LockIcon, MagicWandIcon, PlusIcon, PromptGroupIcon, RefreshIcon, SendIcon, TextSelectIcon, ThumbUpIcon, TrashIcon, XIcon } from '../ui/Icons';
 import { API_BASE, getFullImageUrl, getThumbnailSrcSet, formatDuration } from '../../services/api';
 import {
   getEstimatedGenerationProgress,
@@ -12,6 +12,8 @@ import {
   getTrackedGenerationElapsedSeconds
 } from '../../utils/generationTimer';
 import { hasResolvableRandomPrompt } from '../../utils/randomPrompts';
+import { canTranslateText } from '../../utils/textLanguage';
+import { copyImageToClipboard, ImageClipboardError } from '../../utils/imageClipboard';
 import {
   getSlashCommandQuery,
   parseBoundedNumberCommand,
@@ -24,12 +26,33 @@ import toast from 'react-hot-toast';
 const LUCKY_PHRASE_COUNT = 5;
 const VISION_SCAN_PHRASE_COUNT = 5;
 const MIN_GALLERY_COLUMNS = 1;
-const MAX_GALLERY_COLUMNS = 6;
+const MAX_GALLERY_COLUMNS = 12;
 const GALLERY_PINCH_STEP = 1.16;
 const GALLERY_LONG_PRESS_MS = 1000;
 const GALLERY_LONG_PRESS_MOVE_TOLERANCE = 12;
+const TEXT_LONG_PRESS_MS = 550;
+const TEXT_LONG_PRESS_MOVE_TOLERANCE = 10;
 const GALLERY_FAST_SCROLL_THUMB_SIZE = 58;
 const VISION_RECOVERY_STORAGE_KEY = 'comfyforge.pendingVisionRecovery';
+const GalleryFilterMenu = React.lazy(() => import('./GalleryFilterMenu'));
+
+type TextContextTarget = {
+  kind: 'draft';
+  text: string;
+} | {
+  kind: 'message';
+  text: string;
+  messageId: string;
+  timestamp: number;
+};
+
+type ChatImageContextTarget = {
+  url: string;
+  thumbnailUrl?: string;
+  sessionId: string;
+  messageId: string;
+  isFavorite?: number;
+};
 
 const createVisionRecoveryId = () => {
   if (typeof window.crypto?.randomUUID === 'function') return window.crypto.randomUUID();
@@ -216,7 +239,7 @@ const GenerationProgress = React.memo(({ message }: { message: Message }) => {
 });
 
 interface ChatInterfaceProps {
-  view: 'chat' | 'gallery' | 'archives';
+  view: 'chat' | 'gallery' | 'thread-gallery' | 'archives';
   messages: Message[];
   lang: Language;
   t: Record<string, string>;
@@ -240,7 +263,7 @@ interface ChatInterfaceProps {
   dismissFailedMessage: (messageId: string) => void;
   retryAllIncomplete: () => Promise<{ queued: number }>;
   updatePendingPrompt: (messageId: string, prompt: string, localUserMessageId?: string) => Promise<unknown>;
-  interruptGeneration: () => void;
+  interruptGeneration: (messageId: string) => void;
   handleEdit: (text: string) => void;
   goToImage: (sessionId: string, messageId: string) => void;
   openComparison: (messageId: string) => void;
@@ -250,6 +273,7 @@ interface ChatInterfaceProps {
   toggleFavorite: (sessionId: string, messageId: string, currentStatus: number | undefined) => void;
   togglePromptFavorite: (sessionId: string, messageId: string, currentStatus: number | undefined) => void;
   handleImageClick: (item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, groupCount?: number, source: 'chat' | 'gallery' }) => void;
+  handleImageModify: (item: ChatImageContextTarget) => void;
   favoritedId: string | null;
   galleryItems: GalleryItem[];
   batchDeleteGalleryItems: (items: GalleryItem[]) => Promise<void>;
@@ -257,6 +281,7 @@ interface ChatInterfaceProps {
   batchLuckyGalleryItems: (items: GalleryItem[]) => Promise<void>;
   batchSetGalleryFavorites: (items: GalleryItem[], value: number) => Promise<void>;
   batchSetGalleryPromptFavorites: (items: GalleryItem[], value: number) => Promise<void>;
+  batchCreateManualGroup: (items: GalleryItem[]) => Promise<void>;
   galleryTotal: number;
   galleryStartIndex: number;
   seekGallery: (targetIndex: number) => Promise<GalleryItem[]>;
@@ -270,6 +295,12 @@ interface ChatInterfaceProps {
   availablePromptTags: PromptTag[];
   selectedPromptTags: string[];
   setSelectedPromptTags: (tags: string[]) => void;
+  selectedGalleryModels: string[];
+  setSelectedGalleryModels: (models: string[]) => void;
+  selectedGalleryWorkflows: string[];
+  setSelectedGalleryWorkflows: (workflows: string[]) => void;
+  selectedGalleryAspects: Array<'square' | 'portrait' | 'landscape'>;
+  setSelectedGalleryAspects: (aspects: Array<'square' | 'portrait' | 'landscape'>) => void;
   gallerySearch: string;
   setGallerySearch: (value: string) => void;
   openPromptTag: (slug: string) => void;
@@ -320,6 +351,7 @@ export const ChatInterface = ({
   toggleFavorite,
   togglePromptFavorite,
   handleImageClick,
+  handleImageModify,
   favoritedId,
   galleryItems,
   batchDeleteGalleryItems,
@@ -327,6 +359,7 @@ export const ChatInterface = ({
   batchLuckyGalleryItems,
   batchSetGalleryFavorites,
   batchSetGalleryPromptFavorites,
+  batchCreateManualGroup,
   galleryTotal,
   galleryStartIndex,
   seekGallery,
@@ -340,6 +373,12 @@ export const ChatInterface = ({
   availablePromptTags,
   selectedPromptTags,
   setSelectedPromptTags,
+  selectedGalleryModels,
+  setSelectedGalleryModels,
+  selectedGalleryWorkflows,
+  setSelectedGalleryWorkflows,
+  selectedGalleryAspects,
+  setSelectedGalleryAspects,
   gallerySearch,
   setGallerySearch,
   openPromptTag,
@@ -358,6 +397,7 @@ export const ChatInterface = ({
   onScrollToBottom,
   openOptionsRequest = 0
 }: ChatInterfaceProps) => {
+  const isGalleryView = view === 'gallery' || view === 'thread-gallery';
   const hasPromptText = input.trim().length > 0;
   const [showOptions, setShowOptions] = useState(false);
   const [showRandomPrompts, setShowRandomPrompts] = useState(false);
@@ -377,6 +417,7 @@ export const ChatInterface = ({
     typeof window === 'undefined' ? null : window.localStorage.getItem(VISION_RECOVERY_STORAGE_KEY)
   );
   const [isGallerySearchFocused, setIsGallerySearchFocused] = useState(false);
+  const [showGalleryFilters, setShowGalleryFilters] = useState(false);
   const [pendingPromptEditor, setPendingPromptEditor] = useState<{
     displayMessageId: string;
     targetMessageId: string;
@@ -395,6 +436,22 @@ export const ChatInterface = ({
   const [galleryBatchBusy, setGalleryBatchBusy] = useState(false);
   const [isGalleryFastScrolling, setIsGalleryFastScrolling] = useState(false);
   const [galleryFastScrollIndex, setGalleryFastScrollIndex] = useState(0);
+  const [textContextMenu, setTextContextMenu] = useState<{
+    x: number;
+    y: number;
+    target: TextContextTarget;
+  } | null>(null);
+  const [chatImageContextMenu, setChatImageContextMenu] = useState<{
+    x: number;
+    y: number;
+    target: ChatImageContextTarget;
+  } | null>(null);
+  const [textTranslation, setTextTranslation] = useState<{
+    sourceText: string;
+    translatedText: string;
+    isLoading: boolean;
+    error: string;
+  } | null>(null);
   const hadPromptTextRef = useRef(hasPromptText);
   const promptHighlightRef = useRef<HTMLDivElement>(null);
   const imageImportRef = useRef<HTMLInputElement>(null);
@@ -422,11 +479,266 @@ export const ChatInterface = ({
     startY: number;
   } | null>(null);
   const galleryGridRef = useRef<HTMLDivElement>(null);
+  const galleryFiltersRef = useRef<HTMLDivElement>(null);
   const galleryFastScrollRef = useRef<HTMLDivElement>(null);
   const galleryFastScrollPointerRef = useRef<number | null>(null);
   const galleryFastScrollTimerRef = useRef<number | null>(null);
   const galleryFastScrollRequestRef = useRef(0);
   const galleryScrollFrameRef = useRef<number | null>(null);
+  const textLongPressRef = useRef<{
+    timer: number;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const chatImageLongPressRef = useRef<{
+    timer: number;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const suppressChatImageClickRef = useRef(false);
+  const translationRequestRef = useRef(0);
+
+  const cancelTextLongPress = useCallback(() => {
+    if (!textLongPressRef.current) return;
+    window.clearTimeout(textLongPressRef.current.timer);
+    textLongPressRef.current = null;
+  }, []);
+
+  const openTextContextMenu = useCallback((target: TextContextTarget, clientX: number, clientY: number) => {
+    if (!target.text.trim()) return;
+    const menuWidth = Math.min(332, window.innerWidth - 24);
+    const menuHeight = 338;
+    const x = Math.max(12, Math.min(clientX, window.innerWidth - menuWidth - 12));
+    const y = Math.max(12, Math.min(clientY, window.innerHeight - menuHeight - 12));
+    setTextContextMenu({ x, y, target });
+  }, []);
+
+  const handleTextContextMenu = useCallback((
+    event: React.MouseEvent<HTMLElement>,
+    target: TextContextTarget
+  ) => {
+    if (!target.text.trim()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelTextLongPress();
+    openTextContextMenu(target, event.clientX, event.clientY);
+  }, [cancelTextLongPress, openTextContextMenu]);
+
+  const startTextLongPress = useCallback((
+    event: React.PointerEvent<HTMLElement>,
+    target: TextContextTarget
+  ) => {
+    if (event.pointerType !== 'touch' || !target.text.trim()) return;
+    cancelTextLongPress();
+    const { pointerId, clientX, clientY } = event;
+    const timer = window.setTimeout(() => {
+      textLongPressRef.current = null;
+      openTextContextMenu(target, clientX, clientY);
+    }, TEXT_LONG_PRESS_MS);
+    textLongPressRef.current = { timer, pointerId, startX: clientX, startY: clientY };
+  }, [cancelTextLongPress, openTextContextMenu]);
+
+  const moveTextLongPress = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const press = textLongPressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - press.startX, event.clientY - press.startY) > TEXT_LONG_PRESS_MOVE_TOLERANCE) {
+      cancelTextLongPress();
+    }
+  }, [cancelTextLongPress]);
+
+  const finishTextLongPress = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (textLongPressRef.current?.pointerId === event.pointerId) cancelTextLongPress();
+  }, [cancelTextLongPress]);
+
+  const copyTextContextTarget = useCallback(async () => {
+    if (!textContextMenu) return;
+    try {
+      await navigator.clipboard.writeText(textContextMenu.target.text);
+      toast.success(t.textCopied);
+    } catch {
+      toast.error(t.textCopyFailed);
+    } finally {
+      setTextContextMenu(null);
+    }
+  }, [t.textCopied, t.textCopyFailed, textContextMenu]);
+
+  const selectTextContextTarget = useCallback(() => {
+    if (!textContextMenu) return;
+    const { target } = textContextMenu;
+    setTextContextMenu(null);
+    window.requestAnimationFrame(() => {
+      if (target.kind === 'draft') {
+        textareaRef.current?.focus();
+        textareaRef.current?.select();
+        return;
+      }
+      const textElement = document.getElementById(`msg-${target.messageId}`)?.querySelector<HTMLElement>('.message-text');
+      if (!textElement) return;
+      const range = document.createRange();
+      range.selectNodeContents(textElement);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+  }, [textContextMenu, textareaRef]);
+
+  const editTextContextTarget = useCallback(() => {
+    if (!textContextMenu) return;
+    const text = textContextMenu.target.text;
+    setTextContextMenu(null);
+    handleEdit(text);
+  }, [handleEdit, textContextMenu]);
+
+  const deleteTextContextTarget = useCallback(() => {
+    if (!textContextMenu) return;
+    const { target } = textContextMenu;
+    setTextContextMenu(null);
+    if (target.kind === 'draft') {
+      setInput('');
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+    } else {
+      setMessageToDelete(target.messageId);
+    }
+  }, [setInput, setMessageToDelete, textContextMenu, textareaRef]);
+
+  const closeTextTranslation = useCallback(() => {
+    translationRequestRef.current += 1;
+    setTextTranslation(null);
+  }, []);
+
+  const translateTextContextTarget = useCallback(async () => {
+    if (!textContextMenu || !params.llmProviderId || !canTranslateText(textContextMenu.target.text, lang)) return;
+    const sourceText = textContextMenu.target.text;
+    const requestId = translationRequestRef.current + 1;
+    translationRequestRef.current = requestId;
+    setTextContextMenu(null);
+    setTextTranslation({ sourceText, translatedText: '', isLoading: true, error: '' });
+    try {
+      const response = await fetch(`${API_BASE}/api/llm/translate-text`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: sourceText, targetLanguage: lang }),
+      });
+      const data = await response.json();
+      if (!response.ok || typeof data.translatedText !== 'string' || !data.translatedText.trim()) {
+        throw new Error(data.error || t.translationFailed);
+      }
+      if (translationRequestRef.current !== requestId) return;
+      setTextTranslation({ sourceText, translatedText: data.translatedText.trim(), isLoading: false, error: '' });
+    } catch (error) {
+      if (translationRequestRef.current !== requestId) return;
+      const message = error instanceof Error ? error.message : t.translationFailed;
+      setTextTranslation({ sourceText, translatedText: '', isLoading: false, error: message });
+      toast.error(message);
+    }
+  }, [lang, params.llmProviderId, t.translationFailed, textContextMenu]);
+
+  const copyTranslatedText = useCallback(async () => {
+    if (!textTranslation?.translatedText) return;
+    try {
+      await navigator.clipboard.writeText(textTranslation.translatedText);
+      toast.success(t.translatedTextCopied);
+    } catch {
+      toast.error(t.textCopyFailed);
+    }
+  }, [t.textCopyFailed, t.translatedTextCopied, textTranslation]);
+
+  const cancelChatImageLongPress = useCallback(() => {
+    if (!chatImageLongPressRef.current) return;
+    window.clearTimeout(chatImageLongPressRef.current.timer);
+    chatImageLongPressRef.current = null;
+  }, []);
+
+  const openChatImageContextMenu = useCallback((target: ChatImageContextTarget, clientX: number, clientY: number) => {
+    const menuWidth = Math.min(332, window.innerWidth - 24);
+    const menuHeight = 220;
+    setChatImageContextMenu({
+      target,
+      x: Math.max(12, Math.min(clientX, window.innerWidth - menuWidth - 12)),
+      y: Math.max(12, Math.min(clientY, window.innerHeight - menuHeight - 12)),
+    });
+  }, []);
+
+  const handleChatImageContextMenu = useCallback((
+    event: React.MouseEvent<HTMLElement>,
+    target: ChatImageContextTarget
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelChatImageLongPress();
+    openChatImageContextMenu(target, event.clientX, event.clientY);
+  }, [cancelChatImageLongPress, openChatImageContextMenu]);
+
+  const startChatImageLongPress = useCallback((
+    event: React.PointerEvent<HTMLElement>,
+    target: ChatImageContextTarget
+  ) => {
+    if (event.pointerType !== 'touch') return;
+    cancelChatImageLongPress();
+    const { pointerId, clientX, clientY } = event;
+    const timer = window.setTimeout(() => {
+      chatImageLongPressRef.current = null;
+      suppressChatImageClickRef.current = true;
+      window.setTimeout(() => { suppressChatImageClickRef.current = false; }, 700);
+      openChatImageContextMenu(target, clientX, clientY);
+    }, TEXT_LONG_PRESS_MS);
+    chatImageLongPressRef.current = { timer, pointerId, startX: clientX, startY: clientY };
+  }, [cancelChatImageLongPress, openChatImageContextMenu]);
+
+  const moveChatImageLongPress = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const press = chatImageLongPressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - press.startX, event.clientY - press.startY) > TEXT_LONG_PRESS_MOVE_TOLERANCE) {
+      cancelChatImageLongPress();
+    }
+  }, [cancelChatImageLongPress]);
+
+  const finishChatImageLongPress = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (chatImageLongPressRef.current?.pointerId === event.pointerId) cancelChatImageLongPress();
+  }, [cancelChatImageLongPress]);
+
+  const copyChatImage = useCallback(async () => {
+    if (!chatImageContextMenu) return;
+    const { url } = chatImageContextMenu.target;
+    setChatImageContextMenu(null);
+    try {
+      await copyImageToClipboard(getFullImageUrl(url));
+      toast.success(t.imageCopied);
+    } catch (error) {
+      toast.error(error instanceof ImageClipboardError
+        ? error.code === 'INSECURE_CONTEXT' ? t.imageCopyRequiresHttps : t.imageCopyUnsupported
+        : t.imageCopyFailed);
+    }
+  }, [chatImageContextMenu, t.imageCopied, t.imageCopyFailed, t.imageCopyRequiresHttps, t.imageCopyUnsupported]);
+
+  const modifyChatImage = useCallback(() => {
+    if (!chatImageContextMenu) return;
+    const target = chatImageContextMenu.target;
+    setChatImageContextMenu(null);
+    handleImageModify(target);
+  }, [chatImageContextMenu, handleImageModify]);
+
+  const downloadChatImage = useCallback(async () => {
+    if (!chatImageContextMenu) return;
+    const { messageId } = chatImageContextMenu.target;
+    setChatImageContextMenu(null);
+    try {
+      const { downloadImageByMessageId } = await import('../../utils/imageDownload');
+      await downloadImageByMessageId(messageId, `img-${messageId}.webp`);
+    } catch {
+      toast.error(t.imageDownloadFailed);
+    }
+  }, [chatImageContextMenu, t.imageDownloadFailed]);
+
+  const deleteChatImage = useCallback(() => {
+    if (!chatImageContextMenu) return;
+    const { messageId } = chatImageContextMenu.target;
+    setChatImageContextMenu(null);
+    setMessageToDelete(messageId);
+  }, [chatImageContextMenu, setMessageToDelete]);
 
   useEffect(() => {
     localStorage.setItem('galleryColumns', String(galleryColumns));
@@ -447,6 +759,8 @@ export const ChatInterface = ({
 
   useEffect(() => () => {
     if (galleryLongPressRef.current) window.clearTimeout(galleryLongPressRef.current.timer);
+    if (textLongPressRef.current) window.clearTimeout(textLongPressRef.current.timer);
+    if (chatImageLongPressRef.current) window.clearTimeout(chatImageLongPressRef.current.timer);
     if (suppressGalleryClickTimerRef.current !== null) {
       window.clearTimeout(suppressGalleryClickTimerRef.current);
     }
@@ -457,6 +771,18 @@ export const ChatInterface = ({
       window.cancelAnimationFrame(galleryScrollFrameRef.current);
     }
   }, []);
+
+  useEffect(() => {
+    if (!textContextMenu && !chatImageContextMenu && !textTranslation) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (textTranslation) closeTextTranslation();
+      setTextContextMenu(null);
+      setChatImageContextMenu(null);
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [chatImageContextMenu, closeTextTranslation, textContextMenu, textTranslation]);
 
   useEffect(() => {
     setGalleryFastScrollIndex(current => {
@@ -481,15 +807,33 @@ export const ChatInterface = ({
   }, [galleryItems]);
 
   useEffect(() => {
-    if (view === 'gallery') return;
+    if (isGalleryView) return;
     gallerySelectionModeRef.current = false;
     setSelectedGalleryIds(new Set());
     setGalleryBatchMenuOpen(false);
+    setShowGalleryFilters(false);
     if (galleryLongPressRef.current) {
       window.clearTimeout(galleryLongPressRef.current.timer);
       galleryLongPressRef.current = null;
     }
-  }, [view]);
+  }, [isGalleryView]);
+
+  useEffect(() => {
+    if (!showGalleryFilters) return;
+    const closeFilterMenu = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent) {
+        if (event.key === 'Escape') setShowGalleryFilters(false);
+        return;
+      }
+      if (!galleryFiltersRef.current?.contains(event.target as Node)) setShowGalleryFilters(false);
+    };
+    document.addEventListener('mousedown', closeFilterMenu);
+    document.addEventListener('keydown', closeFilterMenu);
+    return () => {
+      document.removeEventListener('mousedown', closeFilterMenu);
+      document.removeEventListener('keydown', closeFilterMenu);
+    };
+  }, [showGalleryFilters]);
 
   useEffect(() => {
     if (!groupByPrompt) return;
@@ -801,6 +1145,7 @@ export const ChatInterface = ({
   };
 
   const selectedGalleryItems = galleryItems.filter(item => selectedGalleryIds.has(item.messageId));
+  const selectionContainsPromptGroup = selectedGalleryItems.some(item => !item.manualGroupId && (item.groupCount || 1) > 1);
   const selectedAreAllFavorites = selectedGalleryItems.length > 0 && selectedGalleryItems.every(item => item.isFavorite === 1);
   const selectedAreAllPromptFavorites = selectedGalleryItems.length > 0 && selectedGalleryItems.every(item => item.isPromptFavorite === 1);
 
@@ -1175,6 +1520,10 @@ export const ChatInterface = ({
     setSelectedPromptTags(selectedPromptTags.filter(tag => tag !== slug));
   };
 
+  const galleryAdvancedFilterCount = selectedGalleryModels.length
+    + selectedGalleryWorkflows.length
+    + selectedGalleryAspects.length;
+
   const handleRetryAll = async () => {
     setShowRetryAllConfirm(false);
     setIsRetryingAll(true);
@@ -1434,7 +1783,7 @@ export const ChatInterface = ({
   };
 
   const updateGalleryFastScrollFromViewport = useCallback(() => {
-    if (view !== 'gallery' || isGalleryFastScrolling) return;
+    if (!isGalleryView || isGalleryFastScrolling) return;
     const container = containerRef.current;
     const grid = galleryGridRef.current;
     if (!container || !grid) return;
@@ -1445,11 +1794,11 @@ export const ChatInterface = ({
     const firstVisible = items.find(item => item.getBoundingClientRect().bottom > viewportTop) || items[items.length - 1];
     const visibleIndex = Number(firstVisible.dataset.galleryIndex);
     if (Number.isFinite(visibleIndex)) setGalleryFastScrollIndex(visibleIndex);
-  }, [containerRef, isGalleryFastScrolling, view]);
+  }, [containerRef, isGalleryFastScrolling, isGalleryView]);
 
   const handleMessagesScroll = () => {
     handleScroll(true);
-    if (view !== 'gallery' || galleryScrollFrameRef.current !== null) return;
+    if (!isGalleryView || galleryScrollFrameRef.current !== null) return;
     galleryScrollFrameRef.current = window.requestAnimationFrame(() => {
       galleryScrollFrameRef.current = null;
       updateGalleryFastScrollFromViewport();
@@ -1468,6 +1817,9 @@ export const ChatInterface = ({
             )}
             {messages.map((msg, index) => {
               const messageText = (msg.text || msg.prompt || '').trim();
+              const textContextValue = msg.role === 'user'
+                ? (msg.text || '')
+                : (msg.generationPrompt || msg.prompt || msg.text || '');
               const nextMessage = messages[index + 1];
               const linkedPendingMessage = msg.role === 'user'
                 && nextMessage?.role === 'bot'
@@ -1533,7 +1885,33 @@ export const ChatInterface = ({
                             </div>
                           </form>
                         ) : (
-                          <MessageText text={messageText} lang={lang} />
+                          <div
+                            className="message-text-context-target"
+                            onContextMenu={(event) => {
+                              if (!(event.target instanceof Element) || !event.target.closest('.message-text')) return;
+                              handleTextContextMenu(event, {
+                                kind: 'message',
+                                text: textContextValue,
+                                messageId: msg.id,
+                                timestamp: msg.timestamp,
+                              });
+                            }}
+                            onPointerDown={(event) => {
+                              if (!(event.target instanceof Element) || !event.target.closest('.message-text')) return;
+                              startTextLongPress(event, {
+                                kind: 'message',
+                                text: textContextValue,
+                                messageId: msg.id,
+                                timestamp: msg.timestamp,
+                              });
+                            }}
+                            onPointerMove={moveTextLongPress}
+                            onPointerUp={finishTextLongPress}
+                            onPointerCancel={finishTextLongPress}
+                            onPointerLeave={finishTextLongPress}
+                          >
+                            <MessageText text={messageText} lang={lang} />
+                          </div>
                         )}
                       </div>
                     )}
@@ -1577,7 +1955,7 @@ export const ChatInterface = ({
                         </p>
                       </div>
 
-                      <button className="cancel-gen-btn" onClick={interruptGeneration} title="Annuler la génération">
+                      <button className="cancel-gen-btn" onClick={() => interruptGeneration(msg.id)} title="Annuler la génération">
                         <div className="stop-icon-small"></div>
                         <span>{t.cancel}</span>
                       </button>
@@ -1623,14 +2001,38 @@ export const ChatInterface = ({
                         width: `${reservedImageWidth}px`,
                         aspectRatio: `${reservedImageWidth}/${reservedImageHeight}`,
                       }}
-                      onClick={() => handleImageClick({ 
-                        url: msg.imageUrl!, 
+                      onClick={() => {
+                        if (suppressChatImageClickRef.current) {
+                          suppressChatImageClickRef.current = false;
+                          return;
+                        }
+                        handleImageClick({
+                          url: msg.imageUrl!,
+                          thumbnailUrl: msg.thumbnailUrl,
+                          sessionId: currentSessionId!,
+                          messageId: msg.id,
+                          isFavorite: msg.isFavorite,
+                          source: 'chat'
+                        });
+                      }}
+                      onContextMenu={(event) => handleChatImageContextMenu(event, {
+                        url: msg.imageUrl!,
                         thumbnailUrl: msg.thumbnailUrl,
-                        sessionId: currentSessionId!, 
-                        messageId: msg.id, 
-                        isFavorite: msg.isFavorite, 
-                        source: 'chat' 
+                        sessionId: currentSessionId!,
+                        messageId: msg.id,
+                        isFavorite: msg.isFavorite,
                       })}
+                      onPointerDown={(event) => startChatImageLongPress(event, {
+                        url: msg.imageUrl!,
+                        thumbnailUrl: msg.thumbnailUrl,
+                        sessionId: currentSessionId!,
+                        messageId: msg.id,
+                        isFavorite: msg.isFavorite,
+                      })}
+                      onPointerMove={moveChatImageLongPress}
+                      onPointerUp={finishChatImageLongPress}
+                      onPointerCancel={finishChatImageLongPress}
+                      onPointerLeave={finishChatImageLongPress}
                     >
                       <ReservedImage
                         src={getFullImageUrl(msg.thumbnailUrl || msg.imageUrl!)} 
@@ -1833,7 +2235,12 @@ export const ChatInterface = ({
                       <SeedyCompanion state={isEnhancing ? 'magic' : 'working'} settings={params.companionSettings} />
                       <p className="ai-text-shimmer">{isEnhancing ? t.enhancing : t.generating}</p>
                     </div>
-                    <button className="cancel-gen-btn" onClick={interruptGeneration} title="Annuler la génération">
+                    <button className="cancel-gen-btn" onClick={() => {
+                      const target = messages.find(message => message.role === 'bot' && message.status === 'processing')
+                        || messages.find(message => message.role === 'bot' && message.status === 'preparing')
+                        || messages.find(message => message.role === 'bot' && message.status === 'pending');
+                      if (target) interruptGeneration(target.id);
+                    }} title="Annuler la génération">
                       <div className="stop-icon-small"></div>
                       <span>{t.cancel}</span>
                     </button>
@@ -1849,7 +2256,7 @@ export const ChatInterface = ({
               <div className="gallery-title-row">
                 <h2>{selectedGalleryIds.size
                   ? `${selectedGalleryIds.size} ${selectedGalleryIds.size === 1 ? t.selected : t.selectedPlural}`
-                  : t.myContent}</h2>
+                  : (view === 'thread-gallery' ? t.threadPhotos : t.myContent)}</h2>
                 {selectedGalleryIds.size ? (
                   <button type="button" className="gallery-selection-cancel" onClick={clearGallerySelection} disabled={galleryBatchBusy}>
                     {t.cancel}
@@ -1946,7 +2353,7 @@ export const ChatInterface = ({
                   >
                     <ThumbUpIcon size={18} /> <span>{t.likedPrompts}</span>
                   </button>
-                  <button
+                  {view !== 'thread-gallery' && <button
                     type="button"
                     className={`gallery-filter-round archives ${showArchivedInGallery ? 'active' : ''}`}
                     onClick={() => setShowArchivedInGallery(!showArchivedInGallery)}
@@ -1955,7 +2362,57 @@ export const ChatInterface = ({
                     aria-pressed={showArchivedInGallery}
                   >
                     <ArchiveIcon size={20} />
-                  </button>
+                  </button>}
+                  <div className="gallery-column-control" role="group" aria-label={t.galleryColumns}>
+                    <button
+                      type="button"
+                      onClick={() => setGalleryColumns(current => Math.max(MIN_GALLERY_COLUMNS, current - 1))}
+                      disabled={galleryColumns <= MIN_GALLERY_COLUMNS}
+                      aria-label={t.decreaseGalleryColumns}
+                      title={t.decreaseGalleryColumns}
+                    >
+                      −
+                    </button>
+                    <span title={`${galleryColumns} ${t.galleryColumns.toLowerCase()}`}>{galleryColumns}</span>
+                    <button
+                      type="button"
+                      onClick={() => setGalleryColumns(current => Math.min(MAX_GALLERY_COLUMNS, current + 1))}
+                      disabled={galleryColumns >= MAX_GALLERY_COLUMNS}
+                      aria-label={t.increaseGalleryColumns}
+                      title={t.increaseGalleryColumns}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div className="gallery-filter-menu-wrap" ref={galleryFiltersRef}>
+                    <button
+                      type="button"
+                      className={`gallery-filter-round gallery-filter-trigger ${showGalleryFilters || galleryAdvancedFilterCount > 0 ? 'active' : ''}`}
+                      onClick={() => setShowGalleryFilters(current => !current)}
+                      title={t.contentFilters}
+                      aria-label={t.contentFilters}
+                      aria-expanded={showGalleryFilters}
+                      aria-controls="gallery-filter-menu"
+                    >
+                      <FilterIcon size={19} />
+                      {galleryAdvancedFilterCount > 0 && <span className="gallery-filter-count">{galleryAdvancedFilterCount}</span>}
+                    </button>
+                    {showGalleryFilters && <React.Suspense fallback={null}>
+                      <GalleryFilterMenu
+                        t={t}
+                        sessionId={view === 'thread-gallery' ? currentSessionId : null}
+                        includeArchived={showArchivedInGallery}
+                        models={selectedGalleryModels}
+                        setModels={setSelectedGalleryModels}
+                        workflows={selectedGalleryWorkflows}
+                        setWorkflows={setSelectedGalleryWorkflows}
+                        aspects={selectedGalleryAspects}
+                        setAspects={setSelectedGalleryAspects}
+                        activeCount={galleryAdvancedFilterCount}
+                        onClose={() => setShowGalleryFilters(false)}
+                      />
+                    </React.Suspense>}
+                  </div>
                 </div>
               </div>}
             </div>
@@ -1976,7 +2433,9 @@ export const ChatInterface = ({
                     : (galleryColumns === 1 ? 'column' : 'columns')}
                 </div>
               )}
-              {galleryItems.map((item, index) => (
+              {galleryItems.map((item, index) => {
+                const canSelect = !groupByPrompt || !item.manualGroupId;
+                return (
                 <div 
                   ref={galleryItems.length === index + 1 ? lastImageElementRef : undefined}
                   key={item.messageId} 
@@ -1987,8 +2446,8 @@ export const ChatInterface = ({
                     aspectRatio: (item.width && item.height) ? `${item.width}/${item.height}` : 'auto',
                     backgroundColor: 'var(--social-bg)'
                   }}
-                  aria-pressed={selectedGalleryIds.size ? selectedGalleryIds.has(item.messageId) : undefined}
-                  onPointerDown={event => { if (!groupByPrompt) startGalleryLongPress(event, item.messageId); }}
+                  aria-pressed={selectedGalleryIds.size && canSelect ? selectedGalleryIds.has(item.messageId) : undefined}
+                  onPointerDown={event => { if (canSelect) startGalleryLongPress(event, item.messageId); }}
                   onPointerMove={moveGalleryLongPress}
                   onPointerUp={event => cancelGalleryLongPress(event.pointerId)}
                   onPointerCancel={event => cancelGalleryLongPress(event.pointerId)}
@@ -1996,13 +2455,13 @@ export const ChatInterface = ({
                   onContextMenu={event => event.preventDefault()}
                   onClick={(event) => {
                     if (suppressGalleryClickRef.current) return;
-                    if (!groupByPrompt && event.shiftKey && !selectedGalleryIds.size) {
+                    if (canSelect && event.shiftKey && !selectedGalleryIds.size) {
                       gallerySelectionModeRef.current = true;
                       setSelectedGalleryIds(new Set([item.messageId]));
                       return;
                     }
                     if (gallerySelectionModeRef.current || selectedGalleryIds.size) {
-                      toggleGallerySelection(item.messageId);
+                      if (canSelect) toggleGallerySelection(item.messageId);
                       return;
                     }
                     handleImageClick({
@@ -2056,7 +2515,7 @@ export const ChatInterface = ({
                   )}
                   {(item.groupCount || 0) > 1 && selectedGalleryIds.size === 0 && (
                     <div className="gallery-group-count" title={`${item.groupCount} ${t.results}`} aria-label={`${item.groupCount} ${t.results}`}>
-                      <PromptGroupIcon size={13} />
+                      <PromptGroupIcon size={13} className={item.manualGroupId ? 'manual-gallery-group-icon' : undefined} />
                       <span>{item.groupCount}</span>
                     </div>
                   )}
@@ -2067,7 +2526,7 @@ export const ChatInterface = ({
                       title={lang === 'fr' ? 'Voir la comparaison' : 'View comparison'}
                     >A/B</button>
                   )}
-                  {selectedGalleryIds.size > 0 && (
+                  {selectedGalleryIds.size > 0 && canSelect && (
                     <span className="gallery-selection-checkbox" aria-hidden="true">
                       {selectedGalleryIds.has(item.messageId) && (
                         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m4 10 4 4 8-9" /></svg>
@@ -2075,9 +2534,10 @@ export const ChatInterface = ({
                     </span>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
-            {galleryItems.length === 0 && !isFetchingGallery && <p className="empty-gallery">Aucun contenu généré pour le moment.</p>}
+            {galleryItems.length === 0 && !isFetchingGallery && <p className="empty-gallery">{view === 'thread-gallery' ? t.noThreadPhotos : t.noGeneratedContent}</p>}
             {isFetchingGallery && <div className="gallery-loader-container"><div className="typing-indicator"><span></span><span></span><span></span></div></div>}
             {selectedGalleryIds.size > 0 && (
               <div className="gallery-batch-bar">
@@ -2095,6 +2555,13 @@ export const ChatInterface = ({
                 </button>
                 {galleryBatchMenuOpen && (
                   <div className="gallery-batch-menu" role="menu">
+                    <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
+                      () => batchCreateManualGroup(selectedGalleryItems)
+                    )} disabled={galleryBatchBusy || selectedGalleryItems.length < 2}>
+                      <span className="gallery-batch-menu-icon"><PromptGroupIcon size={20} /></span>
+                      <span><strong>{t.groupSelectedImages}</strong><small>{selectedGalleryItems.length < 2 ? t.manualGroupNeedsTwo : t.groupSelectedImagesHelp}</small></span>
+                    </button>
+                    {!selectionContainsPromptGroup && <>
                     <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
                       () => batchRegenerateGalleryItems(selectedGalleryItems),
                       `${selectedGalleryItems.length} ${t.batchQueued}`
@@ -2134,13 +2601,14 @@ export const ChatInterface = ({
                       </span>
                       <span><strong>{t.delete}</strong><small>{t.batchDeleteHelp}</small></span>
                     </button>
+                    </>}
                   </div>
                 )}
               </div>
             )}
           </div>
         )}
-        {view === 'gallery' && galleryTotal > 1 && selectedGalleryIds.size === 0 && (
+        {isGalleryView && galleryTotal > 1 && selectedGalleryIds.size === 0 && (
           <div
             ref={galleryFastScrollRef}
             className={`gallery-fast-scroll ${isGalleryFastScrolling ? 'is-active' : ''}`}
@@ -2399,6 +2867,12 @@ export const ChatInterface = ({
                   ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
+                  onContextMenu={(event) => handleTextContextMenu(event, { kind: 'draft', text: input })}
+                  onPointerDown={(event) => startTextLongPress(event, { kind: 'draft', text: input })}
+                  onPointerMove={moveTextLongPress}
+                  onPointerUp={finishTextLongPress}
+                  onPointerCancel={finishTextLongPress}
+                  onPointerLeave={finishTextLongPress}
                   onFocus={() => setIsPromptFocused(true)}
                   onBlur={() => setIsPromptFocused(false)}
                   onScroll={(e) => syncPromptHighlightScroll(e.currentTarget)}
@@ -2446,7 +2920,13 @@ export const ChatInterface = ({
                   )}
                   <button
                     className={`send-btn ${isGenerating && !input.trim() ? 'stop-btn' : ''}`}
-                    onClick={() => isGenerating && !input.trim() ? interruptGeneration() : void executePromptInput()}
+                    onClick={() => {
+                      if (!isGenerating || input.trim()) return void executePromptInput();
+                      const target = messages.find(message => message.role === 'bot' && message.status === 'processing')
+                        || messages.find(message => message.role === 'bot' && message.status === 'preparing')
+                        || messages.find(message => message.role === 'bot' && message.status === 'pending');
+                      if (target) interruptGeneration(target.id);
+                    }}
                     disabled={(!input.trim() && !isGenerating) || isResolvingSlashCommand}
                   >
                     {isGenerating && !input.trim() ? (
@@ -2459,6 +2939,125 @@ export const ChatInterface = ({
               </div>
             </div>
           </div>
+        </div>
+      )}
+      {textContextMenu && (
+        <div className="text-context-menu-backdrop" onPointerDown={() => setTextContextMenu(null)}>
+          <div
+            className="text-context-menu"
+            role="menu"
+            aria-label={t.textActions}
+            style={{ left: textContextMenu.x, top: textContextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <div className="text-context-menu-header">
+              {textContextMenu.target.kind === 'draft'
+                ? t.draft
+                : `${new Date(textContextMenu.target.timestamp).toDateString() === new Date().toDateString()
+                  ? t.today
+                  : new Date(textContextMenu.target.timestamp).toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US')}, ${new Date(textContextMenu.target.timestamp).toLocaleTimeString(lang === 'fr' ? 'fr-FR' : 'en-US', { hour: '2-digit', minute: '2-digit' })}`}
+            </div>
+            <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => void copyTextContextTarget()}>
+              <ClipboardIcon size={22} />
+              <span>{t.copyText}</span>
+            </button>
+            <button type="button" className="text-context-menu-item" role="menuitem" onClick={selectTextContextTarget}>
+              <TextSelectIcon size={22} />
+              <span>{t.selectText}</span>
+            </button>
+            <button
+              type="button"
+              className="text-context-menu-item"
+              role="menuitem"
+              disabled={!params.llmProviderId || !canTranslateText(textContextMenu.target.text, lang)}
+              title={!params.llmProviderId ? t.translationNeedsProvider : !canTranslateText(textContextMenu.target.text, lang) ? t.translationSameLanguage : t.translateText}
+              onClick={() => void translateTextContextTarget()}
+            >
+              <GlobeIcon size={22} />
+              <span>{t.translateText}</span>
+            </button>
+            <button type="button" className="text-context-menu-item" role="menuitem" onClick={editTextContextTarget}>
+              <ComposeIcon size={22} />
+              <span>{textContextMenu.target.kind === 'message' ? t.editMessage : t.editText}</span>
+            </button>
+            <button type="button" className="text-context-menu-item danger" role="menuitem" onClick={deleteTextContextTarget}>
+              <TrashIcon size={22} />
+              <span>{t.delete}</span>
+            </button>
+          </div>
+        </div>
+      )}
+      {chatImageContextMenu && (
+        <div className="text-context-menu-backdrop" onPointerDown={() => setChatImageContextMenu(null)}>
+          <div
+            className="text-context-menu chat-image-context-menu"
+            role="menu"
+            aria-label={t.imageActions}
+            style={{ left: chatImageContextMenu.x, top: chatImageContextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => void copyChatImage()}>
+              <ClipboardIcon size={22} />
+              <span>{t.copyImage}</span>
+            </button>
+            <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => void downloadChatImage()}>
+              <DownloadIcon size={22} />
+              <span>{t.download}</span>
+            </button>
+            <button type="button" className="text-context-menu-item" role="menuitem" onClick={modifyChatImage}>
+              <ComposeIcon size={22} />
+              <span>{t.modifyImage}</span>
+            </button>
+            <button type="button" className="text-context-menu-item danger" role="menuitem" onClick={deleteChatImage}>
+              <TrashIcon size={22} />
+              <span>{t.delete}</span>
+            </button>
+          </div>
+        </div>
+      )}
+      {textTranslation && (
+        <div className="translation-modal-backdrop" onPointerDown={closeTextTranslation}>
+          <section
+            className="translation-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="translation-modal-title"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <header className="translation-modal-header">
+              <h2 id="translation-modal-title">{t.translationTitle}</h2>
+              <div className="translation-modal-actions">
+                <button
+                  type="button"
+                  onClick={() => void copyTranslatedText()}
+                  disabled={!textTranslation.translatedText}
+                  title={t.copyTranslatedText}
+                  aria-label={t.copyTranslatedText}
+                >
+                  <ClipboardIcon size={20} />
+                </button>
+                <button type="button" onClick={closeTextTranslation} title={t.close} aria-label={t.close}>
+                  <XIcon size={20} />
+                </button>
+              </div>
+            </header>
+            <div className="translation-modal-body" aria-live="polite">
+              {textTranslation.isLoading && (
+                <div className="translation-loading">
+                  <span aria-hidden="true" />
+                  {t.translatingText}
+                </div>
+              )}
+              {!textTranslation.isLoading && textTranslation.error && (
+                <p className="translation-error">{textTranslation.error}</p>
+              )}
+              {!textTranslation.isLoading && textTranslation.translatedText && (
+                <p>{textTranslation.translatedText}</p>
+              )}
+            </div>
+          </section>
         </div>
       )}
       {showRetryAllConfirm && (

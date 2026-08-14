@@ -207,46 +207,86 @@ router.delete('/:sessionId/message/:messageId', authenticate, (req, res) => {
   const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND userId = ?').get(req.params.sessionId, user.id);
   if (!session) return res.status(403).json({ error: 'Unauthorized' });
 
-  const message = db.prepare(`
-    SELECT id, imageUrl, thumbnailUrl, isFavorite, isPromptFavorite, comparisonSourceId
-    FROM messages WHERE id = ? AND sessionId = ?
-  `).get(req.params.messageId, req.params.sessionId) as any;
-  if (message) deleteFiles([message]);
+  const sessionMessages = db.prepare(`
+    SELECT id, role, text, prompt, imageUrl, thumbnailUrl, isFavorite, isPromptFavorite,
+      comparisonSourceId, manualGroupId
+    FROM messages
+    WHERE sessionId = ?
+    ORDER BY timestamp ASC, id ASC
+  `).all(req.params.sessionId) as any[];
+  const messageIndex = sessionMessages.findIndex(candidate => candidate.id === req.params.messageId);
+  const message = sessionMessages[messageIndex];
+  const isPair = (userMessage: any, botMessage: any) => (
+    userMessage?.role === 'user'
+    && botMessage?.role === 'bot'
+    && Boolean(String(userMessage.text || '').trim())
+    && String(botMessage.prompt || '').trim() === String(userMessage.text || '').trim()
+  );
+  const linkedMessage = message?.role === 'user' && isPair(message, sessionMessages[messageIndex + 1])
+    ? sessionMessages[messageIndex + 1]
+    : message?.role === 'bot' && isPair(sessionMessages[messageIndex - 1], message)
+      ? sessionMessages[messageIndex - 1]
+      : undefined;
+  const messagesToDelete = [message, linkedMessage].filter(Boolean);
+  const deletedMessageIds = messagesToDelete.map(candidate => candidate.id);
+  if (messagesToDelete.length) deleteFiles(messagesToDelete);
 
   db.transaction(() => {
-    db.prepare(`
-      DELETE FROM comparison_preferences
-      WHERE userId = ? AND (
-        sourceMessageId = ? OR firstMessageId = ? OR secondMessageId = ? OR preferredMessageId = ?
-      )
-    `).run(user.id, req.params.messageId, req.params.messageId, req.params.messageId, req.params.messageId);
-    if (message?.comparisonSourceId) {
-      const nextComparison = db.prepare(`
-        SELECT id FROM messages
-        WHERE comparisonSourceId = ? AND id <> ?
-        ORDER BY timestamp DESC LIMIT 1
-      `).get(message.comparisonSourceId, message.id) as { id: string } | undefined;
+    for (const deletedMessage of messagesToDelete) {
       db.prepare(`
-        UPDATE messages SET
-          isFavorite = CASE WHEN ? = 1 THEN 1 ELSE isFavorite END,
-          isPromptFavorite = CASE WHEN ? = 1 THEN 1 ELSE isPromptFavorite END,
-          comparisonMessageId = ?
-        WHERE id = ? AND sessionId = ?
-      `).run(
-        message.isFavorite === 1 ? 1 : 0,
-        message.isPromptFavorite === 1 ? 1 : 0,
-        nextComparison?.id || null,
-        message.comparisonSourceId,
-        req.params.sessionId
-      );
-    } else {
-      db.prepare('UPDATE messages SET comparisonMessageId = NULL, comparisonSourceId = NULL WHERE comparisonMessageId = ? OR comparisonSourceId = ?')
-        .run(req.params.messageId, req.params.messageId);
+        DELETE FROM comparison_preferences
+        WHERE userId = ? AND (
+          sourceMessageId = ? OR firstMessageId = ? OR secondMessageId = ? OR preferredMessageId = ?
+        )
+      `).run(user.id, deletedMessage.id, deletedMessage.id, deletedMessage.id, deletedMessage.id);
+      if (deletedMessage.comparisonSourceId) {
+        const nextComparison = db.prepare(`
+          SELECT id FROM messages
+          WHERE comparisonSourceId = ? AND id <> ?
+          ORDER BY timestamp DESC LIMIT 1
+        `).get(deletedMessage.comparisonSourceId, deletedMessage.id) as { id: string } | undefined;
+        db.prepare(`
+          UPDATE messages SET
+            isFavorite = CASE WHEN ? = 1 THEN 1 ELSE isFavorite END,
+            isPromptFavorite = CASE WHEN ? = 1 THEN 1 ELSE isPromptFavorite END,
+            comparisonMessageId = ?
+          WHERE id = ? AND sessionId = ?
+        `).run(
+          deletedMessage.isFavorite === 1 ? 1 : 0,
+          deletedMessage.isPromptFavorite === 1 ? 1 : 0,
+          nextComparison?.id || null,
+          deletedMessage.comparisonSourceId,
+          req.params.sessionId
+        );
+      } else {
+        db.prepare('UPDATE messages SET comparisonMessageId = NULL, comparisonSourceId = NULL WHERE comparisonMessageId = ? OR comparisonSourceId = ?')
+          .run(deletedMessage.id, deletedMessage.id);
+      }
+      db.prepare('DELETE FROM messages WHERE id = ? AND sessionId = ?').run(deletedMessage.id, req.params.sessionId);
+      db.prepare('DELETE FROM queue WHERE messageId = ?').run(deletedMessage.id);
     }
-    db.prepare('DELETE FROM messages WHERE id = ? AND sessionId = ?').run(req.params.messageId, req.params.sessionId);
-    db.prepare('DELETE FROM queue WHERE messageId = ?').run(req.params.messageId);
+
+    const affectedManualGroupIds = new Set(messagesToDelete
+      .map(deletedMessage => deletedMessage.manualGroupId)
+      .filter(Boolean));
+    for (const manualGroupId of affectedManualGroupIds) {
+      const remaining = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM messages
+        WHERE manualGroupId = ?
+          AND sessionId IN (SELECT id FROM sessions WHERE userId = ?)
+      `).get(manualGroupId, user.id) as { count: number };
+      if (remaining.count < 2) {
+        db.prepare(`
+          UPDATE messages
+          SET manualGroupId = NULL, isGroupCover = 0
+          WHERE manualGroupId = ?
+            AND sessionId IN (SELECT id FROM sessions WHERE userId = ?)
+        `).run(manualGroupId, user.id);
+      }
+    }
   })();
-  res.json({ success: true });
+  res.json({ success: true, deletedMessageIds });
 });
 
 export default router;

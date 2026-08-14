@@ -25,19 +25,35 @@ export const useGeneration = (
 ) => {
   const [isEnhancing, setIsEnhancing] = useState(false);
   const enhancingCount = useRef(0);
+  const cancelledTemporaryMessages = useRef(new Set<string>());
 
-  const interruptGeneration = async () => {
+  const interruptGeneration = useCallback(async (messageId: string) => {
+    const cancellationMessage = 'Interrompu par l\'utilisateur';
+    if (messageId.startsWith('temp-')) {
+      cancelledTemporaryMessages.current.add(messageId);
+      setMessages(previous => previous.map(message => message.id === messageId
+        ? { ...message, status: 'failed', text: cancellationMessage, isEnhancing: false, isStarting: false }
+        : message));
+      return;
+    }
+
     try {
-      await fetch(`${API_BASE}/api/generate/interrupt`, {
+      const response = await fetch(`${API_BASE}/api/generate/interrupt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ params: toGenerationRequestParams(params) }),
+        body: JSON.stringify({ messageId }),
         credentials: 'include'
       });
+      const data = await readApiResponse(response);
+      if (!response.ok || !data.success) throw new Error(data.error || 'Cancellation failed');
+      setMessages(previous => previous.map(message => message.id === messageId
+        ? { ...message, status: 'failed', text: cancellationMessage, isEnhancing: false, isStarting: false }
+        : message));
+      fetchSessions();
     } catch (err) {
       console.error('[Generation] Failed to interrupt:', err);
     }
-  };
+  }, [fetchSessions, setMessages]);
 
   const retryMessage = useCallback(async (messageId: string) => {
     setMessages(prev => prev.map(message => message.id === messageId
@@ -236,6 +252,7 @@ export const useGeneration = (
 
       // 3. Queue the generation. The backend emits the distinct pending,
       // preparing, and processing phases as the job advances.
+      if (cancelledTemporaryMessages.current.delete(botMsgId)) return { cancelled: true };
       const res = await fetch(`${API_BASE}/api/generate/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -256,6 +273,20 @@ export const useGeneration = (
       const data = await readApiResponse(res);
 
       if (res.ok && data.success) {
+        if (cancelledTemporaryMessages.current.delete(botMsgId)) {
+          acknowledgeQueueMessage(data.messageId, botMsgId);
+          await fetch(`${API_BASE}/api/generate/interrupt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageId: data.messageId }),
+            credentials: 'include'
+          });
+          setMessages(previous => previous.map(message => message.id === botMsgId || message.id === data.messageId
+            ? { ...message, id: data.messageId, status: 'failed', text: 'Interrompu par l\'utilisateur', isEnhancing: false, isStarting: false }
+            : message));
+          fetchSessions();
+          return { ...data, cancelled: true };
+        }
         if (shouldUpdateVisibleMessages) {
           acknowledgeQueueMessage(data.messageId, botMsgId);
           setMessages(prev => {

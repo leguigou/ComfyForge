@@ -23,6 +23,8 @@ export interface Message {
   generationStartedAt?: number;
   isFavorite?: number;
   isPromptFavorite?: number;
+  isGroupCover?: number;
+  manualGroupId?: string | null;
   tags?: PromptTag[];
   randomSelections?: RandomPromptSelection[];
   comparisonMessageId?: string;
@@ -49,12 +51,25 @@ export interface GalleryItem {
   duration?: number;
   isFavorite?: number;
   isPromptFavorite?: number;
+  isGroupCover?: number;
+  manualGroupId?: string | null;
   tags?: PromptTag[];
   randomSelections?: RandomPromptSelection[];
   comparisonMessageId?: string;
   groupCount?: number;
   groupHasFavorite?: number;
   groupHasPromptFavorite?: number;
+}
+
+export interface GalleryFilterOption {
+  value: string;
+  count: number;
+}
+
+export interface GalleryFilterOptions {
+  models: GalleryFilterOption[];
+  workflows: GalleryFilterOption[];
+  aspects: Record<'square' | 'portrait' | 'landscape', number>;
 }
 
 export interface PromptTag {
@@ -79,6 +94,20 @@ export interface FavoriteModel {
   workflowFile: string;
   modelType?: 'checkpoint' | 'diffusion';
   generationDefaults?: Partial<ModelGenerationDefaults>;
+}
+
+export interface CivitaiModelLink {
+  localModel: string;
+  modelType: 'checkpoint' | 'diffusion';
+  modelId?: number;
+  modelVersionId?: number;
+  modelName?: string;
+  versionName?: string;
+  fileName?: string;
+  baseModel?: string;
+  air?: string;
+  autoV2?: string;
+  sha256?: string;
 }
 
 export interface ComfyModelDetails {
@@ -145,6 +174,7 @@ export interface GenParameters {
   negativePrompt: string;
   llmEnabled: boolean;
   clipboardAutoGenerate: boolean;
+  civitaiMetadataOnDownload: boolean;
   llmProviderId?: string;
   visionProviderId?: string;
   visionModel?: string;
@@ -158,6 +188,7 @@ export interface GenParameters {
   seedMode: 'random' | 'fixed';
   forcedSeed?: string;
   favoriteModels: FavoriteModel[];
+  civitaiModelLinks: CivitaiModelLink[];
   randomPromptLists: RandomPromptList[];
   randomPromptListsVersion?: number;
   companionSettings: CompanionSettings;
@@ -198,7 +229,7 @@ export interface Session {
 
 export type Theme = 'light' | 'dark';
 export type Language = 'fr' | 'en';
-export type AppView = 'chat' | 'gallery' | 'archives' | 'statistics' | 'comparison';
+export type AppView = 'chat' | 'gallery' | 'thread-gallery' | 'archives' | 'statistics' | 'comparison';
 
 export interface User {
   id: string;

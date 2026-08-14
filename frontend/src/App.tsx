@@ -15,11 +15,10 @@ import type {
   ComfyModelDetails
 } from './types';
 import type { AppView } from './types';
-import { API_BASE, getFullImageUrl } from './services/api';
+import { API_BASE, formatDuration, getFullImageUrl } from './services/api';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { DEFAULT_RANDOM_PROMPT_LISTS, migrateRandomPromptLists, RANDOM_PROMPT_LISTS_VERSION } from './utils/randomPrompts';
 import { DEFAULT_COMPANION_SETTINGS, normalizeCompanionSettings } from './utils/companions';
-import { ChatInterface } from './components/chat/ChatInterface';
 import { LuckyReferencesModal } from './components/chat/LuckyReferencesModal';
 import { APP_CONFIG, DEFAULT_LLM_SYSTEM_MESSAGE, DEFAULT_VISION_SYSTEM_MESSAGE, PREVIOUS_DEFAULT_VISION_SYSTEM_MESSAGE } from './config';
 import { useAuth } from './hooks/useAuth';
@@ -27,7 +26,7 @@ import { useSessions } from './hooks/useSessions';
 import { useGeneration } from './hooks/useGeneration';
 import { useWebSocket } from './hooks/useWebSocket';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
-import { ChatIcon, ComposeIcon, DiceIcon, DownloadIcon, HashIcon, HeartIcon, InfoIcon, MoonIcon, MoreVerticalIcon, RefreshIcon, SunIcon, ThumbUpIcon, TrashIcon, XIcon } from './components/ui/Icons';
+import { ChatIcon, ClipboardIcon, ComposeIcon, DiceIcon, DownloadIcon, GridIcon, HashIcon, HeartIcon, InfoIcon, MoonIcon, MoreVerticalIcon, PromptGroupIcon, RefreshIcon, StarIcon, SunIcon, ThumbUpIcon, TrashIcon, XIcon } from './components/ui/Icons';
 import toast, { Toaster } from 'react-hot-toast';
 import NoSleep from 'nosleep.js';
 import comfyForgeLogo from './assets/comfyforge-logo-v2.webp';
@@ -40,6 +39,7 @@ import {
 } from './utils/clipboardAutoGenerate';
 import { toGenerationRequestParams } from './utils/generationParams';
 import { isRuntimeVersionReminderSnoozed, snoozeRuntimeVersionReminder } from './utils/runtimeVersionReminder';
+import { copyImageToClipboard, ImageClipboardError } from './utils/imageClipboard';
 
 const SettingsModal = lazy(() => importWithRecovery(() => import('./components/settings/SettingsModal')).then(module => ({
   default: module.SettingsModal
@@ -50,12 +50,23 @@ const StatisticsDashboard = lazy(() => importWithRecovery(() => import('./compon
 const ComparisonView = lazy(() => importWithRecovery(() => import('./components/comparison/ComparisonView')).then(module => ({
   default: module.ComparisonView
 })));
+const ChatInterface = lazy(() => importWithRecovery(() => import('./components/chat/ChatInterface')).then(module => ({
+  default: module.ChatInterface
+})));
 
 const GALLERY_PAGE_SIZE = 48;
 
-const getGalleryPromptKey = (item: Pick<GalleryItem, 'generationPrompt' | 'prompt' | 'text'>) => (
-  item.generationPrompt || item.prompt || item.text || ''
-).trim();
+const getImageFileExtension = (url: string) => (
+  url.split(/[?#]/, 1)[0].match(/\.([a-z0-9]{2,5})$/i)?.[1]?.toLowerCase() || 'png'
+);
+
+const getGalleryPromptKey = (item: Pick<GalleryItem, 'generationPrompt' | 'prompt' | 'text' | 'randomSelections' | 'manualGroupId'>) => {
+  const manualGroupId = item.manualGroupId?.trim();
+  if (manualGroupId) return `__manual__:${manualGroupId}`;
+  const prompt = item.prompt?.trim();
+  if (prompt && item.randomSelections?.length) return `__dynamic__:${prompt}`;
+  return (item.generationPrompt || item.prompt || item.text || '').trim();
+};
 
 const isLuckyCoherenceTag = (tag: PromptTag) => (
   !['subject', 'count', 'lighting', 'pose', 'shot'].includes(tag.category)
@@ -130,6 +141,8 @@ const SettingsLoading = ({
 );
 
 const getRouteState = (pathname = window.location.pathname): { view: AppView; sessionId?: string } => {
+  const threadGalleryMatch = pathname.match(/^\/chat\/([^/]+)\/photos$/);
+  if (threadGalleryMatch) return { view: 'thread-gallery', sessionId: decodeURIComponent(threadGalleryMatch[1]) };
   const chatMatch = pathname.match(/^\/chat\/([^/]+)$/);
   if (chatMatch) return { view: 'chat', sessionId: decodeURIComponent(chatMatch[1]) };
   if (pathname === '/gallery') return { view: 'gallery' };
@@ -141,6 +154,7 @@ const getRouteState = (pathname = window.location.pathname): { view: AppView; se
 
 const getRoutePath = (view: AppView, sessionId: string | null) => {
   if (view === 'chat') return sessionId ? `/chat/${encodeURIComponent(sessionId)}` : '/';
+  if (view === 'thread-gallery') return sessionId ? `/chat/${encodeURIComponent(sessionId)}/photos` : '/';
   if (view === 'comparison') return '/comparisons';
   return `/${view}`;
 };
@@ -159,6 +173,7 @@ const createDefaultGenParameters = (): GenParameters => ({
   negativePrompt: "low quality, bad anatomy, malformed, extra limbs, extra fingers, fused fingers, bad hands, poorly drawn hands, missing fingers, fused face, poorly drawn face, asymmetrical, cartoon, anime, 3d, render, watermark, text, logo, swept hair, portrait",
   llmEnabled: false,
   clipboardAutoGenerate: false,
+  civitaiMetadataOnDownload: false,
   visionProviderId: '',
   visionModel: '',
   visionSystemMessage: DEFAULT_VISION_SYSTEM_MESSAGE,
@@ -171,6 +186,7 @@ const createDefaultGenParameters = (): GenParameters => ({
   seedMode: 'random',
   forcedSeed: '',
   favoriteModels: [],
+  civitaiModelLinks: [],
   randomPromptLists: DEFAULT_RANDOM_PROMPT_LISTS,
   randomPromptListsVersion: RANDOM_PROMPT_LISTS_VERSION,
   companionSettings: DEFAULT_COMPANION_SETTINGS
@@ -185,7 +201,7 @@ function App() {
   });
   const t = translations[lang];
   const [showSettings, setShowSettings] = useState(false);
-  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs'>('images');
+  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs'>('images');
   const runtimeVersionReminderSnoozedUntilRef = useRef(0);
 
   useEffect(() => {
@@ -386,12 +402,12 @@ function App() {
 
   useEffect(() => {
     const route = getRouteState();
-    if (route.view === 'chat' && route.sessionId) setCurrentSessionId(route.sessionId);
+    if ((route.view === 'chat' || route.view === 'thread-gallery') && route.sessionId) setCurrentSessionId(route.sessionId);
 
     const handlePopState = () => {
       const next = getRouteState();
       setView(next.view);
-      if (next.view === 'chat' && next.sessionId) setCurrentSessionId(next.sessionId);
+      if ((next.view === 'chat' || next.view === 'thread-gallery') && next.sessionId) setCurrentSessionId(next.sessionId);
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -454,7 +470,7 @@ function App() {
   const scrollRequestTimeoutRef = useRef<number | null>(null);
   const restoredScrollContextRef = useRef<string | null>(null);
   const scrollSaveFrameRef = useRef<number | null>(null);
-  const refreshGalleryRef = useRef<(() => void) | null>(null);
+  const refreshGalleryRef = useRef<((requestedOffset?: number) => Promise<GalleryItem[]>) | null>(null);
 
   const smoothScrollTo = useCallback((elementId: string) => {
     if (pendingAnchorRef.current || isAnchoringRef.current) return;
@@ -563,7 +579,7 @@ function App() {
       await markSessionAsViewed(sessionId);
     }
 
-    if (status === 'completed' && view === 'gallery') {
+    if (status === 'completed' && (view === 'gallery' || (view === 'thread-gallery' && currentSessionId === sessionId))) {
       refreshGalleryRef.current?.();
     }
   }, [currentSessionId, markSessionAsViewed, setSessions, view]);
@@ -622,6 +638,10 @@ function App() {
   const [lightboxGroupItems, setLightboxGroupItems] = useState<GalleryItem[] | null>(null);
   const [showLightboxMenu, setShowLightboxMenu] = useState(false);
   const [showLightboxPrompt, setShowLightboxPrompt] = useState(false);
+  const [showLightboxInfo, setShowLightboxInfo] = useState(false);
+  const [lightboxContextMenu, setLightboxContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [lightboxImageToDelete, setLightboxImageToDelete] = useState<{ sessionId: string; messageId: string } | null>(null);
+  const [isDeletingLightboxImage, setIsDeletingLightboxImage] = useState(false);
   const [showLightboxModify, setShowLightboxModify] = useState(false);
   const [modifyDirection, setModifyDirection] = useState('');
   const [keepModifySeed, setKeepModifySeed] = useState(true);
@@ -629,6 +649,7 @@ function App() {
   const [isGeneratingRandomFavorite, setIsGeneratingRandomFavorite] = useState(false);
   const lightboxMenuRef = useRef<HTMLDivElement>(null);
   const lightboxMenuCloseTimeoutRef = useRef<number | null>(null);
+  const pendingLightboxModifyRef = useRef<{ messageId: string; keepSeed: boolean } | null>(null);
 
   const scheduleLightboxMenuClose = useCallback(() => {
     if (lightboxMenuCloseTimeoutRef.current !== null) {
@@ -792,8 +813,12 @@ function App() {
 
   // Clear HD state and zoom when lightbox closes
   useEffect(() => {
+    const pendingModify = activeLightbox
+      && pendingLightboxModifyRef.current?.messageId === activeLightbox.messageId
+      ? pendingLightboxModifyRef.current
+      : null;
     if (!activeLightbox) {
-      if (hdLoaded !== null) setHdLoaded(null);
+      setHdLoaded(null);
       setZoomScale(1);
       setZoomOffset({ x: 0, y: 0 });
       touchStartDist.current = null;
@@ -805,9 +830,15 @@ function App() {
     }
     setShowLightboxMenu(false);
     setShowLightboxPrompt(false);
-    setShowLightboxModify(false);
+    setShowLightboxInfo(false);
+    setLightboxContextMenu(null);
+    setShowLightboxModify(Boolean(pendingModify));
     setModifyDirection('');
-  }, [activeLightbox, hdLoaded]);
+    if (pendingModify) {
+      setKeepModifySeed(pendingModify.keepSeed);
+      pendingLightboxModifyRef.current = null;
+    }
+  }, [activeLightbox]);
 
   const handleLightboxTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 2) {
@@ -1039,6 +1070,9 @@ function App() {
   });
   const [gallerySearch, setGallerySearch] = useState('');
   const [debouncedGallerySearch, setDebouncedGallerySearch] = useState('');
+  const [selectedGalleryModels, setSelectedGalleryModels] = useState<string[]>([]);
+  const [selectedGalleryWorkflows, setSelectedGalleryWorkflows] = useState<string[]>([]);
+  const [selectedGalleryAspects, setSelectedGalleryAspects] = useState<Array<'square' | 'portrait' | 'landscape'>>([]);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const [isSettingsResolved, setIsSettingsResolved] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
@@ -1194,6 +1228,27 @@ function App() {
     batchSetGalleryFlag(items, value, 'prompt-favorite')
   ), [batchSetGalleryFlag]);
 
+  const batchCreateManualGroup = useCallback(async (items: GalleryItem[]) => {
+    if (items.length < 2) throw new Error(t.manualGroupNeedsTwo);
+    const helpers = await import('./services/manualGalleryGroups');
+    const [coverId, messageIds, manualGroupId, centeredOffset] = await helpers.createPositionedGroup(
+      items,
+      galleryItemsRef.current,
+      galleryStartIndexRef.current,
+      galleryTotal,
+      GALLERY_PAGE_SIZE,
+    )
+      .catch(error => { throw new Error(error.message || t.batchUpdateFailed); });
+    const groupedIds = new Set(messageIds);
+    setMessages(previous => helpers.markManualGalleryGroup(previous, groupedIds, manualGroupId, coverId));
+    setGalleryItems(previous => helpers.markManualGalleryGroup(previous, groupedIds, manualGroupId, coverId));
+    if (!groupByPrompt) return;
+
+    void refreshGalleryRef.current?.(centeredOffset).then(() => {
+      helpers.centerGroupAfterRender(containerRef.current, coverId);
+    });
+  }, [galleryTotal, groupByPrompt, setMessages, t.batchUpdateFailed, t.manualGroupNeedsTwo]);
+
   const batchDeleteGalleryItems = useCallback(async (items: GalleryItem[]) => {
     const results = await Promise.all(items.map(async item => {
       const response = await fetch(`${API_BASE}/api/history/${item.sessionId}/message/${item.messageId}`, {
@@ -1256,7 +1311,10 @@ function App() {
     if (!groupByPrompt || (item.groupCount || 1) <= 1) return [item];
 
     try {
-      const response = await fetch(`${API_BASE}/api/gallery/group/${encodeURIComponent(item.messageId)}`, {
+      const query = new URLSearchParams();
+      if (view === 'thread-gallery' && currentSessionId) query.set('sessionId', currentSessionId);
+      const suffix = query.size > 0 ? `?${query.toString()}` : '';
+      const response = await fetch(`${API_BASE}/api/gallery/group/${encodeURIComponent(item.messageId)}${suffix}`, {
         credentials: 'include'
       });
       const data = await response.json();
@@ -1268,7 +1326,7 @@ function App() {
       console.error('Error loading gallery prompt group:', error);
       return [item];
     }
-  }, [groupByPrompt]);
+  }, [currentSessionId, groupByPrompt, view]);
 
   const handleImageClick = useCallback((item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, groupCount?: number, source: 'chat' | 'gallery' }) => {
     if (clickTimeoutRef.current) {
@@ -1306,7 +1364,28 @@ function App() {
     }
   }, [groupByPrompt, loadGalleryPromptGroup, toggleFavorite]);
 
+  const handleImageModify = useCallback((item: {
+    url: string;
+    thumbnailUrl?: string;
+    sessionId: string;
+    messageId: string;
+  }) => {
+    const message = messages.find(candidate => candidate.id === item.messageId);
+    pendingLightboxModifyRef.current = {
+      messageId: item.messageId,
+      keepSeed: message?.seed !== undefined && message.seed !== null,
+    };
+    setLightboxGroupItems(null);
+    setActiveLightbox({ ...item, source: 'chat' });
+  }, [messages]);
+
   const handleLightboxBackdropClick = useCallback((e: React.MouseEvent) => {
+    if (lightboxContextMenu) {
+      suppressLightboxClickRef.current = false;
+      setLightboxContextMenu(null);
+      return;
+    }
+
     if (suppressLightboxClickRef.current) {
       suppressLightboxClickRef.current = false;
       e.stopPropagation();
@@ -1319,7 +1398,7 @@ function App() {
     }
 
     closeLightbox();
-  }, [closeLightbox, showLightboxMenu]);
+  }, [closeLightbox, lightboxContextMenu, showLightboxMenu]);
 
   const [comfyModels, setComfyModels] = useState<string[]>([]);
   const [diffusionModels, setDiffusionModels] = useState<string[]>([]);
@@ -1523,6 +1602,7 @@ function App() {
               ? Math.min(8, Math.max(1, Math.round(data.luckyFavoriteCount)))
               : prev.luckyFavoriteCount,
             favoriteModels: data.favoriteModels || prev.favoriteModels,
+            civitaiModelLinks: Array.isArray(data.civitaiModelLinks) ? data.civitaiModelLinks : prev.civitaiModelLinks,
             randomPromptLists: data.randomPromptLists || prev.randomPromptLists,
             companionSettings: normalizeCompanionSettings(data.companionSettings || prev.companionSettings),
             visionSystemMessage: typeof data.visionSystemMessage !== 'string'
@@ -1716,14 +1796,17 @@ function App() {
 
   const fetchPromptTags = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/gallery/tags`, { credentials: 'include' });
+      const query = new URLSearchParams();
+      if (view === 'thread-gallery' && currentSessionId) query.set('sessionId', currentSessionId);
+      const suffix = query.size > 0 ? `?${query.toString()}` : '';
+      const res = await fetch(`${API_BASE}/api/gallery/tags${suffix}`, { credentials: 'include' });
       if (!res.ok) throw new Error(`Failed to fetch tags: ${res.status}`);
       const data = await res.json();
       setAvailablePromptTags(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching prompt tags:', error);
     }
-  }, []);
+  }, [currentSessionId, view]);
 
   useLayoutEffect(() => {
     if (view !== 'chat' || !currentSessionId) {
@@ -1841,7 +1924,11 @@ function App() {
         query.set('offset', String(currentOffset));
       }
       selectedPromptTags.forEach(tag => query.append('tag', tag));
+      selectedGalleryModels.forEach(model => query.append('model', model));
+      selectedGalleryWorkflows.forEach(workflow => query.append('workflow', workflow));
+      selectedGalleryAspects.forEach(aspect => query.append('aspect', aspect));
       if (debouncedGallerySearch) query.set('search', debouncedGallerySearch);
+      if (view === 'thread-gallery' && currentSessionId) query.set('sessionId', currentSessionId);
       const res = await fetch(`${API_BASE}/api/gallery?${query.toString()}`, { credentials: 'include' });
       if (!res.ok) {
         throw new Error(`Failed to fetch gallery: ${res.status} ${res.statusText}`);
@@ -1912,7 +1999,7 @@ function App() {
       }
     }
     return loadedItems;
-  }, [showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, selectedPromptTags, debouncedGallerySearch]);
+  }, [showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, selectedPromptTags, selectedGalleryModels, selectedGalleryWorkflows, selectedGalleryAspects, debouncedGallerySearch, view, currentSessionId]);
 
   const seekGallery = useCallback((targetIndex: number) => {
     const lastIndex = Math.max(0, galleryTotal - 1);
@@ -1992,9 +2079,9 @@ function App() {
   }, [fetchGallery]);
 
   useEffect(() => {
-    refreshGalleryRef.current = () => {
-      void fetchGallery(true);
-    };
+    refreshGalleryRef.current = (requestedOffset) => Number.isInteger(requestedOffset)
+      ? fetchGallery(false, requestedOffset)
+      : fetchGallery(true);
     return () => {
       refreshGalleryRef.current = null;
     };
@@ -2036,11 +2123,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (view === 'gallery') {
+    if (view === 'gallery' || (view === 'thread-gallery' && currentSessionId)) {
       resetGallery();
       void fetchPromptTags();
     }
-  }, [view, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, selectedPromptTags, debouncedGallerySearch, resetGallery, fetchPromptTags]);
+  }, [view, currentSessionId, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, selectedPromptTags, selectedGalleryModels, selectedGalleryWorkflows, selectedGalleryAspects, debouncedGallerySearch, resetGallery, fetchPromptTags]);
 
   const goToImage = useCallback((sessionId: string, messageId: string) => {
     pendingAnchorRef.current = messageId;
@@ -2064,7 +2151,38 @@ function App() {
     void fetchSessionDetails(sessionId, { all: true, reset: true });
   }, [fetchSessionDetails, setCurrentSessionId, setMessages]);
 
+  const handleLightboxContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const pressedImage = (event.target as HTMLElement).closest('.lightbox-hd, .lightbox-thumb');
+    if (!pressedImage) return;
+
+    if (clickTimeoutRef.current !== null) {
+      window.clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+    const menuWidth = Math.min(280, window.innerWidth - 24);
+    const menuHeight = lightboxGroupItems && lightboxGroupItems.length > 1 ? 260 : 210;
+    setShowLightboxMenu(false);
+    setLightboxContextMenu({
+      x: Math.max(12, Math.min(event.clientX, window.innerWidth - menuWidth - 12)),
+      y: Math.max(12, Math.min(event.clientY, window.innerHeight - menuHeight - 12)),
+    });
+    suppressLightboxClickRef.current = true;
+    window.setTimeout(() => {
+      suppressLightboxClickRef.current = false;
+    }, 500);
+  }, [lightboxGroupItems]);
+
   const handleLightboxImageClick = useCallback((e: React.MouseEvent) => {
+    if (lightboxContextMenu) {
+      const keepContextMenuOpen = suppressLightboxClickRef.current;
+      suppressLightboxClickRef.current = false;
+      if (!keepContextMenuOpen) setLightboxContextMenu(null);
+      e.stopPropagation();
+      return;
+    }
+
     if (showLightboxMenu) {
       suppressLightboxClickRef.current = false;
       setShowLightboxMenu(false);
@@ -2108,7 +2226,7 @@ function App() {
         }
       }, 350);
     }
-  }, [activeLightbox, closeLightbox, goToImage, showLightboxMenu, zoomScale]);
+  }, [activeLightbox, closeLightbox, goToImage, lightboxContextMenu, showLightboxMenu, zoomScale]);
 
   const handleLightboxImageDoubleClick = useCallback((e: React.MouseEvent) => {
     const clickedImage = (e.target as HTMLElement).closest('.lightbox-hd, .lightbox-thumb');
@@ -2125,9 +2243,8 @@ function App() {
       ? messages.find(message => message.id === activeLightbox.messageId)
       : lightboxGroupItems?.find(item => item.messageId === activeLightbox.messageId)
         || galleryItems.find(item => item.messageId === activeLightbox.messageId);
-    if (currentItem?.isFavorite === 1) return;
 
-    void toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, 0);
+    void toggleFavorite(activeLightbox.sessionId, activeLightbox.messageId, currentItem?.isFavorite);
   }, [activeLightbox, galleryItems, lightboxGroupItems, messages, toggleFavorite]);
 
   useEffect(() => {
@@ -2388,14 +2505,27 @@ function App() {
     touchStart.current = touchEnd.current = null;
   }, [activeLightbox, closeLightbox, navigateLightbox]);
 
-  const downloadImage = useCallback(async (url: string, filename: string) => {
-    const res = await fetch(url, { credentials: 'include' });
-    const blob = await res.blob();
-    const link = document.createElement('a');
-    link.href = window.URL.createObjectURL(blob);
-    link.download = filename;
-    link.click();
-  }, []);
+  const downloadImage = useCallback(async (messageId: string, filename: string) => {
+    try {
+      const { downloadImageByMessageId } = await import('./utils/imageDownload');
+      await downloadImageByMessageId(messageId, filename);
+    } catch {
+      toast.error(t.imageDownloadFailed);
+    }
+  }, [t.imageDownloadFailed]);
+
+  const copyLightboxImage = useCallback(async () => {
+    if (!activeLightbox) return;
+    setLightboxContextMenu(null);
+    try {
+      await copyImageToClipboard(getFullImageUrl(activeLightbox.url));
+      toast.success(t.imageCopied);
+    } catch (error) {
+      toast.error(error instanceof ImageClipboardError
+        ? error.code === 'INSECURE_CONTEXT' ? t.imageCopyRequiresHttps : t.imageCopyUnsupported
+        : t.imageCopyFailed);
+    }
+  }, [activeLightbox, t.imageCopied, t.imageCopyFailed, t.imageCopyRequiresHttps, t.imageCopyUnsupported]);
 
   const onHandleSend = useCallback(async (
     override?: string,
@@ -2723,10 +2853,14 @@ function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (showLightboxMenu) {
+        if (lightboxContextMenu) {
+          setLightboxContextMenu(null);
+        } else if (showLightboxMenu) {
           setShowLightboxMenu(false);
         } else if (showLightboxModify) {
           if (!isModifyingImage) setShowLightboxModify(false);
+        } else if (showLightboxInfo) {
+          setShowLightboxInfo(false);
         } else if (showLightboxPrompt) {
           setShowLightboxPrompt(false);
         } else {
@@ -2740,7 +2874,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeLightbox, closeLightbox, isModifyingImage, navigateLightbox, showLightboxMenu, showLightboxModify, showLightboxPrompt]);
+  }, [activeLightbox, closeLightbox, isModifyingImage, lightboxContextMenu, navigateLightbox, showLightboxInfo, showLightboxMenu, showLightboxModify, showLightboxPrompt]);
 
   const [showSessionMenu, setShowSessionMenu] = useState(false);
   const sessionMenuRef = useRef<HTMLDivElement>(null);
@@ -2939,12 +3073,237 @@ function App() {
     ? lightboxGroupItems.findIndex(item => item.messageId === activeLightbox.messageId)
     : -1;
   const isPromptGroupLightbox = currentLightboxGroupIndex >= 0 && (lightboxGroupItems?.length || 0) > 1;
+  const isManualGroupLightbox = isPromptGroupLightbox && Boolean(currentLightboxItem?.manualGroupId);
 
   const isAlreadyLoaded = activeLightbox ? loadedHdImages.has(activeLightbox.messageId) : false;
   const currentLightboxPrompt = currentLightboxItem
     ? currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || ''
     : '';
   const currentLightboxTags = currentLightboxItem?.tags || [];
+  const currentLightboxMetadata = currentLightboxItem && activeLightbox ? [
+    {
+      label: t.date,
+      value: new Intl.DateTimeFormat(lang === 'fr' ? 'fr-FR' : 'en-US', {
+        dateStyle: 'long',
+        timeStyle: 'medium',
+      }).format(new Date(currentLightboxItem.timestamp)),
+    },
+    { label: t.imageFormat, value: getImageFileExtension(activeLightbox.url).toUpperCase() },
+    {
+      label: t.dimensions,
+      value: currentLightboxItem.width && currentLightboxItem.height
+        ? `${currentLightboxItem.width} × ${currentLightboxItem.height} px`
+        : t.unknown,
+    },
+    { label: t.model, value: currentLightboxItem.model || t.unknown },
+    { label: t.seed, value: currentLightboxItem.seed ?? t.unknown },
+    { label: t.workflow, value: currentLightboxItem.workflow || t.unknown },
+    { label: t.steps, value: currentLightboxItem.steps ?? t.unknown },
+    { label: t.cfg, value: currentLightboxItem.cfg ?? t.unknown },
+    { label: 'Sampler', value: currentLightboxItem.sampler || t.unknown },
+    { label: lang === 'fr' ? 'Planificateur' : 'Scheduler', value: currentLightboxItem.scheduler || t.unknown },
+    { label: t.generationDuration, value: currentLightboxItem.duration === undefined ? t.unknown : formatDuration(currentLightboxItem.duration) },
+    { label: t.imageIdentifier, value: activeLightbox.messageId },
+  ] : [];
+
+  const requestLightboxImageDeletion = () => {
+    if (!activeLightbox) return;
+    setLightboxContextMenu(null);
+    setShowLightboxMenu(false);
+    setLightboxImageToDelete({
+      sessionId: activeLightbox.sessionId,
+      messageId: activeLightbox.messageId,
+    });
+  };
+
+  const confirmLightboxImageDeletion = async () => {
+    if (!lightboxImageToDelete || isDeletingLightboxImage) return;
+    setIsDeletingLightboxImage(true);
+    try {
+      const lightboxBeforeDelete = activeLightbox;
+      const groupBeforeDelete = lightboxGroupItems ? [...lightboxGroupItems] : null;
+      const galleryBeforeDelete = [...galleryItemsRef.current];
+      const deletedGroupItem = groupBeforeDelete?.find(item => item.messageId === lightboxImageToDelete.messageId);
+      const deletedGalleryIndex = deletedGroupItem
+        ? galleryBeforeDelete.findIndex(item => getGalleryPromptKey(item) === getGalleryPromptKey(deletedGroupItem))
+        : galleryBeforeDelete.findIndex(item => item.messageId === lightboxImageToDelete.messageId);
+
+      const response = await fetch(
+        `${API_BASE}/api/history/${encodeURIComponent(lightboxImageToDelete.sessionId)}/message/${encodeURIComponent(lightboxImageToDelete.messageId)}`,
+        { method: 'DELETE', credentials: 'include' }
+      );
+      if (!response.ok) throw new Error(t.batchDeleteFailed);
+
+      const deletedMessageId = lightboxImageToDelete.messageId;
+      setMessages(previous => previous.filter(message => message.id !== deletedMessageId));
+      setShowLightboxInfo(false);
+      setShowLightboxPrompt(false);
+      setShowLightboxModify(false);
+
+      let nextGalleryItem: GalleryItem | undefined;
+      let nextGroupItems: GalleryItem[] | null = null;
+      let adjacentGroupSummary: GalleryItem | undefined;
+      let galleryEntryWasRemoved = lightboxBeforeDelete?.source === 'gallery';
+      let staysInCurrentGroup = false;
+      let nextGalleryItems = galleryBeforeDelete;
+
+      if (lightboxBeforeDelete?.source === 'gallery' && deletedGroupItem && groupBeforeDelete) {
+        const deletedGroupIndex = groupBeforeDelete.findIndex(item => item.messageId === deletedMessageId);
+        const remainingGroup = groupBeforeDelete.filter(item => item.messageId !== deletedMessageId);
+        if (remainingGroup.length > 0) {
+          galleryEntryWasRemoved = false;
+          staysInCurrentGroup = true;
+          const nextGroupIndex = Math.min(Math.max(0, deletedGroupIndex), remainingGroup.length - 1);
+          nextGalleryItem = remainingGroup[nextGroupIndex];
+          nextGroupItems = remainingGroup.length > 1 ? remainingGroup : null;
+
+          const representative = remainingGroup[0];
+          const promptKey = getGalleryPromptKey(deletedGroupItem);
+          nextGalleryItems = galleryBeforeDelete.map(item => getGalleryPromptKey(item) === promptKey
+            ? {
+                ...representative,
+                groupCount: remainingGroup.length,
+                groupHasFavorite: remainingGroup.some(groupItem => groupItem.isFavorite === 1) ? 1 : 0,
+                groupHasPromptFavorite: remainingGroup.some(groupItem => groupItem.isPromptFavorite === 1) ? 1 : 0,
+              }
+            : item);
+        } else {
+          nextGalleryItems = galleryBeforeDelete.filter((_, index) => index !== deletedGalleryIndex);
+          adjacentGroupSummary = nextGalleryItems[Math.min(
+            Math.max(0, deletedGalleryIndex),
+            Math.max(0, nextGalleryItems.length - 1)
+          )];
+          nextGalleryItem = adjacentGroupSummary;
+        }
+      } else if (lightboxBeforeDelete?.source === 'gallery') {
+        nextGalleryItems = galleryBeforeDelete.filter(item => item.messageId !== deletedMessageId);
+        nextGalleryItem = nextGalleryItems[Math.min(
+          Math.max(0, deletedGalleryIndex),
+          Math.max(0, nextGalleryItems.length - 1)
+        )];
+        if (groupByPrompt) adjacentGroupSummary = nextGalleryItem;
+      }
+
+      galleryItemsRef.current = nextGalleryItems;
+      setGalleryItems(nextGalleryItems);
+      if (galleryEntryWasRemoved) {
+        setGalleryTotal(total => Math.max(0, total - 1));
+      }
+
+      const refreshOffset = nextGalleryItems.length === 0
+        ? Math.max(0, galleryStartIndexRef.current - GALLERY_PAGE_SIZE)
+        : galleryStartIndexRef.current;
+      const [refreshedGallery] = await Promise.all([
+        fetchGallery(false, refreshOffset),
+        fetchSessions(),
+      ]);
+
+      if (lightboxBeforeDelete?.source === 'gallery') {
+        if (!staysInCurrentGroup && refreshedGallery.length > 0) {
+          const refreshedIndex = Math.min(
+            Math.max(0, deletedGalleryIndex),
+            Math.max(0, refreshedGallery.length - 1)
+          );
+          nextGalleryItem = refreshedGallery[refreshedIndex];
+          adjacentGroupSummary = groupByPrompt ? nextGalleryItem : undefined;
+        }
+        if (adjacentGroupSummary && nextGalleryItem) {
+          const loadedNextGroup = await loadGalleryPromptGroup(adjacentGroupSummary);
+          nextGalleryItem = loadedNextGroup[0] || nextGalleryItem;
+          nextGroupItems = loadedNextGroup.length > 1 ? loadedNextGroup : null;
+        }
+
+        setHdLoaded(null);
+        setLightboxGroupItems(nextGroupItems);
+        setActiveLightbox(nextGalleryItem ? {
+          url: nextGalleryItem.imageUrl,
+          thumbnailUrl: nextGalleryItem.thumbnailUrl,
+          sessionId: nextGalleryItem.sessionId,
+          messageId: nextGalleryItem.messageId,
+          source: 'gallery',
+        } : null);
+      } else if (lightboxBeforeDelete?.source === 'chat') {
+        const chatImages = messages.filter(message => message.imageUrl && message.id !== deletedMessageId);
+        const deletedChatIndex = messages.filter(message => message.imageUrl)
+          .findIndex(message => message.id === deletedMessageId);
+        const nextChatImage = chatImages[Math.min(
+          Math.max(0, deletedChatIndex),
+          Math.max(0, chatImages.length - 1)
+        )];
+        setHdLoaded(null);
+        setLightboxGroupItems(null);
+        setActiveLightbox(nextChatImage ? {
+          url: nextChatImage.imageUrl!,
+          thumbnailUrl: nextChatImage.thumbnailUrl,
+          sessionId: lightboxBeforeDelete.sessionId,
+          messageId: nextChatImage.id,
+          source: 'chat',
+        } : null);
+      } else {
+        setActiveLightbox(null);
+        setLightboxGroupItems(null);
+      }
+
+      setLightboxImageToDelete(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.batchDeleteFailed);
+    } finally {
+      setIsDeletingLightboxImage(false);
+    }
+  };
+
+  const featureCurrentGroupImage = async () => {
+    if (!activeLightbox || !currentLightboxItem || !lightboxGroupItems || lightboxGroupItems.length < 2) return;
+    setLightboxContextMenu(null);
+    if (currentLightboxItem.isGroupCover === 1) return;
+
+    try {
+      const helpers = await import('./services/manualGalleryGroups');
+      await helpers.featureGalleryGroupImage(activeLightbox.messageId);
+
+      const selectedItem = lightboxGroupItems.find(item => item.messageId === activeLightbox.messageId);
+      if (!selectedItem) return;
+      const nextGroup = [
+        { ...selectedItem, isGroupCover: 1 },
+        ...lightboxGroupItems
+          .filter(item => item.messageId !== activeLightbox.messageId)
+          .map(item => ({ ...item, isGroupCover: 0 })),
+      ];
+      const promptKey = getGalleryPromptKey(selectedItem);
+      const groupHasFavorite = Math.max(...nextGroup.map(item => item.isFavorite || 0));
+      const groupHasPromptFavorite = Math.max(...nextGroup.map(item => item.isPromptFavorite || 0));
+      setLightboxGroupItems(nextGroup);
+      setGalleryItems(items => items.map(item => getGalleryPromptKey(item) === promptKey
+        ? {
+            ...selectedItem,
+            isGroupCover: 1,
+            groupCount: nextGroup.length,
+            groupHasFavorite,
+            groupHasPromptFavorite,
+          }
+        : item));
+      toast.success(t.groupCoverUpdated);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.groupCoverUpdateFailed);
+    }
+  };
+
+  const ungroupCurrentManualGroup = async () => {
+    if (!activeLightbox || !isManualGroupLightbox || !lightboxGroupItems) return;
+    setShowLightboxMenu(false);
+    const groupIds = new Set(lightboxGroupItems.map(item => item.messageId));
+
+    try {
+      const helpers = await import('./services/manualGalleryGroups');
+      await helpers.ungroupManualGalleryGroup(activeLightbox.messageId);
+      setMessages(previous => helpers.markManualGalleryGroup(previous, groupIds, null));
+      setLightboxGroupItems(null);
+      setActiveLightbox(null);
+      await fetchGallery(false, galleryStartIndexRef.current);
+    } catch (error) {
+      toast.error(error instanceof Error && error.message ? error.message : t.batchUpdateFailed);
+    }
+  };
 
   const regenerateLightboxImage = async () => {
     if (!activeLightbox || !currentLightboxItem) return;
@@ -3047,16 +3406,88 @@ function App() {
         )}
         {activeLightbox && (
         <div className={`lightbox ${zoomScale > 1 ? 'zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={lang === 'fr' ? 'Aperçu de l’image' : 'Image preview'} onClick={handleLightboxBackdropClick} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd} onTouchCancel={handleLightboxTouchEnd}>
-          <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick} onDoubleClick={handleLightboxImageDoubleClick} onWheel={handleLightboxWheel}>
+          <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick} onDoubleClick={handleLightboxImageDoubleClick} onContextMenu={handleLightboxContextMenu} onWheel={handleLightboxWheel}>
             {activeLightbox.thumbnailUrl && !isAlreadyLoaded && (
-              <img src={getFullImageUrl(activeLightbox.thumbnailUrl)} alt="Loading..." className="lightbox-thumb" style={{ filter: 'blur(10px)', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: hdLoaded === activeLightbox.messageId ? 0 : 1, transition: 'opacity 0.3s ease-out' }} />
+              <img src={getFullImageUrl(activeLightbox.thumbnailUrl)} alt="Loading..." className="lightbox-thumb" draggable={false} style={{ filter: 'blur(10px)', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: hdLoaded === activeLightbox.messageId ? 0 : 1, transition: 'opacity 0.3s ease-out' }} />
             )}
-            <img ref={lightboxImageRef} src={getFullImageUrl(activeLightbox.url)} alt="Fullscreen" className="lightbox-hd" style={{ position: 'relative', zIndex: 2, opacity: (hdLoaded === activeLightbox.messageId || isAlreadyLoaded) ? 1 : 0, transition: isAlreadyLoaded ? 'none' : 'opacity 0.4s ease-in', transform: `translate(${zoomOffset.x}px, ${zoomOffset.y}px) scale(${zoomScale})` }} onLoad={() => { setHdLoaded(activeLightbox.messageId); setLoadedHdImages(prev => new Set(prev).add(activeLightbox.messageId)); }} />
+            <img ref={lightboxImageRef} src={getFullImageUrl(activeLightbox.url)} alt="Fullscreen" className="lightbox-hd" draggable={false} style={{ position: 'relative', zIndex: 2, opacity: (hdLoaded === activeLightbox.messageId || isAlreadyLoaded) ? 1 : 0, transition: isAlreadyLoaded ? 'none' : 'opacity 0.4s ease-in', transform: `translate(${zoomOffset.x}px, ${zoomOffset.y}px) scale(${zoomScale})` }} onLoad={() => { setHdLoaded(activeLightbox.messageId); setLoadedHdImages(prev => new Set(prev).add(activeLightbox.messageId)); }} />
             {favoritedId === activeLightbox.messageId && <div className="image-overlay-heart"><HeartIcon size={128} filled /></div>}
           </div>
           {isPromptGroupLightbox && (
             <div className="lightbox-group-counter" role="status" aria-live="polite">
               {currentLightboxGroupIndex + 1} / {lightboxGroupItems!.length}
+            </div>
+          )}
+          {lightboxContextMenu && (
+            <div
+              className="lightbox-context-menu"
+              role="menu"
+              aria-label={t.actions}
+              style={{ left: lightboxContextMenu.x, top: lightboxContextMenu.y }}
+              onClick={(event) => event.stopPropagation()}
+              onContextMenu={(event) => event.preventDefault()}
+              onTouchStart={(event) => event.stopPropagation()}
+              onTouchMove={(event) => event.stopPropagation()}
+              onTouchEnd={(event) => event.stopPropagation()}
+              onTouchCancel={(event) => event.stopPropagation()}
+            >
+              {isPromptGroupLightbox && (
+                <button
+                  type="button"
+                  className="lightbox-menu-item"
+                  role="menuitem"
+                  disabled={currentLightboxItem?.isGroupCover === 1}
+                  onClick={() => void featureCurrentGroupImage()}
+                >
+                  <span className="lightbox-menu-icon" aria-hidden="true"><StarIcon size={18} filled={currentLightboxItem?.isGroupCover === 1} /></span>
+                  <span>{currentLightboxItem?.isGroupCover === 1 ? t.groupCoverActive : t.setGroupCover}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                className="lightbox-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setLightboxContextMenu(null);
+                  setShowLightboxPrompt(false);
+                  setShowLightboxModify(false);
+                  setShowLightboxInfo(true);
+                }}
+              >
+                <span className="lightbox-menu-icon" aria-hidden="true"><InfoIcon size={18} /></span>
+                <span>{t.imageInformation}</span>
+              </button>
+              <button
+                type="button"
+                className="lightbox-menu-item"
+                role="menuitem"
+                onClick={() => void copyLightboxImage()}
+              >
+                <span className="lightbox-menu-icon" aria-hidden="true"><ClipboardIcon size={18} /></span>
+                <span>{t.copyImage}</span>
+              </button>
+              <button
+                type="button"
+                className="lightbox-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setLightboxContextMenu(null);
+                  const extension = getImageFileExtension(activeLightbox.url);
+                  void downloadImage(activeLightbox.messageId, `img-${activeLightbox.messageId}.${extension}`);
+                }}
+              >
+                <span className="lightbox-menu-icon" aria-hidden="true"><DownloadIcon size={18} /></span>
+                <span>{t.download}</span>
+              </button>
+              <button
+                type="button"
+                className="lightbox-menu-item danger"
+                role="menuitem"
+                onClick={requestLightboxImageDeletion}
+              >
+                <span className="lightbox-menu-icon" aria-hidden="true"><TrashIcon size={18} /></span>
+                <span>{t.delete}</span>
+              </button>
             </div>
           )}
           {showLightboxPrompt && (
@@ -3103,6 +3534,46 @@ function App() {
                   </div>
                 </div>
               )}
+            </section>
+          )}
+          {showLightboxInfo && (
+            <section
+              className="lightbox-prompt-panel lightbox-info-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="lightbox-info-title"
+              onClick={(event) => event.stopPropagation()}
+              onTouchStart={(event) => event.stopPropagation()}
+              onTouchMove={(event) => event.stopPropagation()}
+              onTouchEnd={(event) => event.stopPropagation()}
+              onTouchCancel={(event) => event.stopPropagation()}
+            >
+              <div className="lightbox-prompt-header">
+                <h2 id="lightbox-info-title">{t.imageInformation}</h2>
+                <button
+                  type="button"
+                  className="lightbox-prompt-close"
+                  onClick={() => setShowLightboxInfo(false)}
+                  title={t.close}
+                  aria-label={t.close}
+                >
+                  <XIcon size={18} />
+                </button>
+              </div>
+              <dl className="lightbox-info-grid">
+                {currentLightboxMetadata.map(detail => (
+                  <div key={detail.label}>
+                    <dt>{detail.label}</dt>
+                    <dd>{detail.value}</dd>
+                  </div>
+                ))}
+                {currentLightboxPrompt.trim() && (
+                  <div className="lightbox-info-prompt">
+                    <dt>{t.finalPrompt}</dt>
+                    <dd>{currentLightboxPrompt}</dd>
+                  </div>
+                )}
+              </dl>
             </section>
           )}
           {showLightboxModify && (
@@ -3189,7 +3660,8 @@ function App() {
                       role="menuitem"
                       onClick={() => {
                         setShowLightboxMenu(false);
-                        void downloadImage(getFullImageUrl(activeLightbox.url), `img-${activeLightbox.messageId}.png`);
+                        const extension = getImageFileExtension(activeLightbox.url);
+                        void downloadImage(activeLightbox.messageId, `img-${activeLightbox.messageId}.${extension}`);
                       }}
                     >
                       <span className="lightbox-menu-icon" aria-hidden="true"><DownloadIcon size={18} /></span>
@@ -3300,6 +3772,26 @@ function App() {
                         ? (lang === 'fr' ? 'Voir la comparaison' : 'View comparison')
                         : (lang === 'fr' ? 'Comparer' : 'Compare')}</span>
                     </button>
+                    {isManualGroupLightbox && (
+                      <button
+                        type="button"
+                        className="lightbox-menu-item"
+                        role="menuitem"
+                        onClick={() => void ungroupCurrentManualGroup()}
+                      >
+                        <span className="lightbox-menu-icon" aria-hidden="true"><PromptGroupIcon size={18} /></span>
+                        <span>{t.ungroupManualGroup}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="lightbox-menu-item danger"
+                      role="menuitem"
+                      onClick={requestLightboxImageDeletion}
+                    >
+                      <span className="lightbox-menu-icon" aria-hidden="true"><TrashIcon size={18} /></span>
+                      <span>{t.delete}</span>
+                    </button>
                   </div>
                 )}
                 <button
@@ -3317,6 +3809,32 @@ function App() {
             </div>
             <div className="lightbox-top-actions">
               <button className="lightbox-btn close" onClick={closeLightbox} title={t.close} aria-label={t.close}>×</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lightboxImageToDelete && (
+        <div className="settings-modal-overlay" onClick={() => {
+          if (!isDeletingLightboxImage) setLightboxImageToDelete(null);
+        }}>
+          <div className="settings-modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{t.confirmDelete}</h3>
+            <div className="confirm-buttons">
+              <button
+                className="confirm-btn delete"
+                onClick={() => void confirmLightboxImageDeletion()}
+                disabled={isDeletingLightboxImage}
+              >
+                {t.confirm}
+              </button>
+              <button
+                className="confirm-btn cancel"
+                onClick={() => setLightboxImageToDelete(null)}
+                disabled={isDeletingLightboxImage}
+              >
+                {t.cancel}
+              </button>
             </div>
           </div>
         </div>
@@ -3469,6 +3987,21 @@ function App() {
                 </button>
                 {showSessionMenu && currentSessionId && (
                   <div className="session-dropdown">
+                    <button className="dropdown-item" onClick={() => {
+                      if (view === 'thread-gallery') {
+                        setView('chat');
+                      } else {
+                        galleryRequestRef.current += 1;
+                        galleryItemsRef.current = [];
+                        setGalleryItems([]);
+                        setGalleryTotal(0);
+                        setView('thread-gallery');
+                      }
+                      setShowSessionMenu(false);
+                    }}>
+                      <span>{view === 'thread-gallery' ? <ChatIcon size={17} /> : <GridIcon size={17} />}</span>
+                      {view === 'thread-gallery' ? t.backToThread : t.threadPhotos}
+                    </button>
                     <button className="dropdown-item" onClick={() => { setRenamingId(currentSessionId); setRenameValue(sessions.find(s => s.id === currentSessionId)?.title || ''); setShowSessionMenu(false); setSidebarOpen(true); }}>
                       <span><ComposeIcon size={17} /></span> {t.rename}
                     </button>
@@ -3500,7 +4033,7 @@ function App() {
               onModelActivated={activateComparedModel}
             />
           </Suspense>
-        ) : <ChatInterface
+        ) : <Suspense fallback={<WorkspaceLoading />}><ChatInterface
           view={view} messages={messages} lang={lang} t={t} isGenerating={isGenerating} isEnhancing={isEnhancing}
           currentSessionId={currentSessionId} input={input} setInput={onInputChange} handleSend={onHandleSend}
           createLuckyGeneration={createLuckyGeneration} isCreatingLuckyPrompt={isCreatingLuckyPrompt} isLoadingLuckyReferences={isLoadingLuckyReferences}
@@ -3508,22 +4041,25 @@ function App() {
           retryMessage={retryMessage} dismissFailedMessage={dismissFailedMessage}
           retryAllIncomplete={retryAllIncomplete} updatePendingPrompt={updatePendingPrompt}
           interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} openComparison={openComparison} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
-          setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} favoritedId={favoritedId}
+          setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} handleImageModify={handleImageModify} favoritedId={favoritedId}
           galleryItems={galleryItems} galleryTotal={galleryTotal} galleryStartIndex={galleryStartIndex} seekGallery={seekGallery}
           isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
           promptFavoritesOnly={promptFavoritesOnly} setPromptFavoritesOnly={setPromptFavoritesOnly}
           groupByPrompt={groupByPrompt} setGroupByPrompt={setGroupByPrompt}
           batchDeleteGalleryItems={batchDeleteGalleryItems} batchRegenerateGalleryItems={batchRegenerateGalleryItems}
           batchLuckyGalleryItems={batchLuckyGalleryItems} batchSetGalleryFavorites={batchSetGalleryFavorites}
-          batchSetGalleryPromptFavorites={batchSetGalleryPromptFavorites}
+          batchSetGalleryPromptFavorites={batchSetGalleryPromptFavorites} batchCreateManualGroup={batchCreateManualGroup}
           availablePromptTags={availablePromptTags} selectedPromptTags={selectedPromptTags} setSelectedPromptTags={setSelectedPromptTags}
+          selectedGalleryModels={selectedGalleryModels} setSelectedGalleryModels={setSelectedGalleryModels}
+          selectedGalleryWorkflows={selectedGalleryWorkflows} setSelectedGalleryWorkflows={setSelectedGalleryWorkflows}
+          selectedGalleryAspects={selectedGalleryAspects} setSelectedGalleryAspects={setSelectedGalleryAspects}
           gallerySearch={gallerySearch} setGallerySearch={setGallerySearch} openPromptTag={openPromptTag}
           showArchivedInGallery={showArchivedInGallery} setShowArchivedInGallery={setShowArchivedInGallery}
           setHasMoreGallery={setHasMoreGallery} firstImageElementRef={firstImageElementRef} lastImageElementRef={lastImageElementRef} containerRef={containerRef} textareaRef={textareaRef}
           messagesEndRef={messagesEndRef} params={params} setParams={setParams} smoothScrollTo={smoothScrollTo} handleScroll={handleScroll}
           showScrollBottom={showScrollBottom} onScrollToBottom={onScrollToBottom}
           openOptionsRequest={openOptionsRequest}
-        />}
+        /></Suspense>}
       </main>
       {luckyReferencePreview && (
         <LuckyReferencesModal

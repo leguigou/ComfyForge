@@ -575,6 +575,9 @@ div:focus:not(:focus-visible) {
   max-height: 100%;
   object-fit: contain;
   transition: opacity 0.4s ease-out;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .lightbox-thumb {
@@ -681,6 +684,70 @@ div:focus:not(:focus-visible) {
   font-size: 0.9rem;
   line-height: 1.65;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.lightbox-info-panel {
+  width: min(560px, calc(100vw - 24px));
+  padding: 0.85rem;
+}
+
+.lightbox-info-panel .lightbox-prompt-header {
+  margin-bottom: 0.55rem;
+}
+
+.lightbox-info-grid {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.65rem;
+  background: rgba(0, 0, 0, 0.28);
+  font-size: 0.75rem;
+}
+
+.lightbox-info-grid > div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+  margin: 0.2rem 0;
+}
+
+.lightbox-info-grid dt {
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--accent);
+  font-size: inherit;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.lightbox-info-grid dt::after {
+  content: ':';
+}
+
+.lightbox-info-grid dd {
+  margin: 0;
+  color: rgba(244, 244, 245, 0.94);
+  font-size: inherit;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.lightbox-info-grid .lightbox-info-prompt {
+  display: block;
+  margin-top: 0.55rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lightbox-info-prompt dt {
+  margin-bottom: 0.25rem;
+}
+
+.lightbox-info-prompt dd {
+  max-height: 9rem;
+  overflow: auto;
   white-space: pre-wrap;
 }
 
@@ -891,6 +958,23 @@ div:focus:not(:focus-visible) {
   color: rgba(24, 24, 27, 0.86);
 }
 
+.light .lightbox-info-grid {
+  border-color: rgba(0, 0, 0, 0.09);
+  background: rgba(0, 0, 0, 0.035);
+}
+
+.light .lightbox-info-grid dt {
+  color: var(--accent);
+}
+
+.light .lightbox-info-grid dd {
+  color: rgba(24, 24, 27, 0.9);
+}
+
+.light .lightbox-info-grid .lightbox-info-prompt {
+  border-top-color: rgba(0, 0, 0, 0.09);
+}
+
 .light .lightbox-prompt-tags {
   border-top-color: rgba(0, 0, 0, 0.09);
 }
@@ -944,7 +1028,8 @@ div:focus:not(:focus-visible) {
 }
 
 .light .lightbox-toolbar,
-.light .lightbox-menu {
+.light .lightbox-menu,
+.light .lightbox-context-menu {
   border-color: rgba(0, 0, 0, 0.12);
   background: rgba(255, 255, 255, 0.82);
   box-shadow: 0 12px 35px rgba(0, 0, 0, 0.14);
@@ -1031,6 +1116,22 @@ div:focus:not(:focus-visible) {
   backdrop-filter: blur(12px);
   animation: lightbox-menu-in 0.16s ease-out;
 }
+.lightbox-context-menu {
+  position: fixed;
+  z-index: 45;
+  width: min(280px, calc(100vw - 24px));
+  max-height: min(70vh, 600px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 1rem;
+  background: rgba(24, 24, 28, 0.94);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.5);
+  cursor: default;
+  backdrop-filter: blur(16px);
+  animation: lightbox-menu-in 0.16s ease-out;
+}
 .lightbox-menu-item {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
@@ -1057,6 +1158,13 @@ div:focus:not(:focus-visible) {
 .lightbox-menu-item:disabled {
   cursor: not-allowed;
   opacity: 0.38;
+}
+.lightbox-menu-item.danger {
+  margin-top: 0.35rem;
+  color: #ff6f78;
+}
+.lightbox-menu-item.danger .lightbox-menu-icon {
+  color: #ff6f78;
 }
 .lightbox-menu-icon {
   display: grid;

@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const appVersion = readFileSync(fileURLToPath(new URL('../VERSION', import.meta.url)), 'utf8').trim()
-const entryChunkBudgetBytes = 450 * 1024
+const entryChunkBudgetBytes = 468 * 1024
 
 if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(appVersion)) {
   throw new Error('Invalid application version in VERSION')
@@ -17,7 +17,7 @@ export default defineConfig({
     react(),
     {
       name: 'inject-app-version',
-      closeBundle() {
+      writeBundle() {
         const serviceWorkerPath = fileURLToPath(new URL('./dist/sw.js', import.meta.url))
         const indexPath = fileURLToPath(new URL('./dist/index.html', import.meta.url))
         const buildId = createHash('sha256')

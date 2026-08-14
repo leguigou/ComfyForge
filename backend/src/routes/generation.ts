@@ -8,6 +8,7 @@ import {
   assertUserQueueCapacity,
   broadcastToSession,
   getUserQueueCapacity,
+  disconnectQueueTask,
   processQueue,
   QueueCapacityError
 } from '../services/queue';
@@ -416,47 +417,58 @@ router.patch('/pending/:messageId/prompt', authenticate, (req, res) => {
 router.post('/interrupt', authenticate, async (req, res) => {
   try {
     const user = (req as any).user;
-    const targetUrl = getTargetComfyUrl(req.body.params?.comfyUrl);
-    
-    // 1. Send interrupt to ComfyUI
-    try {
-      await axios.post(`${targetUrl}/interrupt`);
-    } catch (e) {
-      console.warn('[Interrupt] ComfyUI interrupt call failed (might be already idle)');
+    const messageId = typeof req.body?.messageId === 'string' ? req.body.messageId.trim() : '';
+    if (!messageId) return res.status(400).json({ success: false, error: 'messageId is required' });
+
+    const task = db.prepare(`
+      SELECT q.id, q.messageId, q.sessionId, q.status, q.params
+      FROM queue q
+      JOIN sessions s ON s.id = q.sessionId
+      WHERE q.messageId = ? AND s.userId = ?
+    `).get(messageId, user.id) as {
+      id: number;
+      messageId: string;
+      sessionId: string;
+      status: 'pending' | 'processing';
+      params: string;
+    } | undefined;
+
+    if (!task) return res.status(404).json({ success: false, error: 'Active generation not found' });
+
+    let targetUrl: string | null = null;
+    if (task.status === 'processing') {
+      const storedParams = JSON.parse(task.params || '{}') as GenerationParams;
+      targetUrl = getTargetComfyUrl(storedParams.comfyUrl);
+      disconnectQueueTask(task.id);
     }
-    
-    // 2. Identify messages to be cancelled
-    const affectedMessages = db.prepare(`
-      SELECT m.id, m.sessionId 
-      FROM messages m 
-      JOIN sessions s ON m.sessionId = s.id 
-      WHERE m.status IN ('pending', 'preparing', 'processing')
-      AND s.userId = ?
-    `).all(user.id) as any[];
 
-    // 3. Clear user's queue in database
-    db.prepare(`
-      DELETE FROM queue 
-      WHERE sessionId IN (SELECT id FROM sessions WHERE userId = ?)
-    `).run(user.id);
-    
-    // 4. Mark all pending/processing messages as failed and notify via WS
-    db.prepare(`
-      UPDATE messages 
-      SET status = 'failed', text = 'Interrompu par l''utilisateur' 
-      WHERE status IN ('pending', 'preparing', 'processing')
-      AND sessionId IN (SELECT id FROM sessions WHERE userId = ?)
-    `).run(user.id);
+    const cancellationMessage = 'Interrompu par l\'utilisateur';
+    db.transaction(() => {
+      db.prepare('DELETE FROM queue WHERE id = ?').run(task.id);
+      db.prepare(`
+        UPDATE messages
+        SET status = 'failed', text = ?
+        WHERE id = ? AND status IN ('pending', 'preparing', 'processing')
+      `).run(cancellationMessage, task.messageId);
+    })();
 
-    affectedMessages.forEach(msg => {
-      broadcastToSession(msg.sessionId, { 
-        messageId: msg.id, 
-        status: 'failed', 
-        error: 'Interrompu par l\'utilisateur' 
-      });
+    broadcastToSession(task.sessionId, {
+      messageId: task.messageId,
+      status: 'failed',
+      error: cancellationMessage
     });
 
-    res.json({ success: true });
+    // A pending task is only disconnected from our queue. ComfyUI is touched
+    // exclusively when this exact task has already been claimed for execution.
+    if (targetUrl) {
+      try {
+        await axios.post(`${targetUrl}/interrupt`);
+      } catch {
+        console.warn('[Interrupt] ComfyUI interrupt call failed (might be already idle)');
+      }
+    }
+
+    res.json({ success: true, messageId: task.messageId, interrupted: Boolean(targetUrl) });
   } catch (error: any) {
     if (error instanceof ServiceUrlError) return res.status(error.statusCode).json({ error: error.message });
     console.error('[Interrupt] Error:', error);

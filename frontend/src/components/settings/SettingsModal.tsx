@@ -1,9 +1,9 @@
-import { useState, useEffect, useLayoutEffect, useRef, type Dispatch, type SetStateAction } from 'react';
+import { lazy, Suspense, useState, useEffect, useLayoutEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import './SettingsModal.css';
 import type { GenParameters, User, Language, GalleryItem, RandomPromptList, ComfyModelDetails } from '../../types';
 import { normalizeRandomSlug } from '../../utils/randomPrompts';
 import { DEFAULT_COMPANION_ID, normalizeCompanionSettings } from '../../utils/companions';
-import { AlertTriangleIcon, CheckCircleIcon, CheckIcon, ClipboardIcon, HeartIcon, KeyIcon, PlusIcon, RefreshIcon, SparklesIcon, StarIcon, TrashIcon, XIcon } from '../ui/Icons';
+import { AlertTriangleIcon, CheckCircleIcon, CheckIcon, ClipboardIcon, DownloadIcon, HeartIcon, KeyIcon, PlusIcon, RefreshIcon, SparklesIcon, StarIcon, TrashIcon, XIcon } from '../ui/Icons';
 import { SeedyCompanion } from '../chat/SeedyCompanion';
 import { MarkdownLoader } from '../ui/MarkdownLoader';
 import { formatBytes, getAvatarThumbnailUrl, getFullImageUrl, API_BASE } from '../../services/api';
@@ -49,6 +49,8 @@ const readImageDimensions = (file: File) => new Promise<{ width: number; height:
 
 type SettingsTab = SettingsModalProps['activeTab'];
 
+const CivitaiPluginPanel = lazy(() => import('./CivitaiPluginPanel'));
+
 const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
   const paths: Record<SettingsTab, React.ReactNode> = {
     general: <><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /><circle cx="12" cy="12" r="4" /></>,
@@ -57,6 +59,7 @@ const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
     images: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m4 17 5-5 4 4 2-2 5 4" /></>,
     random: <><path d="M4 7h3c4 0 4 10 8 10h5" /><path d="m17 14 3 3-3 3" /><path d="M4 17h3c1.5 0 2.5-1.5 3.5-3" /><path d="M14 7h6m-3-3 3 3-3 3" /></>,
     comfy: <><path d="M12 2v3m0 14v3M4.93 4.93l2.12 2.12m9.9 9.9 2.12 2.12M2 12h3m14 0h3M4.93 19.07l2.12-2.12m9.9-9.9 2.12-2.12" /><circle cx="12" cy="12" r="4" /></>,
+    plugins: <><path d="M8 3v4M16 3v4M6 7h12v4a6 6 0 0 1-6 6v4" /><path d="M9 11h6" /></>,
     llm: <><rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 10h.01M12 10h.01M16 10h.01M8 14h8M9 2v3m6-3v3" /></>,
     update: <><path d="M20 7v5h-5" /><path d="M18.5 16a8 8 0 1 1 .8-9L20 12" /></>,
     admin: <><path d="M12 3 4.5 6v5c0 4.8 3.2 8.5 7.5 10 4.3-1.5 7.5-5.2 7.5-10V6z" /><path d="m9 12 2 2 4-4" /></>,
@@ -429,8 +432,8 @@ const AdminUserEditor = ({
 interface SettingsModalProps {
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
-  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs';
-  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'llm' | 'update' | 'admin' | 'queue' | 'logs') => void;
+  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs';
+  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs') => void;
   params: GenParameters;
   setParams: Dispatch<SetStateAction<GenParameters>>;
   clipboardAutoGenerateSupported: boolean;
@@ -503,6 +506,19 @@ export const SettingsModal = ({
   galleryItems,
   fetchGallery
 }: SettingsModalProps) => {
+  const civitaiMetadataText = lang === 'fr' ? {
+    title: 'Métadonnées Civitai au téléchargement',
+    help: 'Ajoute le prompt et les paramètres de génération dans la copie WebP téléchargée. L’image originale reste inchangée.',
+    enable: 'Désactivé',
+    active: 'Activé',
+    warning: 'Le prompt et le prompt négatif seront lisibles par Civitai et les logiciels compatibles.',
+  } : {
+    title: 'Civitai metadata on download',
+    help: 'Adds the prompt and generation settings to the downloaded WebP copy. The original image remains unchanged.',
+    enable: 'Disabled',
+    active: 'Enabled',
+    warning: 'The prompt and negative prompt will be readable by Civitai and compatible software.',
+  };
   const [editUsername, setEditUsername] = useState(currentUser?.username || '');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -763,6 +779,113 @@ export const SettingsModal = ({
   );
 
   const favoriteModels = params.favoriteModels || [];
+
+  /* Civitai panel logic is loaded on demand in CivitaiPluginPanel.
+  const saveCivitaiLink = (candidate: CivitaiCandidate, localModel = civitaiLocalModel, modelType = civitaiLocalModelType) => {
+    if (!localModel) return;
+    const link: CivitaiModelLink = {
+      localModel,
+      modelType,
+      modelId: candidate.modelId,
+      modelVersionId: candidate.modelVersionId,
+      modelName: candidate.modelName,
+      versionName: candidate.versionName,
+      fileName: candidate.fileName,
+      baseModel: candidate.baseModel,
+      air: candidate.air,
+      autoV2: candidate.autoV2,
+      sha256: candidate.sha256,
+    };
+    setParams(current => ({
+      ...current,
+      civitaiModelLinks: [...(current.civitaiModelLinks || []).filter(item => !(
+        item.localModel === localModel && item.modelType === modelType
+      )), link],
+    }));
+    setCivitaiCandidates([]);
+    setShowCivitaiLinker(false);
+  };
+
+  const requestCivitaiCandidates = async (localModel: string, modelType: 'checkpoint' | 'diffusion', query?: string) => {
+    setCivitaiLocalModel(localModel);
+    setCivitaiLocalModelType(modelType);
+    setShowCivitaiLinker(true);
+    setIsSearchingCivitai(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/civitai/search`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localFileName: localModel, query }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Recherche Civitai impossible');
+      setCivitaiCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+      if (!data.candidates?.length) toast.error(lang === 'fr' ? 'Aucune correspondance trouvée' : 'No match found');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Civitai unavailable');
+    } finally {
+      setIsSearchingCivitai(false);
+    }
+  };
+
+  const resolveCivitaiVersionInput = async () => {
+    if (!civitaiLocalModel || !civitaiVersionInput.trim()) return;
+    setIsSearchingCivitai(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/civitai/resolve`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localFileName: civitaiLocalModel, modelVersionId: civitaiVersionInput }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Version Civitai introuvable');
+      saveCivitaiLink(data.candidate);
+      setCivitaiVersionInput('');
+      toast.success(lang === 'fr' ? 'Modèle associé à Civitai' : 'Model linked to Civitai');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Civitai unavailable');
+    } finally {
+      setIsSearchingCivitai(false);
+    }
+  };
+
+  const syncFavoriteModelsWithCivitai = async () => {
+    const missing = favoriteModels.filter(favorite => !civitaiModelLinks.some(link => (
+      link.localModel === favorite.model && link.modelType === (favorite.modelType || 'checkpoint')
+    )));
+    if (!missing.length) {
+      toast.success(lang === 'fr' ? 'Tous les favoris sont déjà associés' : 'All favorites are already linked');
+      return;
+    }
+    setIsSyncingCivitai(true);
+    const imported: CivitaiModelLink[] = [];
+    try {
+      for (const favorite of missing) {
+        const response = await fetch(`${API_BASE}/api/civitai/search`, {
+          method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ localFileName: favorite.model }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) continue;
+        const exact = (data.candidates as CivitaiCandidate[] | undefined)?.find(candidate => candidate.score >= 130);
+        if (exact) imported.push({ ...exact, localModel: favorite.model, modelType: favorite.modelType || 'checkpoint' });
+      }
+      if (imported.length) setParams(current => ({
+        ...current,
+        civitaiModelLinks: [
+          ...(current.civitaiModelLinks || []).filter(existing => !imported.some(link => (
+            link.localModel === existing.localModel && link.modelType === existing.modelType
+          ))),
+          ...imported,
+        ],
+      }));
+      const unresolved = missing.length - imported.length;
+      toast.success(lang === 'fr'
+        ? `${imported.length} favori(s) associé(s)${unresolved ? ` · ${unresolved} à vérifier` : ''}`
+        : `${imported.length} favorite(s) linked${unresolved ? ` · ${unresolved} to review` : ''}`);
+    } finally {
+      setIsSyncingCivitai(false);
+    }
+  };
+  */
   const activeFavorite = favoriteModels.find(item => (
     item.model === params.comfyModel && (item.modelType || 'checkpoint') === params.comfyModelType
   ));
@@ -1123,6 +1246,7 @@ export const SettingsModal = ({
     { id: 'images', label: t.tabImages },
     { id: 'random', label: t.tabRandom },
     { id: 'comfy', label: t.tabComfy },
+    { id: 'plugins', label: lang === 'fr' ? 'Plugins' : 'Plugins' },
     { id: 'llm', label: t.tabLLM },
     { id: 'update', label: t.tabUpdate },
     ...(currentUser?.isAdmin ? [
@@ -1190,6 +1314,28 @@ export const SettingsModal = ({
                   <p className="clipboard-auto-unavailable"><AlertTriangleIcon size={16} /> {t.clipboardAutoGenerateUnsupported}</p>
                 )}
                 <p className="clipboard-auto-warning"><AlertTriangleIcon size={16} /> {t.clipboardAutoGenerateWarning}</p>
+              </section>
+
+              <section className={`clipboard-auto-card ${params.civitaiMetadataOnDownload ? 'active' : ''}`}>
+                <div className="clipboard-auto-copy">
+                  <span className="clipboard-auto-icon" aria-hidden="true"><DownloadIcon size={24} /></span>
+                  <div>
+                    <h4>{civitaiMetadataText.title}</h4>
+                    <p>{civitaiMetadataText.help}</p>
+                  </div>
+                </div>
+                <label className={`clipboard-auto-toggle ${params.civitaiMetadataOnDownload ? 'active' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={params.civitaiMetadataOnDownload}
+                    onChange={event => setParams(current => ({
+                      ...current,
+                      civitaiMetadataOnDownload: event.target.checked,
+                    }))}
+                  />
+                  <span>{params.civitaiMetadataOnDownload ? civitaiMetadataText.active : civitaiMetadataText.enable}</span>
+                </label>
+                <p className="clipboard-auto-warning"><AlertTriangleIcon size={16} /> {civitaiMetadataText.warning}</p>
               </section>
 
               <section className="companion-general-card">
@@ -2005,6 +2151,148 @@ export const SettingsModal = ({
                 )}
               </div>
             </div>
+          )}
+
+          {/* Legacy inline Civitai panel retained here only as source history.
+          {activeTab === 'plugins' && (
+            <div className="plugins-settings-stack">
+              <section className="plugin-card civitai-plugin-card">
+                <header className="plugin-card-header">
+                  <div className="plugin-brand">
+                    <span className="plugin-brand-mark" aria-hidden="true">C</span>
+                    <div>
+                      <span className="plugin-eyebrow">Civitai</span>
+                      <h4>{lang === 'fr' ? 'Association des modèles' : 'Model linking'}</h4>
+                      <p>{lang === 'fr'
+                        ? 'Relie les modèles locaux à leur version Civitai pour intégrer automatiquement le hash et la ressource aux images.'
+                        : 'Links local models to their Civitai version so hashes and resources are embedded automatically.'}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="civitai-add-button"
+                    onClick={() => {
+                      const initial = allLocalModels.find(local => !civitaiModelLinks.some(link => link.localModel === local.model && link.modelType === local.modelType)) || allLocalModels[0];
+                      if (initial) {
+                        setCivitaiLocalModel(initial.model);
+                        setCivitaiLocalModelType(initial.modelType);
+                      }
+                      setCivitaiCandidates([]);
+                      setShowCivitaiLinker(true);
+                    }}
+                    disabled={!allLocalModels.length}
+                    title={lang === 'fr' ? 'Ajouter un modèle à lier' : 'Add a model link'}
+                    aria-label={lang === 'fr' ? 'Ajouter un modèle à lier' : 'Add a model link'}
+                  >
+                    <PlusIcon size={20} />
+                  </button>
+                </header>
+
+                <div className="civitai-sync-summary">
+                  <div>
+                    <strong>{civitaiModelLinks.length}</strong>
+                    <span>{lang === 'fr' ? 'modèle(s) associé(s)' : 'linked model(s)'}</span>
+                  </div>
+                  <button type="button" className="civitai-sync-button" disabled={isSyncingCivitai || !favoriteModels.length} onClick={() => void syncFavoriteModelsWithCivitai()}>
+                    {isSyncingCivitai ? <RefreshIcon size={17} /> : <><RefreshIcon size={17} /> {lang === 'fr' ? 'Associer à Civitai' : 'Link with Civitai'}</>}
+                  </button>
+                </div>
+                <p className="civitai-sync-help">{lang === 'fr'
+                  ? 'Analyse uniquement les modèles favoris. Une correspondance n’est validée automatiquement que si le nom du fichier ou le nom modèle/version correspond exactement.'
+                  : 'Scans favorite models only. A match is accepted automatically only when the filename or model/version name matches exactly.'}</p>
+
+                {showCivitaiLinker && (
+                  <div className="civitai-linker">
+                    <div className="civitai-linker-title">
+                      <strong>{lang === 'fr' ? 'Lier un modèle' : 'Link a model'}</strong>
+                      <button type="button" onClick={() => { setShowCivitaiLinker(false); setCivitaiCandidates([]); }} aria-label={t.close || 'Close'}><XIcon size={17} /></button>
+                    </div>
+                    <div className="civitai-linker-fields">
+                      <label>
+                        <span>{lang === 'fr' ? 'Modèle local' : 'Local model'}</span>
+                        <select
+                          value={`${civitaiLocalModelType}:${civitaiLocalModel}`}
+                          onChange={event => {
+                            const separator = event.target.value.indexOf(':');
+                            setCivitaiLocalModelType(event.target.value.slice(0, separator) as 'checkpoint' | 'diffusion');
+                            setCivitaiLocalModel(event.target.value.slice(separator + 1));
+                            setCivitaiCandidates([]);
+                          }}
+                        >
+                          {allLocalModels.map(local => <option key={`${local.modelType}:${local.model}`} value={`${local.modelType}:${local.model}`}>{local.model}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        <span>{lang === 'fr' ? 'Recherche intelligente' : 'Smart search'}</span>
+                        <div className="civitai-inline-field">
+                          <input value={civitaiQuery} onChange={event => setCivitaiQuery(event.target.value)} placeholder={civitaiLocalModel.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ')} />
+                          <button type="button" disabled={isSearchingCivitai || !civitaiLocalModel} onClick={() => void requestCivitaiCandidates(civitaiLocalModel, civitaiLocalModelType, civitaiQuery)}>
+                            {isSearchingCivitai ? '…' : (lang === 'fr' ? 'Rechercher' : 'Search')}
+                          </button>
+                        </div>
+                      </label>
+                    </div>
+                    <div className="civitai-version-field">
+                      <span>{lang === 'fr' ? 'Ou coller une URL / un ID de version' : 'Or paste a version URL / ID'}</span>
+                      <div className="civitai-inline-field">
+                        <input value={civitaiVersionInput} onChange={event => setCivitaiVersionInput(event.target.value)} placeholder="https://civitai.com/models/…?modelVersionId=…" />
+                        <button type="button" disabled={isSearchingCivitai || !civitaiVersionInput.trim()} onClick={() => void resolveCivitaiVersionInput()}>{lang === 'fr' ? 'Associer' : 'Link'}</button>
+                      </div>
+                    </div>
+                    {civitaiCandidates.length > 0 && (
+                      <div className="civitai-candidate-list">
+                        {civitaiCandidates.map(candidate => (
+                          <button key={`${candidate.modelVersionId}:${candidate.fileName}`} type="button" onClick={() => {
+                            saveCivitaiLink(candidate);
+                            toast.success(lang === 'fr' ? 'Modèle associé à Civitai' : 'Model linked to Civitai');
+                          }}>
+                            <span><strong>{candidate.modelName}</strong><small>{candidate.versionName} · {candidate.fileName}</small></span>
+                            <span className={candidate.score >= 130 ? 'exact' : ''}>{candidate.score >= 130 ? (lang === 'fr' ? 'Exact' : 'Exact') : `${candidate.score}%`}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="civitai-linked-list">
+                  {civitaiDisplayedModels.map(favorite => {
+                    const modelType = favorite.modelType;
+                    const link = civitaiModelLinks.find(item => item.localModel === favorite.model && item.modelType === modelType);
+                    return (
+                      <div className={`civitai-linked-row ${link ? 'linked' : 'unlinked'}`} key={`${modelType}:${favorite.model}`}>
+                        <span className="civitai-link-state" aria-hidden="true">{link ? <CheckIcon size={16} /> : '!'}</span>
+                        <span className="civitai-local-name"><strong>{getModelDisplayName(favorite.model)}</strong><small>{favorite.model}</small></span>
+                        <span className="civitai-remote-name">
+                          {link ? <><strong>{link.modelName}</strong><small>{link.versionName} · {link.autoV2 || 'Hash indisponible'}</small></> : <small>{lang === 'fr' ? 'Non associé' : 'Not linked'}</small>}
+                        </span>
+                        <button type="button" className="civitai-row-action" onClick={() => void requestCivitaiCandidates(favorite.model, modelType)} disabled={isSearchingCivitai}>
+                          {link ? (lang === 'fr' ? 'Modifier' : 'Change') : (lang === 'fr' ? 'Rechercher' : 'Search')}
+                        </button>
+                        {link && <button type="button" className="civitai-row-remove" title={lang === 'fr' ? 'Supprimer l’association' : 'Remove link'} onClick={() => setParams(current => ({
+                          ...current,
+                          civitaiModelLinks: (current.civitaiModelLinks || []).filter(item => !(item.localModel === favorite.model && item.modelType === modelType)),
+                        }))}><TrashIcon size={16} /></button>}
+                      </div>
+                    );
+                  })}
+                  {!favoriteModels.length && <p className="favorite-model-empty">{lang === 'fr' ? 'Ajoute d’abord des modèles favoris dans l’onglet ComfyUI.' : 'Add favorite models in the ComfyUI tab first.'}</p>}
+                </div>
+              </section>
+            </div>
+          )}
+
+          */}
+          {activeTab === 'plugins' && (
+            <Suspense fallback={<div className="plugin-card"><p className="favorite-model-empty">Civitai…</p></div>}>
+              <CivitaiPluginPanel
+                params={params}
+                setParams={setParams}
+                lang={lang}
+                comfyModels={comfyModels}
+                diffusionModels={diffusionModels}
+              />
+            </Suspense>
           )}
 
           {activeTab === 'llm' && (

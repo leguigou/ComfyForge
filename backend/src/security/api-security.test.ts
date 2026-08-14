@@ -215,8 +215,83 @@ describe('API security boundaries', () => {
       expect(groupResponse.status).toBe(200);
       expect(group.total).toBe(3);
       expect(group.items.map((item: { messageId: string }) => item.messageId)).toEqual(ids.slice(0, 3).reverse());
+
+      const coverResponse = await request(`/api/gallery/group/${ids[0]}/cover`, {
+        method: 'PUT',
+        cookie: adminCookie,
+      });
+      expect(coverResponse.status).toBe(200);
+
+      const featuredGroupResponse = await request(`/api/gallery/group/${ids[2]}`, { cookie: adminCookie });
+      const featuredGroup = await json(featuredGroupResponse);
+      expect(featuredGroup.items[0]).toMatchObject({ messageId: ids[0], isGroupCover: 1 });
+      expect(featuredGroup.items.filter((item: { isGroupCover?: number }) => item.isGroupCover === 1)).toHaveLength(1);
+
+      const featuredGalleryResponse = await request('/api/gallery?groupByPrompt=true&limit=20&includeTotal=true', { cookie: adminCookie });
+      const featuredGallery = await json(featuredGalleryResponse);
+      expect(featuredGallery.items.find((item: { generationPrompt?: string }) => item.generationPrompt?.trim() === 'Shared final prompt'))
+        .toMatchObject({ messageId: ids[0], isGroupCover: 1, groupCount: 3 });
+
+      const deleteImageResponse = await request(`/api/history/${adminSessionId}/message/${ids[1]}`, {
+        method: 'DELETE',
+        cookie: adminCookie,
+      });
+      expect(deleteImageResponse.status).toBe(200);
+
+      const reducedGroupResponse = await request(`/api/gallery/group/${ids[0]}`, { cookie: adminCookie });
+      const reducedGroup = await json(reducedGroupResponse);
+      expect(reducedGroup.total).toBe(2);
+      expect(reducedGroup.items.map((item: { messageId: string }) => item.messageId)).toEqual([ids[0], ids[2]]);
+
+      const reducedGalleryResponse = await request('/api/gallery?groupByPrompt=true&limit=20&includeTotal=true', { cookie: adminCookie });
+      const reducedGallery = await json(reducedGalleryResponse);
+      expect(reducedGallery.items.find((item: { generationPrompt?: string }) => item.generationPrompt?.trim() === 'Shared final prompt'))
+        .toMatchObject({ messageId: ids[0], groupCount: 2 });
     } finally {
       db.prepare(`DELETE FROM messages WHERE id LIKE 'prompt-group-%'`).run();
+    }
+  });
+
+  it('groups different random-list results by their original dynamic prompt', async () => {
+    const ids = ['dynamic-group-old', 'dynamic-group-new', 'dynamic-group-static'];
+    const template = 'Portrait with [R-Color] hair';
+    try {
+      const insert = db.prepare(`
+        INSERT INTO messages (
+          id, sessionId, role, text, prompt, generationPrompt, randomSelections,
+          imageUrl, timestamp, status
+        ) VALUES (?, ?, 'bot', '', ?, ?, ?, ?, ?, 'completed')
+      `);
+      insert.run(
+        ids[0], adminSessionId, template, 'Portrait with blonde hair',
+        JSON.stringify([{ slug: 'R-Color', value: 'blonde' }]),
+        `/api/image-files/${ids[0]}.png`, 21_001
+      );
+      insert.run(
+        ids[1], adminSessionId, template, 'Portrait with auburn hair',
+        JSON.stringify([{ slug: 'R-Color', value: 'auburn' }]),
+        `/api/image-files/${ids[1]}.png`, 21_002
+      );
+      insert.run(
+        ids[2], adminSessionId, template, template, '[]',
+        `/api/image-files/${ids[2]}.png`, 21_003
+      );
+
+      const groupedResponse = await request('/api/gallery?groupByPrompt=true&limit=100', { cookie: adminCookie });
+      const grouped = await json(groupedResponse);
+      const dynamicGroup = grouped.find((item: { messageId: string }) => item.messageId === ids[1]);
+      const staticGroup = grouped.find((item: { messageId: string }) => item.messageId === ids[2]);
+
+      expect(groupedResponse.status).toBe(200);
+      expect(dynamicGroup).toMatchObject({ messageId: ids[1], groupCount: 2 });
+      expect(staticGroup).toMatchObject({ messageId: ids[2], groupCount: 1 });
+
+      const groupResponse = await request(`/api/gallery/group/${ids[1]}`, { cookie: adminCookie });
+      const group = await json(groupResponse);
+      expect(groupResponse.status).toBe(200);
+      expect(group.items.map((item: { messageId: string }) => item.messageId)).toEqual(ids.slice(0, 2).reverse());
+    } finally {
+      db.prepare(`DELETE FROM messages WHERE id LIKE 'dynamic-group-%'`).run();
     }
   });
 
@@ -897,6 +972,70 @@ describe('API security boundaries', () => {
       expect(failedRecovery.generationPrompt).toBe('Prompt saved before a failed LLM call');
     } finally {
       postSpy.mockRestore();
+    }
+  });
+
+  it('translates text with the active default LLM provider', async () => {
+    const { encryptApiKey } = await import('../services/llm-providers');
+    const providerId = 'translation-test-provider';
+    const previouslyActive = db.prepare(
+      'SELECT id FROM llm_providers WHERE userId = ? AND isActive = 1'
+    ).all(adminId) as Array<{ id: string }>;
+    const now = Date.now();
+    db.prepare('UPDATE llm_providers SET isActive = 0 WHERE userId = ?').run(adminId);
+    db.prepare(`
+      INSERT INTO llm_providers (
+        id, userId, name, type, baseUrl, model, apiKey, isActive, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      providerId,
+      adminId,
+      'Translation test',
+      'openai',
+      'https://translate.example.test',
+      'translation-model',
+      encryptApiKey('test-api-key'),
+      1,
+      now,
+      now,
+    );
+
+    const postSpy = vi.spyOn(axios, 'post').mockResolvedValueOnce({
+      data: {
+        choices: [{
+          message: { content: JSON.stringify({ positive: 'Une jeune femme dans la lumière chaude', negative: '' }) },
+        }],
+      },
+    });
+    try {
+      const response = await request('/api/llm/translate-text', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: JSON.stringify({ text: 'A young woman in warm light', targetLanguage: 'fr' }),
+      });
+      const body = await json(response);
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({
+        translatedText: 'Une jeune femme dans la lumière chaude',
+        targetLanguage: 'fr',
+      });
+      expect(postSpy.mock.calls[0][1]).toMatchObject({ model: 'translation-model' });
+      expect(JSON.stringify(postSpy.mock.calls[0][1])).toContain('Translate the supplied text into French');
+      expect((await request('/api/llm/translate-text', {
+        method: 'POST',
+        cookie: adminCookie,
+        body: JSON.stringify({ text: 'Hello', targetLanguage: 'de' }),
+      })).status).toBe(400);
+      expect((await request('/api/llm/translate-text', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'Hello', targetLanguage: 'fr' }),
+      })).status).toBe(401);
+    } finally {
+      postSpy.mockRestore();
+      db.prepare('DELETE FROM llm_providers WHERE id = ?').run(providerId);
+      const restore = db.prepare('UPDATE llm_providers SET isActive = 1 WHERE id = ? AND userId = ?');
+      previouslyActive.forEach(provider => restore.run(provider.id, adminId));
     }
   });
 
