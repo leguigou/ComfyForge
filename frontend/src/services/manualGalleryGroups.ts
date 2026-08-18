@@ -1,4 +1,5 @@
 import { API_BASE } from './api';
+import type { GalleryItem } from '../types';
 
 type GalleryGroupSelection = {
   messageId: string;
@@ -47,6 +48,22 @@ export const expandGalleryGroupMessageIds = async (items: GalleryGroupSelection[
     return data.items.map((member: { messageId: string }) => member.messageId);
   }));
   return [...new Set(groups.flat())];
+};
+
+export const expandGalleryGroupItems = async (items: GalleryItem[], sessionScoped = false) => {
+  const groups = await Promise.all(items.map(async item => {
+    if ((item.groupCount || 1) <= 1) return [item];
+    const query = sessionScoped ? `?sessionId=${encodeURIComponent(item.sessionId)}` : '';
+    const response = await fetch(`${API_BASE}/api/gallery/group/${encodeURIComponent(item.messageId)}${query}`, {
+      credentials: 'include',
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !Array.isArray(data.items)) throw new Error(data.error || '');
+    return data.items as GalleryItem[];
+  }));
+  const uniqueItems = new Map<string, GalleryItem>();
+  groups.flat().forEach(item => uniqueItems.set(item.messageId, item));
+  return [...uniqueItems.values()];
 };
 
 export const createManualGalleryGroup = async (messageIds: string[]) => {

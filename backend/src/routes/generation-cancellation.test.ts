@@ -39,6 +39,16 @@ const request = (pathname: string, body: Record<string, unknown>) => fetch(`${ba
   body: JSON.stringify(body),
 });
 
+const patchRequest = (pathname: string, body: Record<string, unknown>) => fetch(`${baseUrl}${pathname}`, {
+  method: 'PATCH',
+  headers: {
+    'Content-Type': 'application/json',
+    'Cookie': authCookie,
+    'X-CSRF-Token': csrfToken,
+  },
+  body: JSON.stringify(body),
+});
+
 const deleteRequest = (pathname: string) => fetch(`${baseUrl}${pathname}`, {
   method: 'DELETE',
   headers: {
@@ -139,6 +149,38 @@ describe('targeted generation cancellation', () => {
     expect(axiosPost).toHaveBeenCalledTimes(1);
     expect(axiosPost).toHaveBeenCalledWith('http://127.0.0.1:8188/interrupt');
     expect(db.prepare('SELECT id FROM queue WHERE messageId = ?').get('pending-kept')).toBeTruthy();
+  });
+
+  it('replaces the prompt of a running generation and queues it again', async () => {
+    axiosPost.mockClear();
+    insertGeneration('processing-edited', 'processing', 4);
+    const oldQueue = db.prepare('SELECT id FROM queue WHERE messageId = ?')
+      .get('processing-edited') as { id: number };
+
+    const response = await patchRequest('/api/generate/pending/processing-edited/prompt', {
+      prompt: 'replacement prompt',
+    });
+    const body = await response.json() as { success: boolean; status: string; generationPrompt: string };
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ success: true, status: 'pending', generationPrompt: 'replacement prompt' });
+    expect(axiosPost).toHaveBeenCalledWith(
+      'http://127.0.0.1:8188/interrupt',
+      undefined,
+      { timeout: 10_000 },
+    );
+    expect(db.prepare('SELECT id, prompt, status FROM queue WHERE messageId = ?').get('processing-edited'))
+      .toMatchObject({ prompt: 'replacement prompt', status: 'pending' });
+    expect((db.prepare('SELECT id FROM queue WHERE messageId = ?').get('processing-edited') as { id: number }).id)
+      .not.toBe(oldQueue.id);
+    expect(db.prepare('SELECT prompt, generationPrompt, status, generationStartedAt FROM messages WHERE id = ?')
+      .get('processing-edited'))
+      .toEqual({
+        prompt: 'replacement prompt',
+        generationPrompt: 'replacement prompt',
+        status: 'pending',
+        generationStartedAt: null,
+      });
   });
 
   it('deletes the user prompt when its cancelled generation is deleted', async () => {

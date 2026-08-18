@@ -395,6 +395,9 @@ function App() {
     deleteMessage,
     massActionType,
     setMassActionType,
+    isDeletingSession,
+    deletingMessageId,
+    deletingSessionsScope,
     hasMoreMessages,
     isLoadingOlderMessages,
     loadOlderMessages
@@ -470,6 +473,11 @@ function App() {
   const scrollRequestTimeoutRef = useRef<number | null>(null);
   const restoredScrollContextRef = useRef<string | null>(null);
   const scrollSaveFrameRef = useRef<number | null>(null);
+  const shouldFocusActiveGenerationAfterReloadRef = useRef(
+    typeof performance !== 'undefined'
+      && (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined)?.type === 'reload'
+  );
+  const didFocusActiveGenerationAfterReloadRef = useRef(false);
   const refreshGalleryRef = useRef<((requestedOffset?: number) => Promise<GalleryItem[]>) | null>(null);
 
   const smoothScrollTo = useCallback((elementId: string) => {
@@ -526,6 +534,23 @@ function App() {
       };
       scrollAnimationFrameRef.current = window.requestAnimationFrame(animation);
     }, 100);
+  }, []);
+
+  const requestMessageAnchor = useCallback((messageId: string) => {
+    pendingAnchorRef.current = messageId;
+    isAnchoringRef.current = true;
+    imageAnchorRequestIdRef.current += 1;
+    setImageAnchorRequest({ messageId, requestId: imageAnchorRequestIdRef.current });
+
+    if (scrollRequestTimeoutRef.current !== null) {
+      window.clearTimeout(scrollRequestTimeoutRef.current);
+      scrollRequestTimeoutRef.current = null;
+    }
+    if (scrollAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollAnimationFrameRef.current);
+      scrollAnimationFrameRef.current = null;
+    }
+    isProgrammaticScrollRef.current = false;
   }, []);
 
   useEffect(() => () => {
@@ -650,6 +675,7 @@ function App() {
   const lightboxMenuRef = useRef<HTMLDivElement>(null);
   const lightboxMenuCloseTimeoutRef = useRef<number | null>(null);
   const pendingLightboxModifyRef = useRef<{ messageId: string; keepSeed: boolean } | null>(null);
+  const pendingLightboxPanelRef = useRef<'information' | 'prompt' | null>(null);
 
   const scheduleLightboxMenuClose = useCallback(() => {
     if (lightboxMenuCloseTimeoutRef.current !== null) {
@@ -817,6 +843,7 @@ function App() {
       && pendingLightboxModifyRef.current?.messageId === activeLightbox.messageId
       ? pendingLightboxModifyRef.current
       : null;
+    const pendingPanel = activeLightbox ? pendingLightboxPanelRef.current : null;
     if (!activeLightbox) {
       setHdLoaded(null);
       setZoomScale(1);
@@ -829,8 +856,8 @@ function App() {
       setLightboxGroupItems(null);
     }
     setShowLightboxMenu(false);
-    setShowLightboxPrompt(false);
-    setShowLightboxInfo(false);
+    setShowLightboxPrompt(pendingPanel === 'prompt');
+    setShowLightboxInfo(pendingPanel === 'information');
     setLightboxContextMenu(null);
     setShowLightboxModify(Boolean(pendingModify));
     setModifyDirection('');
@@ -838,6 +865,7 @@ function App() {
       setKeepModifySeed(pendingModify.keepSeed);
       pendingLightboxModifyRef.current = null;
     }
+    pendingLightboxPanelRef.current = null;
   }, [activeLightbox]);
 
   const handleLightboxTouchStart = (e: React.TouchEvent) => {
@@ -1250,20 +1278,34 @@ function App() {
   }, [galleryTotal, groupByPrompt, setMessages, t.batchUpdateFailed, t.manualGroupNeedsTwo]);
 
   const batchDeleteGalleryItems = useCallback(async (items: GalleryItem[]) => {
-    const results = await Promise.all(items.map(async item => {
+    const helpers = await import('./services/manualGalleryGroups');
+    const expandedItems = await helpers.expandGalleryGroupItems(items, view === 'thread-gallery')
+      .catch(error => { throw new Error(error.message || t.batchDeleteFailed); });
+    const results = await Promise.all(expandedItems.map(async item => {
       const response = await fetch(`${API_BASE}/api/history/${item.sessionId}/message/${item.messageId}`, {
         method: 'DELETE',
         credentials: 'include'
       });
-      return { id: item.messageId, ok: response.ok };
+      const data = await response.json().catch(() => ({}));
+      return {
+        id: item.messageId,
+        ok: response.ok,
+        deletedMessageIds: Array.isArray(data.deletedMessageIds) ? data.deletedMessageIds as string[] : [],
+      };
     }));
-    const deletedIds = new Set(results.filter(result => result.ok).map(result => result.id));
+    const successfulResults = results.filter(result => result.ok);
+    const deletedIds = new Set(successfulResults.flatMap(result => (
+      result.deletedMessageIds.length > 0 ? result.deletedMessageIds : [result.id]
+    )));
     setMessages(previous => previous.filter(message => !deletedIds.has(message.id)));
     setGalleryItems(previous => previous.filter(item => !deletedIds.has(item.messageId)));
-    setGalleryTotal(total => Math.max(0, total - deletedIds.size));
     await fetchSessions();
-    if (deletedIds.size !== items.length) throw new Error(t.batchDeleteFailed);
-  }, [fetchSessions, setMessages, t.batchDeleteFailed]);
+    if (successfulResults.length !== expandedItems.length) {
+      await refreshGalleryRef.current?.(galleryStartIndexRef.current);
+      throw new Error(t.batchDeleteFailed);
+    }
+    setGalleryTotal(total => Math.max(0, total - items.length));
+  }, [fetchSessions, setMessages, t.batchDeleteFailed, view]);
 
   const batchRegenerateGalleryItems = useCallback(async (items: GalleryItem[]) => {
     const failures: string[] = [];
@@ -1364,6 +1406,21 @@ function App() {
     }
   }, [groupByPrompt, loadGalleryPromptGroup, toggleFavorite]);
 
+  const openGalleryImagePanel = useCallback((item: GalleryItem, panel: 'information' | 'prompt') => {
+    pendingLightboxPanelRef.current = panel;
+    setLightboxGroupItems(null);
+    setActiveLightbox({
+      url: item.imageUrl,
+      thumbnailUrl: item.thumbnailUrl,
+      sessionId: item.sessionId,
+      messageId: item.messageId,
+      source: 'gallery',
+    });
+    setShowLightboxMenu(false);
+    setLightboxContextMenu(null);
+    setShowLightboxModify(false);
+  }, []);
+
   const handleImageModify = useCallback((item: {
     url: string;
     thumbnailUrl?: string;
@@ -1399,6 +1456,20 @@ function App() {
 
     closeLightbox();
   }, [closeLightbox, lightboxContextMenu, showLightboxMenu]);
+
+  const handleLightboxPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!lightboxContextMenu) return;
+    if ((e.target as HTMLElement).closest('.lightbox-context-menu-shell')) return;
+
+    // Dismiss on pointer down so a long-press synthetic click cannot keep the
+    // context menu open. Suppress that follow-up click to avoid activating the
+    // image or closing the lightbox at the same time.
+    suppressLightboxClickRef.current = true;
+    setLightboxContextMenu(null);
+    window.setTimeout(() => {
+      suppressLightboxClickRef.current = false;
+    }, 500);
+  }, [lightboxContextMenu]);
 
   const [comfyModels, setComfyModels] = useState<string[]>([]);
   const [diffusionModels, setDiffusionModels] = useState<string[]>([]);
@@ -2130,26 +2201,13 @@ function App() {
   }, [view, currentSessionId, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, selectedPromptTags, selectedGalleryModels, selectedGalleryWorkflows, selectedGalleryAspects, debouncedGallerySearch, resetGallery, fetchPromptTags]);
 
   const goToImage = useCallback((sessionId: string, messageId: string) => {
-    pendingAnchorRef.current = messageId;
-    isAnchoringRef.current = true;
-    imageAnchorRequestIdRef.current += 1;
-    setImageAnchorRequest({ messageId, requestId: imageAnchorRequestIdRef.current });
-
-    if (scrollRequestTimeoutRef.current !== null) {
-      window.clearTimeout(scrollRequestTimeoutRef.current);
-      scrollRequestTimeoutRef.current = null;
-    }
-    if (scrollAnimationFrameRef.current !== null) {
-      window.cancelAnimationFrame(scrollAnimationFrameRef.current);
-      scrollAnimationFrameRef.current = null;
-    }
-    isProgrammaticScrollRef.current = false;
+    requestMessageAnchor(messageId);
 
     setMessages([]);
     setCurrentSessionId(sessionId);
     setView('chat');
     void fetchSessionDetails(sessionId, { all: true, reset: true });
-  }, [fetchSessionDetails, setCurrentSessionId, setMessages]);
+  }, [fetchSessionDetails, requestMessageAnchor, setCurrentSessionId, setMessages]);
 
   const handleLightboxContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -2162,11 +2220,12 @@ function App() {
       clickTimeoutRef.current = null;
     }
     const menuWidth = Math.min(280, window.innerWidth - 24);
-    const menuHeight = lightboxGroupItems && lightboxGroupItems.length > 1 ? 260 : 210;
+    const menuHeight = lightboxGroupItems && lightboxGroupItems.length > 1 ? 310 : 260;
+    const detachedCloseSpace = 50;
     setShowLightboxMenu(false);
     setLightboxContextMenu({
       x: Math.max(12, Math.min(event.clientX, window.innerWidth - menuWidth - 12)),
-      y: Math.max(12, Math.min(event.clientY, window.innerHeight - menuHeight - 12)),
+      y: Math.max(12 + detachedCloseSpace, Math.min(event.clientY, window.innerHeight - menuHeight - 12)),
     });
     suppressLightboxClickRef.current = true;
     window.setTimeout(() => {
@@ -2531,18 +2590,22 @@ function App() {
     override?: string,
     regen?: boolean,
     skipEnhancement?: boolean,
-    forceEnhancement?: boolean
+    forceEnhancement?: boolean,
+    runInBackground?: boolean
   ) => {
     const text = override !== undefined ? override : input;
     if (!text.trim()) return;
+
+    // Give immediate feedback for composer submissions. The temporary user
+    // message below keeps the submitted text visible while enhancement runs.
+    if (override === undefined) setInput('');
 
     let targetSessionId: string | undefined = currentSessionId ?? undefined;
     if (!targetSessionId) {
       targetSessionId = await createNewSession();
     }
 
-    await handleSend(text, regen, targetSessionId, skipEnhancement, false, forceEnhancement);
-    if (override === undefined) setInput('');
+    await handleSend(text, regen, targetSessionId, skipEnhancement, runInBackground, forceEnhancement);
   }, [handleSend, input, currentSessionId, createNewSession]);
 
   const onHandleSendRef = useRef(onHandleSend);
@@ -3008,7 +3071,7 @@ function App() {
         && messages.some(message => message.id === target.messageId);
       if (targetIsLoaded) {
         setView('chat');
-        window.setTimeout(() => smoothScrollTo(`msg-${target.messageId}`), 60);
+        requestMessageAnchor(target.messageId);
       } else {
         goToImage(target.sessionId, target.messageId);
       }
@@ -3020,10 +3083,22 @@ function App() {
       ));
       if (fallback) {
         setView('chat');
-        window.setTimeout(() => smoothScrollTo(`msg-${fallback.id}`), 60);
+        requestMessageAnchor(fallback.id);
       }
     }
-  }, [currentSessionId, goToImage, messages, smoothScrollTo]);
+  }, [currentSessionId, goToImage, messages, requestMessageAnchor]);
+
+  useEffect(() => {
+    if (
+      !isAuthenticated
+      || !isSettingsResolved
+      || !shouldFocusActiveGenerationAfterReloadRef.current
+      || didFocusActiveGenerationAfterReloadRef.current
+    ) return;
+
+    didFocusActiveGenerationAfterReloadRef.current = true;
+    void focusActiveGeneration();
+  }, [focusActiveGeneration, isAuthenticated, isSettingsResolved]);
 
   if (isAuthenticated === null) return (
     <div className="app-loader">
@@ -3405,7 +3480,7 @@ function App() {
           </Suspense>
         )}
         {activeLightbox && (
-        <div className={`lightbox ${zoomScale > 1 ? 'zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={lang === 'fr' ? 'Aperçu de l’image' : 'Image preview'} onClick={handleLightboxBackdropClick} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd} onTouchCancel={handleLightboxTouchEnd}>
+        <div className={`lightbox ${zoomScale > 1 ? 'zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={lang === 'fr' ? 'Aperçu de l’image' : 'Image preview'} onPointerDown={handleLightboxPointerDown} onClick={handleLightboxBackdropClick} onTouchStart={handleLightboxTouchStart} onTouchMove={handleLightboxTouchMove} onTouchEnd={handleLightboxTouchEnd} onTouchCancel={handleLightboxTouchEnd}>
           <div className="lightbox-content" key={activeLightbox.messageId} onClick={handleLightboxImageClick} onDoubleClick={handleLightboxImageDoubleClick} onContextMenu={handleLightboxContextMenu} onWheel={handleLightboxWheel}>
             {activeLightbox.thumbnailUrl && !isAlreadyLoaded && (
               <img src={getFullImageUrl(activeLightbox.thumbnailUrl)} alt="Loading..." className="lightbox-thumb" draggable={false} style={{ filter: 'blur(10px)', position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'contain', opacity: hdLoaded === activeLightbox.messageId ? 0 : 1, transition: 'opacity 0.3s ease-out' }} />
@@ -3420,9 +3495,7 @@ function App() {
           )}
           {lightboxContextMenu && (
             <div
-              className="lightbox-context-menu"
-              role="menu"
-              aria-label={t.actions}
+              className="lightbox-context-menu-shell"
               style={{ left: lightboxContextMenu.x, top: lightboxContextMenu.y }}
               onClick={(event) => event.stopPropagation()}
               onContextMenu={(event) => event.preventDefault()}
@@ -3431,63 +3504,74 @@ function App() {
               onTouchEnd={(event) => event.stopPropagation()}
               onTouchCancel={(event) => event.stopPropagation()}
             >
-              {isPromptGroupLightbox && (
+              <button
+                type="button"
+                className="lightbox-context-menu-close"
+                aria-label={t.close}
+                title={t.close}
+                onClick={() => setLightboxContextMenu(null)}
+              >
+                <XIcon size={20} />
+              </button>
+              <div className="lightbox-context-menu" role="menu" aria-label={t.actions}>
+                {isPromptGroupLightbox && (
+                  <button
+                    type="button"
+                    className="lightbox-menu-item"
+                    role="menuitem"
+                    disabled={currentLightboxItem?.isGroupCover === 1}
+                    onClick={() => void featureCurrentGroupImage()}
+                  >
+                    <span className="lightbox-menu-icon" aria-hidden="true"><StarIcon size={18} filled={currentLightboxItem?.isGroupCover === 1} /></span>
+                    <span>{currentLightboxItem?.isGroupCover === 1 ? t.groupCoverActive : t.setGroupCover}</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   className="lightbox-menu-item"
                   role="menuitem"
-                  disabled={currentLightboxItem?.isGroupCover === 1}
-                  onClick={() => void featureCurrentGroupImage()}
+                  onClick={() => {
+                    setLightboxContextMenu(null);
+                    setShowLightboxPrompt(false);
+                    setShowLightboxModify(false);
+                    setShowLightboxInfo(true);
+                  }}
                 >
-                  <span className="lightbox-menu-icon" aria-hidden="true"><StarIcon size={18} filled={currentLightboxItem?.isGroupCover === 1} /></span>
-                  <span>{currentLightboxItem?.isGroupCover === 1 ? t.groupCoverActive : t.setGroupCover}</span>
+                  <span className="lightbox-menu-icon" aria-hidden="true"><InfoIcon size={18} /></span>
+                  <span>{t.imageInformation}</span>
                 </button>
-              )}
-              <button
-                type="button"
-                className="lightbox-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setLightboxContextMenu(null);
-                  setShowLightboxPrompt(false);
-                  setShowLightboxModify(false);
-                  setShowLightboxInfo(true);
-                }}
-              >
-                <span className="lightbox-menu-icon" aria-hidden="true"><InfoIcon size={18} /></span>
-                <span>{t.imageInformation}</span>
-              </button>
-              <button
-                type="button"
-                className="lightbox-menu-item"
-                role="menuitem"
-                onClick={() => void copyLightboxImage()}
-              >
-                <span className="lightbox-menu-icon" aria-hidden="true"><ClipboardIcon size={18} /></span>
-                <span>{t.copyImage}</span>
-              </button>
-              <button
-                type="button"
-                className="lightbox-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setLightboxContextMenu(null);
-                  const extension = getImageFileExtension(activeLightbox.url);
-                  void downloadImage(activeLightbox.messageId, `img-${activeLightbox.messageId}.${extension}`);
-                }}
-              >
-                <span className="lightbox-menu-icon" aria-hidden="true"><DownloadIcon size={18} /></span>
-                <span>{t.download}</span>
-              </button>
-              <button
-                type="button"
-                className="lightbox-menu-item danger"
-                role="menuitem"
-                onClick={requestLightboxImageDeletion}
-              >
-                <span className="lightbox-menu-icon" aria-hidden="true"><TrashIcon size={18} /></span>
-                <span>{t.delete}</span>
-              </button>
+                <button
+                  type="button"
+                  className="lightbox-menu-item"
+                  role="menuitem"
+                  onClick={() => void copyLightboxImage()}
+                >
+                  <span className="lightbox-menu-icon" aria-hidden="true"><ClipboardIcon size={18} /></span>
+                  <span>{t.copyImage}</span>
+                </button>
+                <button
+                  type="button"
+                  className="lightbox-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setLightboxContextMenu(null);
+                    const extension = getImageFileExtension(activeLightbox.url);
+                    void downloadImage(activeLightbox.messageId, `img-${activeLightbox.messageId}.${extension}`);
+                  }}
+                >
+                  <span className="lightbox-menu-icon" aria-hidden="true"><DownloadIcon size={18} /></span>
+                  <span>{t.download}</span>
+                </button>
+                <button
+                  type="button"
+                  className="lightbox-menu-item danger"
+                  role="menuitem"
+                  onClick={requestLightboxImageDeletion}
+                >
+                  <span className="lightbox-menu-icon" aria-hidden="true"><TrashIcon size={18} /></span>
+                  <span>{t.delete}</span>
+                </button>
+              </div>
             </div>
           )}
           {showLightboxPrompt && (
@@ -3821,12 +3905,14 @@ function App() {
           <div className="settings-modal confirm-modal" onClick={(e) => e.stopPropagation()}>
             <h3>{t.confirmDelete}</h3>
             <div className="confirm-buttons">
-              <button
+                <button
                 className="confirm-btn delete"
                 onClick={() => void confirmLightboxImageDeletion()}
                 disabled={isDeletingLightboxImage}
+                aria-busy={isDeletingLightboxImage}
               >
-                {t.confirm}
+                {isDeletingLightboxImage && <span className="button-inline-loader" aria-hidden="true" />}
+                {isDeletingLightboxImage ? t.deleting : t.confirm}
               </button>
               <button
                 className="confirm-btn cancel"
@@ -3841,12 +3927,22 @@ function App() {
       )}
 
       {messageToDelete && (
-        <div className="settings-modal-overlay" onClick={() => setMessageToDelete(null)}>
+        <div className="settings-modal-overlay" onClick={() => {
+          if (!deletingMessageId) setMessageToDelete(null);
+        }}>
           <div className="settings-modal confirm-modal" onClick={(e) => e.stopPropagation()}>
             <h3>{t.confirmDelete}</h3>
             <div className="confirm-buttons">
-              <button className="confirm-btn delete" onClick={() => deleteMessage(messageToDelete)}>{t.confirm}</button>
-              <button className="confirm-btn cancel" onClick={() => setMessageToDelete(null)}>{t.cancel}</button>
+                <button
+                className="confirm-btn delete"
+                onClick={() => void deleteMessage(messageToDelete)}
+                disabled={Boolean(deletingMessageId)}
+                aria-busy={deletingMessageId === messageToDelete}
+              >
+                {deletingMessageId === messageToDelete && <span className="button-inline-loader" aria-hidden="true" />}
+                {deletingMessageId === messageToDelete ? t.deleting : t.confirm}
+              </button>
+              <button className="confirm-btn cancel" onClick={() => setMessageToDelete(null)} disabled={Boolean(deletingMessageId)}>{t.cancel}</button>
             </div>
           </div>
         </div>
@@ -3882,20 +3978,27 @@ function App() {
       )}
 
       {sessionToDelete && (
-        <div className="settings-modal-overlay" onClick={() => setSessionToDelete(null)}>
+        <div className="settings-modal-overlay" onClick={() => {
+          if (!isDeletingSession) setSessionToDelete(null);
+        }}>
           <div className="settings-modal confirm-modal" onClick={(e) => e.stopPropagation()}>
             <h3>{t.confirmDelete}</h3>
             <div className="confirm-buttons">
-              <button className="confirm-btn delete" onClick={confirmDeleteSession}>{t.confirm}</button>
-              <button className="confirm-btn archive" onClick={() => toggleArchive(sessionToDelete, true)}>{t.archive}</button>
-              <button className="confirm-btn cancel" onClick={() => setSessionToDelete(null)}>{t.cancel}</button>
+              <button className="confirm-btn delete" onClick={() => void confirmDeleteSession()} disabled={isDeletingSession} aria-busy={isDeletingSession}>
+                {isDeletingSession && <span className="button-inline-loader" aria-hidden="true" />}
+                {isDeletingSession ? t.deleting : t.confirm}
+              </button>
+              <button className="confirm-btn archive" onClick={() => toggleArchive(sessionToDelete, true)} disabled={isDeletingSession}>{t.archive}</button>
+              <button className="confirm-btn cancel" onClick={() => setSessionToDelete(null)} disabled={isDeletingSession}>{t.cancel}</button>
             </div>
           </div>
         </div>
       )}
 
       {massActionType && (
-        <div className="settings-modal-overlay" onClick={() => setMassActionType(null)}>
+        <div className="settings-modal-overlay" onClick={() => {
+          if (!deletingSessionsScope) setMassActionType(null);
+        }}>
           <div className={`settings-modal confirm-modal ${massActionType === 'deleteAll' ? 'delete-scope-modal' : ''}`} onClick={(e) => e.stopPropagation()}>
             {massActionType === 'archiveAll' ? (
               <>
@@ -3910,20 +4013,20 @@ function App() {
                 <h3>{t.deleteConversationsTitle}</h3>
                 <p className="delete-scope-intro">{t.deleteConversationsHelp}</p>
                 <div className="delete-scope-options">
-                  <button type="button" onClick={() => void deleteSessions('active')}>
-                    <strong>{t.deleteActiveOnly}</strong>
+                  <button type="button" onClick={() => void deleteSessions('active')} disabled={Boolean(deletingSessionsScope)} aria-busy={deletingSessionsScope === 'active'}>
+                    <strong>{deletingSessionsScope === 'active' && <span className="button-inline-loader" aria-hidden="true" />}{deletingSessionsScope === 'active' ? t.deleting : t.deleteActiveOnly}</strong>
                     <small>{t.deleteActiveOnlyHelp}</small>
                   </button>
-                  <button type="button" onClick={() => void deleteSessions('archived')}>
-                    <strong>{t.deleteArchivesOnly}</strong>
+                  <button type="button" onClick={() => void deleteSessions('archived')} disabled={Boolean(deletingSessionsScope)} aria-busy={deletingSessionsScope === 'archived'}>
+                    <strong>{deletingSessionsScope === 'archived' && <span className="button-inline-loader" aria-hidden="true" />}{deletingSessionsScope === 'archived' ? t.deleting : t.deleteArchivesOnly}</strong>
                     <small>{t.deleteArchivesOnlyHelp}</small>
                   </button>
-                  <button type="button" className="delete-everything" onClick={() => void deleteSessions('all')}>
-                    <strong>{t.deleteActiveAndArchives}</strong>
+                  <button type="button" className="delete-everything" onClick={() => void deleteSessions('all')} disabled={Boolean(deletingSessionsScope)} aria-busy={deletingSessionsScope === 'all'}>
+                    <strong>{deletingSessionsScope === 'all' && <span className="button-inline-loader" aria-hidden="true" />}{deletingSessionsScope === 'all' ? t.deleting : t.deleteActiveAndArchives}</strong>
                     <small>{t.deleteActiveAndArchivesHelp}</small>
                   </button>
                 </div>
-                <button type="button" className="delete-scope-cancel" onClick={() => setMassActionType(null)}>{t.cancel}</button>
+                <button type="button" className="delete-scope-cancel" onClick={() => setMassActionType(null)} disabled={Boolean(deletingSessionsScope)}>{t.cancel}</button>
               </>
             )}
           </div>
@@ -4041,7 +4144,7 @@ function App() {
           retryMessage={retryMessage} dismissFailedMessage={dismissFailedMessage}
           retryAllIncomplete={retryAllIncomplete} updatePendingPrompt={updatePendingPrompt}
           interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} openComparison={openComparison} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
-          setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} handleImageModify={handleImageModify} favoritedId={favoritedId}
+          setMessageToDelete={setMessageToDelete} toggleFavorite={toggleFavorite} togglePromptFavorite={togglePromptFavorite} handleImageClick={handleImageClick} openGalleryImagePanel={openGalleryImagePanel} handleImageModify={handleImageModify} favoritedId={favoritedId}
           galleryItems={galleryItems} galleryTotal={galleryTotal} galleryStartIndex={galleryStartIndex} seekGallery={seekGallery}
           isFetchingGallery={isFetchingGallery} favoritesOnly={favoritesOnly} setFavoritesOnly={setFavoritesOnly}
           promptFavoritesOnly={promptFavoritesOnly} setPromptFavoritesOnly={setPromptFavoritesOnly}

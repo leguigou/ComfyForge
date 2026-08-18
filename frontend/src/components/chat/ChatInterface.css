@@ -363,7 +363,28 @@
   user-select: none;
 }
 
+.chat-image-context-menu-shell {
+  position: fixed;
+  width: min(332px, calc(100vw - 24px));
+}
+
 .chat-image-context-menu {
+  position: relative;
+  width: 100%;
+  padding-block: 0.45rem;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(24, 24, 28, 0.94);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(16px);
+}
+
+.light .chat-image-context-menu {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.14);
+}
+
+.gallery-image-context-menu {
   padding-block: 0.45rem;
 }
 
@@ -1454,6 +1475,10 @@
   .gallery-fast-scroll-thumb,
   .gallery-fast-scroll-count { transition: none; }
 
+  .input-box.ai-processing {
+    animation-duration: 2.5s;
+  }
+
   .vision-scan-line {
     animation-duration: 3.6s !important;
     animation-iteration-count: infinite !important;
@@ -1822,6 +1847,28 @@
   border: 2px solid transparent;
   animation: ai-glow 3s infinite linear;
   box-shadow: 0 0 15px rgba(16, 163, 127, 0.2);
+}
+
+.input-box.ai-processing {
+  border: 2px solid transparent;
+  background:
+    linear-gradient(rgba(28, 28, 28, 0.99), rgba(28, 28, 28, 0.99)) padding-box,
+    linear-gradient(105deg, #10a37f 0%, #10a37f 28%, #ecfeff 43%, #8e44ad 55%, #3498db 72%, #10a37f 100%) border-box;
+  background-size: 100% 100%, 260% 100%;
+  box-shadow: 0 0 18px rgba(16, 163, 127, 0.34), 0 0 32px rgba(52, 152, 219, 0.14);
+  animation: ai-border-reflection 1.25s linear infinite;
+}
+
+.light .input-box.ai-processing {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.96)) padding-box,
+    linear-gradient(105deg, #10a37f 0%, #10a37f 28%, #ffffff 43%, #8e44ad 55%, #3498db 72%, #10a37f 100%) border-box;
+  background-size: 100% 100%, 260% 100%;
+}
+
+@keyframes ai-border-reflection {
+  from { background-position: 0 0, 100% 0; }
+  to { background-position: 0 0, -160% 0; }
 }
 
 .prompt-editor {

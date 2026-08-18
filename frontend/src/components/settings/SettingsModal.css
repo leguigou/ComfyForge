@@ -1431,6 +1431,12 @@
   opacity: 0.7;
 }
 
+.delete-scope-options button:disabled,
+.delete-scope-cancel:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .delete-scope-options button.delete-everything {
   border-color: rgba(255, 77, 77, 0.5);
   background: rgba(255, 77, 77, 0.11);
@@ -1448,12 +1454,12 @@
 }
 
 @media (hover: hover) {
-  .delete-scope-options button:hover {
+  .delete-scope-options button:hover:not(:disabled) {
     border-color: #ff6262;
     background: rgba(255, 77, 77, 0.12);
   }
 
-  .delete-scope-options button.delete-everything:hover {
+  .delete-scope-options button.delete-everything:hover:not(:disabled) {
     background: #d93f3f;
     color: white;
   }

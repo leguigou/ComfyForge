@@ -14,6 +14,8 @@ import {
 import { hasResolvableRandomPrompt } from '../../utils/randomPrompts';
 import { canTranslateText } from '../../utils/textLanguage';
 import { copyImageToClipboard, ImageClipboardError } from '../../utils/imageClipboard';
+import { copyTextToClipboard } from '../../utils/textClipboard';
+import { hasClipboardLoraTags, stripClipboardLoraTags } from '../../utils/clipboardAutoGenerate';
 import {
   getSlashCommandQuery,
   parseBoundedNumberCommand,
@@ -32,6 +34,7 @@ const GALLERY_LONG_PRESS_MS = 1000;
 const GALLERY_LONG_PRESS_MOVE_TOLERANCE = 12;
 const TEXT_LONG_PRESS_MS = 550;
 const TEXT_LONG_PRESS_MOVE_TOLERANCE = 10;
+const THREAD_REGENERATION_SCROLL_DELAY_MS = 1000;
 const GALLERY_FAST_SCROLL_THUMB_SIZE = 58;
 const VISION_RECOVERY_STORAGE_KEY = 'comfyforge.pendingVisionRecovery';
 const GalleryFilterMenu = React.lazy(() => import('./GalleryFilterMenu'));
@@ -252,7 +255,8 @@ interface ChatInterfaceProps {
     overrideInput?: string,
     isRegeneration?: boolean,
     skipEnhancement?: boolean,
-    forceEnhancement?: boolean
+    forceEnhancement?: boolean,
+    runInBackground?: boolean
   ) => void | Promise<void>;
   createLuckyGeneration: (keywords?: string) => Promise<void>;
   isCreatingLuckyPrompt: boolean;
@@ -273,6 +277,7 @@ interface ChatInterfaceProps {
   toggleFavorite: (sessionId: string, messageId: string, currentStatus: number | undefined) => void;
   togglePromptFavorite: (sessionId: string, messageId: string, currentStatus: number | undefined) => void;
   handleImageClick: (item: { url: string, thumbnailUrl?: string, sessionId: string, messageId: string, isFavorite?: number, groupCount?: number, source: 'chat' | 'gallery' }) => void;
+  openGalleryImagePanel: (item: GalleryItem, panel: 'information' | 'prompt') => void;
   handleImageModify: (item: ChatImageContextTarget) => void;
   favoritedId: string | null;
   galleryItems: GalleryItem[];
@@ -351,6 +356,7 @@ export const ChatInterface = ({
   toggleFavorite,
   togglePromptFavorite,
   handleImageClick,
+  openGalleryImagePanel,
   handleImageModify,
   favoritedId,
   galleryItems,
@@ -408,6 +414,7 @@ export const ChatInterface = ({
   const [showLuckyInfo, setShowLuckyInfo] = useState(false);
   const [slashCommandIndex, setSlashCommandIndex] = useState(0);
   const [isResolvingSlashCommand, setIsResolvingSlashCommand] = useState(false);
+  const [isOneShotAiSubmitting, setIsOneShotAiSubmitting] = useState(false);
   const [isPromptFocused, setIsPromptFocused] = useState(false);
   const [isAnalyzingImage, setIsAnalyzingImage] = useState(false);
   const [visionScanPhraseIndex, setVisionScanPhraseIndex] = useState(0);
@@ -446,6 +453,12 @@ export const ChatInterface = ({
     y: number;
     target: ChatImageContextTarget;
   } | null>(null);
+  const [galleryImageContextMenu, setGalleryImageContextMenu] = useState<{
+    x: number;
+    y: number;
+    target: GalleryItem;
+  } | null>(null);
+  const [galleryImageContextBusy, setGalleryImageContextBusy] = useState(false);
   const [textTranslation, setTextTranslation] = useState<{
     sourceText: string;
     translatedText: string;
@@ -472,6 +485,9 @@ export const ChatInterface = ({
   const suppressGalleryClickRef = useRef(false);
   const suppressGalleryClickTimerRef = useRef<number | null>(null);
   const gallerySelectionModeRef = useRef(false);
+  const latestMessagesRef = useRef(messages);
+  const threadRegenerationScrollTimeoutRef = useRef<number | null>(null);
+  const galleryPointerTypeRef = useRef<React.PointerEvent['pointerType']>('mouse');
   const galleryLongPressRef = useRef<{
     timer: number;
     pointerId: number;
@@ -555,7 +571,7 @@ export const ChatInterface = ({
   const copyTextContextTarget = useCallback(async () => {
     if (!textContextMenu) return;
     try {
-      await navigator.clipboard.writeText(textContextMenu.target.text);
+      await copyTextToClipboard(textContextMenu.target.text);
       toast.success(t.textCopied);
     } catch {
       toast.error(t.textCopyFailed);
@@ -584,12 +600,45 @@ export const ChatInterface = ({
     });
   }, [textContextMenu, textareaRef]);
 
+  const beginPendingPromptEdit = useCallback((displayMessageId: string, text: string) => {
+    const displayIndex = messages.findIndex(message => message.id === displayMessageId);
+    if (displayIndex < 0) return false;
+    const displayMessage = messages[displayIndex];
+    const nextMessage = messages[displayIndex + 1];
+    const targetMessage = displayMessage.role === 'bot'
+      ? displayMessage
+      : nextMessage?.role === 'bot'
+        ? nextMessage
+        : undefined;
+    if (
+      !targetMessage
+      || !['pending', 'preparing', 'processing'].includes(targetMessage.status || '')
+      || targetMessage.imageUrl
+      || targetMessage.id.startsWith('temp-')
+    ) return false;
+
+    const linkedUserMessage = displayMessage.role === 'user'
+      ? displayMessage
+      : messages[displayIndex - 1]?.role === 'user'
+        ? messages[displayIndex - 1]
+        : undefined;
+    setPendingPromptEditor({
+      displayMessageId,
+      targetMessageId: targetMessage.id,
+      localUserMessageId: linkedUserMessage?.id,
+    });
+    setPendingPromptDraft(text);
+    return true;
+  }, [messages]);
+
   const editTextContextTarget = useCallback(() => {
     if (!textContextMenu) return;
-    const text = textContextMenu.target.text;
+    const { target } = textContextMenu;
+    const text = target.text;
     setTextContextMenu(null);
+    if (target.kind === 'message' && beginPendingPromptEdit(target.messageId, text)) return;
     handleEdit(text);
-  }, [handleEdit, textContextMenu]);
+  }, [beginPendingPromptEdit, handleEdit, textContextMenu]);
 
   const deleteTextContextTarget = useCallback(() => {
     if (!textContextMenu) return;
@@ -639,7 +688,7 @@ export const ChatInterface = ({
   const copyTranslatedText = useCallback(async () => {
     if (!textTranslation?.translatedText) return;
     try {
-      await navigator.clipboard.writeText(textTranslation.translatedText);
+      await copyTextToClipboard(textTranslation.translatedText);
       toast.success(t.translatedTextCopied);
     } catch {
       toast.error(t.textCopyFailed);
@@ -655,10 +704,11 @@ export const ChatInterface = ({
   const openChatImageContextMenu = useCallback((target: ChatImageContextTarget, clientX: number, clientY: number) => {
     const menuWidth = Math.min(332, window.innerWidth - 24);
     const menuHeight = 220;
+    const detachedCloseSpace = 50;
     setChatImageContextMenu({
       target,
       x: Math.max(12, Math.min(clientX, window.innerWidth - menuWidth - 12)),
-      y: Math.max(12, Math.min(clientY, window.innerHeight - menuHeight - 12)),
+      y: Math.max(12 + detachedCloseSpace, Math.min(clientY, window.innerHeight - menuHeight - 12)),
     });
   }, []);
 
@@ -773,16 +823,17 @@ export const ChatInterface = ({
   }, []);
 
   useEffect(() => {
-    if (!textContextMenu && !chatImageContextMenu && !textTranslation) return;
+    if (!textContextMenu && !chatImageContextMenu && !galleryImageContextMenu && !textTranslation) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       if (textTranslation) closeTextTranslation();
       setTextContextMenu(null);
       setChatImageContextMenu(null);
+      setGalleryImageContextMenu(null);
     };
     document.addEventListener('keydown', closeOnEscape);
     return () => document.removeEventListener('keydown', closeOnEscape);
-  }, [chatImageContextMenu, closeTextTranslation, textContextMenu, textTranslation]);
+  }, [chatImageContextMenu, closeTextTranslation, galleryImageContextMenu, textContextMenu, textTranslation]);
 
   useEffect(() => {
     setGalleryFastScrollIndex(current => {
@@ -1093,6 +1144,25 @@ export const ChatInterface = ({
     galleryLongPressRef.current = null;
   };
 
+  const activateGallerySelection = (messageId: string) => {
+    cancelGalleryLongPress();
+    if (suppressGalleryClickTimerRef.current !== null) {
+      window.clearTimeout(suppressGalleryClickTimerRef.current);
+    }
+    suppressGalleryClickRef.current = true;
+    gallerySelectionModeRef.current = true;
+    setGalleryImageContextMenu(null);
+    setSelectedGalleryIds(current => {
+      const next = new Set(current);
+      next.add(messageId);
+      return next;
+    });
+    if ('vibrate' in navigator) navigator.vibrate(35);
+    suppressGalleryClickTimerRef.current = window.setTimeout(() => {
+      suppressGalleryClickRef.current = false;
+    }, 400);
+  };
+
   const startGalleryLongPress = (event: React.PointerEvent<HTMLDivElement>, messageId: string) => {
     if (selectedGalleryIds.size > 0 || event.button !== 0) return;
     if (event.target instanceof Element && event.target.closest('button')) return;
@@ -1100,13 +1170,7 @@ export const ChatInterface = ({
     const { pointerId, clientX, clientY } = event;
     const timer = window.setTimeout(() => {
       galleryLongPressRef.current = null;
-      suppressGalleryClickRef.current = true;
-      gallerySelectionModeRef.current = true;
-      setSelectedGalleryIds(new Set([messageId]));
-      if ('vibrate' in navigator) navigator.vibrate(35);
-      suppressGalleryClickTimerRef.current = window.setTimeout(() => {
-        suppressGalleryClickRef.current = false;
-      }, 400);
+      activateGallerySelection(messageId);
     }, GALLERY_LONG_PRESS_MS);
     galleryLongPressRef.current = { timer, pointerId, startX: clientX, startY: clientY };
   };
@@ -1160,6 +1224,69 @@ export const ChatInterface = ({
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {
       setGalleryBatchBusy(false);
+    }
+  };
+
+  const openSelectedGalleryPanel = (panel: 'information' | 'prompt') => {
+    if (galleryBatchBusy || selectedGalleryItems.length !== 1) return;
+    const target = selectedGalleryItems[0];
+    clearGallerySelection();
+    openGalleryImagePanel(target, panel);
+  };
+
+  const openGalleryImageContextMenu = (event: React.MouseEvent<HTMLDivElement>, item: GalleryItem, canSelect: boolean) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const pointerType = (event.nativeEvent as PointerEvent).pointerType || galleryPointerTypeRef.current;
+    if (pointerType !== 'mouse') {
+      if (canSelect) activateGallerySelection(item.messageId);
+      return;
+    }
+    cancelGalleryLongPress();
+    const menuWidth = Math.min(332, window.innerWidth - 24);
+    const menuHeight = 220;
+    setGalleryImageContextMenu({
+      target: item,
+      x: Math.max(12, Math.min(event.clientX, window.innerWidth - menuWidth - 12)),
+      y: Math.max(12, Math.min(event.clientY, window.innerHeight - menuHeight - 12)),
+    });
+  };
+
+  const openGalleryContextPanel = (panel: 'information' | 'prompt') => {
+    if (!galleryImageContextMenu) return;
+    const target = galleryImageContextMenu.target;
+    setGalleryImageContextMenu(null);
+    openGalleryImagePanel(target, panel);
+  };
+
+  const regenerateGalleryContextImage = async () => {
+    if (!galleryImageContextMenu || galleryImageContextBusy) return;
+    const target = galleryImageContextMenu.target;
+    setGalleryImageContextMenu(null);
+    setGalleryImageContextBusy(true);
+    try {
+      await batchRegenerateGalleryItems([target]);
+      toast.success(t.regenerationStarted);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGalleryImageContextBusy(false);
+    }
+  };
+
+  const deleteGalleryContextImage = async () => {
+    if (!galleryImageContextMenu || galleryImageContextBusy) return;
+    const target = galleryImageContextMenu.target;
+    setGalleryImageContextMenu(null);
+    if (!window.confirm(t.confirmDelete)) return;
+    setGalleryImageContextBusy(true);
+    try {
+      await batchDeleteGalleryItems([target]);
+      toast.success(`1 ${t.batchDeleted}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGalleryImageContextBusy(false);
     }
   };
 
@@ -1618,6 +1745,65 @@ export const ChatInterface = ({
     promptHighlightRef.current.scrollLeft = textarea.scrollLeft;
   };
 
+  const enhancePromptOnce = async () => {
+    if (!input.trim() || !params.llmProviderId || isOneShotAiSubmitting) return;
+    setIsOneShotAiSubmitting(true);
+    try {
+      await handleSend(undefined, false, false, true);
+    } finally {
+      setIsOneShotAiSubmitting(false);
+    }
+  };
+
+  const scheduleThreadRegenerationScroll = useCallback(() => {
+    if (threadRegenerationScrollTimeoutRef.current !== null) {
+      window.clearTimeout(threadRegenerationScrollTimeoutRef.current);
+    }
+    threadRegenerationScrollTimeoutRef.current = window.setTimeout(() => {
+      threadRegenerationScrollTimeoutRef.current = null;
+      const target = latestMessagesRef.current.find(message => (
+        message.role === 'bot'
+        && !message.imageUrl
+        && (message.status === 'processing' || message.status === 'preparing' || message.status === 'pending')
+      ));
+      if (target) smoothScrollTo(`msg-${target.id}`);
+    }, THREAD_REGENERATION_SCROLL_DELAY_MS);
+  }, [smoothScrollTo]);
+
+  useEffect(() => {
+    latestMessagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    if (view === 'chat' || threadRegenerationScrollTimeoutRef.current === null) return;
+    window.clearTimeout(threadRegenerationScrollTimeoutRef.current);
+    threadRegenerationScrollTimeoutRef.current = null;
+  }, [view]);
+
+  useEffect(() => () => {
+    if (threadRegenerationScrollTimeoutRef.current !== null) {
+      window.clearTimeout(threadRegenerationScrollTimeoutRef.current);
+    }
+  }, []);
+
+  const handlePromptPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const pastedText = event.clipboardData.getData('text/plain');
+    if (!hasClipboardLoraTags(pastedText)) return;
+
+    event.preventDefault();
+    const textarea = event.currentTarget;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const cleanedText = stripClipboardLoraTags(pastedText);
+    const nextInput = `${input.slice(0, selectionStart)}${cleanedText}${input.slice(selectionEnd)}`;
+    const nextCursor = selectionStart + cleanedText.length;
+    setInput(nextInput);
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
+
   const insertRandomSlug = (slug: string) => {
     const textarea = textareaRef.current;
     const start = textarea?.selectionStart ?? input.length;
@@ -1821,16 +2007,21 @@ export const ChatInterface = ({
                 ? (msg.text || '')
                 : (msg.generationPrompt || msg.prompt || msg.text || '');
               const nextMessage = messages[index + 1];
+              const isRewrittenPromptSource = msg.role === 'user'
+                && nextMessage?.role === 'bot'
+                && !nextMessage.isEnhancing
+                && Boolean(nextMessage.generationPrompt?.trim())
+                && nextMessage.generationPrompt?.trim() !== (nextMessage.prompt || msg.text || '').trim();
               const linkedPendingMessage = msg.role === 'user'
                 && nextMessage?.role === 'bot'
-                && nextMessage.status === 'pending'
+                && ['pending', 'preparing', 'processing'].includes(nextMessage.status || '')
                 && !nextMessage.imageUrl
                 && !nextMessage.id.startsWith('temp-')
                 && nextMessage.prompt === msg.text
                 ? nextMessage
                 : null;
               const directlyEditablePendingMessage = msg.role === 'bot'
-                && msg.status === 'pending'
+                && ['pending', 'preparing', 'processing'].includes(msg.status || '')
                 && !msg.imageUrl
                 && !msg.id.startsWith('temp-')
                 ? msg
@@ -1838,13 +2029,18 @@ export const ChatInterface = ({
               const editablePendingMessage = linkedPendingMessage || directlyEditablePendingMessage;
               const dynamicPrompt = msg.role === 'user' ? (msg.text || '') : '';
               const canRegenerateDynamicPrompt = hasResolvableRandomPrompt(dynamicPrompt, params.randomPromptLists);
+              const regenerationPrompt = msg.generationPrompt || msg.prompt || msg.text || '';
+              const canRegenerateActiveImage = msg.role === 'bot'
+                && !msg.imageUrl
+                && (msg.status === 'pending' || msg.status === 'preparing' || msg.status === 'processing');
               const prevMsg = index > 0 ? messages[index - 1] : null;
               const prevText = prevMsg ? (prevMsg.text || prevMsg.prompt || '').trim() : null;
               
+              if (isRewrittenPromptSource) return null;
               if (!messageText && !msg.imageUrl && msg.status !== 'pending' && msg.status !== 'processing') return null;
 
               const isRedundant = prevText === messageText;
-              const shouldShowText = messageText && (!isRedundant || (msg.role === 'bot' && (msg.isEnhancing || msg.status === 'pending' || msg.status === 'preparing' || msg.status === 'processing')));
+              const shouldShowText = messageText && !isRedundant;
               const hasNonTextContent = Boolean(
                 msg.imageUrl
                 || msg.randomSelections?.length
@@ -2063,14 +2259,7 @@ export const ChatInterface = ({
                   <div className={`message-actions ${msg.imageUrl ? 'has-image' : ''} ${(regenerationCounts[msg.id] || 0) >= 2 ? 'has-regeneration-count' : ''}`}>
                     <button className="action-btn-icon edit" onClick={() => {
                       const textToEdit = msg.role === 'user' ? (msg.text || '') : (msg.generationPrompt || msg.prompt || msg.text || '');
-                      if (editablePendingMessage) {
-                        setPendingPromptEditor({
-                          displayMessageId: msg.id,
-                          targetMessageId: editablePendingMessage.id,
-                          localUserMessageId: msg.role === 'user' ? msg.id : undefined,
-                        });
-                        setPendingPromptDraft(textToEdit);
-                      } else {
+                      if (!editablePendingMessage || !beginPendingPromptEdit(msg.id, textToEdit)) {
                         handleEdit(textToEdit);
                       }
                     }} title={editablePendingMessage ? t.editPendingPrompt : (msg.role === 'bot' ? t.reusePrompt : t.edit)}><ComposeIcon size={18} /></button>
@@ -2117,7 +2306,10 @@ export const ChatInterface = ({
                             const prompt = msg.generationPrompt || msg.prompt || msg.text || '';
                             if (!prompt.trim()) return;
                             recordRegeneration(msg.id);
-                            handleSend(prompt, true);
+                            scheduleThreadRegenerationScroll();
+                            void Promise.resolve(handleSend(prompt, true, false, false, true)).catch(error => {
+                              toast.error(error instanceof Error ? error.message : t.retryFailed);
+                            });
                           }}
                           title={t.regenerate}
                           aria-label={`${t.regenerate}${(regenerationCounts[msg.id] || 0) >= 2 ? ` ×${regenerationCounts[msg.id]}` : ''}`}
@@ -2130,6 +2322,20 @@ export const ChatInterface = ({
                           )}
                         </button>
                       </>
+                    )}
+                    {canRegenerateActiveImage && regenerationPrompt.trim() && (
+                      <button
+                        className="action-btn-icon regenerate"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          recordRegeneration(msg.id);
+                          handleSend(regenerationPrompt, true);
+                        }}
+                        title={t.regenerate}
+                        aria-label={t.regenerate}
+                      >
+                        <RefreshIcon />
+                      </button>
                     )}
                     <button className="action-btn-icon delete" onClick={(e) => { e.stopPropagation(); setMessageToDelete(msg.id); }} title={t.delete}><TrashIcon size={19} /></button>
                   </div>
@@ -2447,12 +2653,15 @@ export const ChatInterface = ({
                     backgroundColor: 'var(--social-bg)'
                   }}
                   aria-pressed={selectedGalleryIds.size && canSelect ? selectedGalleryIds.has(item.messageId) : undefined}
-                  onPointerDown={event => { if (canSelect) startGalleryLongPress(event, item.messageId); }}
+                  onPointerDown={event => {
+                    galleryPointerTypeRef.current = event.pointerType;
+                    if (canSelect) startGalleryLongPress(event, item.messageId);
+                  }}
                   onPointerMove={moveGalleryLongPress}
                   onPointerUp={event => cancelGalleryLongPress(event.pointerId)}
                   onPointerCancel={event => cancelGalleryLongPress(event.pointerId)}
                   onPointerLeave={event => cancelGalleryLongPress(event.pointerId)}
-                  onContextMenu={event => event.preventDefault()}
+                  onContextMenu={event => openGalleryImageContextMenu(event, item, canSelect)}
                   onClick={(event) => {
                     if (suppressGalleryClickRef.current) return;
                     if (canSelect && event.shiftKey && !selectedGalleryIds.size) {
@@ -2561,7 +2770,6 @@ export const ChatInterface = ({
                       <span className="gallery-batch-menu-icon"><PromptGroupIcon size={20} /></span>
                       <span><strong>{t.groupSelectedImages}</strong><small>{selectedGalleryItems.length < 2 ? t.manualGroupNeedsTwo : t.groupSelectedImagesHelp}</small></span>
                     </button>
-                    {!selectionContainsPromptGroup && <>
                     <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
                       () => batchRegenerateGalleryItems(selectedGalleryItems),
                       `${selectedGalleryItems.length} ${t.batchQueued}`
@@ -2569,6 +2777,25 @@ export const ChatInterface = ({
                       <span className="gallery-batch-menu-icon"><RefreshIcon size={20} /></span>
                       <span><strong>{t.batchRegenerate}</strong><small>{t.batchRegenerateHelp}</small></span>
                     </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => openSelectedGalleryPanel('information')}
+                      disabled={galleryBatchBusy || selectedGalleryItems.length !== 1}
+                    >
+                      <span className="gallery-batch-menu-icon"><InfoIcon size={20} /></span>
+                      <span><strong>{t.imageInformation}</strong></span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => openSelectedGalleryPanel('prompt')}
+                      disabled={galleryBatchBusy || selectedGalleryItems.length !== 1 || !(selectedGalleryItems[0]?.generationPrompt || selectedGalleryItems[0]?.prompt || selectedGalleryItems[0]?.text || '').trim()}
+                    >
+                      <span className="gallery-batch-menu-icon"><TextSelectIcon size={20} /></span>
+                      <span><strong>{t.viewPrompt}</strong></span>
+                    </button>
+                    {!selectionContainsPromptGroup && <>
                     <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
                       () => batchLuckyGalleryItems(selectedGalleryItems)
                     )} disabled={galleryBatchBusy || selectedGalleryItems.length > 8}>
@@ -2589,8 +2816,11 @@ export const ChatInterface = ({
                       <span className="gallery-batch-menu-icon"><ThumbUpIcon size={20} /></span>
                       <span><strong>{selectedAreAllPromptFavorites ? t.batchUnlikePrompts : t.batchLikePrompts}</strong><small>{t.batchPromptFavoritesHelp}</small></span>
                     </button>
+                    </>}
                     <button type="button" role="menuitem" className="danger" onClick={() => {
-                      const confirmed = window.confirm(`${t.batchDeleteConfirm} (${selectedGalleryItems.length})`);
+                      const containsGroups = selectedGalleryItems.some(item => (item.groupCount || 1) > 1);
+                      const confirmation = containsGroups ? t.batchDeleteGlobalConfirm : t.batchDeleteConfirm;
+                      const confirmed = window.confirm(`${confirmation} (${selectedGalleryItems.length})`);
                       if (confirmed) void runGalleryBatchAction(
                         () => batchDeleteGalleryItems(selectedGalleryItems),
                         `${selectedGalleryItems.length} ${t.batchDeleted}`
@@ -2601,7 +2831,6 @@ export const ChatInterface = ({
                       </span>
                       <span><strong>{t.delete}</strong><small>{t.batchDeleteHelp}</small></span>
                     </button>
-                    </>}
                   </div>
                 )}
               </div>
@@ -2835,7 +3064,10 @@ export const ChatInterface = ({
                 ))}
               </div>
             )}
-            <div className={`input-box ${params.llmEnabled ? 'ai-active' : ''} ${hasPromptText ? 'has-text' : ''} ${hasRandomCodes ? 'has-random-code' : ''}`}>
+            <div
+              className={`input-box ${params.llmEnabled ? 'ai-active' : ''} ${isEnhancing || isOneShotAiSubmitting ? 'ai-processing' : ''} ${hasPromptText ? 'has-text' : ''} ${hasRandomCodes ? 'has-random-code' : ''}`}
+              aria-busy={isEnhancing || isOneShotAiSubmitting}
+            >
               {!hasPromptText && (
                 <button
                   ref={optionsToggleRef}
@@ -2867,6 +3099,7 @@ export const ChatInterface = ({
                   ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
+                  onPaste={handlePromptPaste}
                   onContextMenu={(event) => handleTextContextMenu(event, { kind: 'draft', text: input })}
                   onPointerDown={(event) => startTextLongPress(event, { kind: 'draft', text: input })}
                   onPointerMove={moveTextLongPress}
@@ -2910,8 +3143,9 @@ export const ChatInterface = ({
                     <button
                       type="button"
                       className="one-shot-ai-btn"
-                      onClick={() => handleSend(undefined, false, false, true)}
-                      disabled={!input.trim() || !params.llmProviderId}
+                      onClick={() => void enhancePromptOnce()}
+                      disabled={!input.trim() || !params.llmProviderId || isOneShotAiSubmitting}
+                      aria-busy={isOneShotAiSubmitting}
                       title={params.llmProviderId ? t.oneShotAi : t.oneShotAiUnavailable}
                       aria-label={params.llmProviderId ? t.oneShotAi : t.oneShotAiUnavailable}
                     >
@@ -2991,26 +3225,76 @@ export const ChatInterface = ({
       {chatImageContextMenu && (
         <div className="text-context-menu-backdrop" onPointerDown={() => setChatImageContextMenu(null)}>
           <div
-            className="text-context-menu chat-image-context-menu"
-            role="menu"
-            aria-label={t.imageActions}
+            className="chat-image-context-menu-shell"
             style={{ left: chatImageContextMenu.x, top: chatImageContextMenu.y }}
             onPointerDown={(event) => event.stopPropagation()}
             onContextMenu={(event) => event.preventDefault()}
           >
-            <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => void copyChatImage()}>
-              <ClipboardIcon size={22} />
-              <span>{t.copyImage}</span>
+            <button
+              type="button"
+              className="lightbox-context-menu-close"
+              aria-label={t.close}
+              title={t.close}
+              onClick={() => setChatImageContextMenu(null)}
+            >
+              <XIcon size={20} />
             </button>
-            <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => void downloadChatImage()}>
-              <DownloadIcon size={22} />
-              <span>{t.download}</span>
+            <div className="text-context-menu chat-image-context-menu" role="menu" aria-label={t.imageActions}>
+              <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => void copyChatImage()}>
+                <ClipboardIcon size={22} />
+                <span>{t.copyImage}</span>
+              </button>
+              <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => void downloadChatImage()}>
+                <DownloadIcon size={22} />
+                <span>{t.download}</span>
+              </button>
+              <button type="button" className="text-context-menu-item" role="menuitem" onClick={modifyChatImage}>
+                <ComposeIcon size={22} />
+                <span>{t.modifyImage}</span>
+              </button>
+              <button type="button" className="text-context-menu-item danger" role="menuitem" onClick={deleteChatImage}>
+                <TrashIcon size={22} />
+                <span>{t.delete}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {galleryImageContextMenu && (
+        <div className="text-context-menu-backdrop" onPointerDown={() => setGalleryImageContextMenu(null)}>
+          <div
+            className="text-context-menu gallery-image-context-menu"
+            role="menu"
+            aria-label={t.imageActions}
+            style={{ left: galleryImageContextMenu.x, top: galleryImageContextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <button
+              type="button"
+              className="text-context-menu-item"
+              role="menuitem"
+              disabled={galleryImageContextBusy || !(galleryImageContextMenu.target.generationPrompt || galleryImageContextMenu.target.prompt || galleryImageContextMenu.target.text || '').trim()}
+              onClick={() => void regenerateGalleryContextImage()}
+            >
+              <RefreshIcon size={22} />
+              <span>{t.regenerate}</span>
             </button>
-            <button type="button" className="text-context-menu-item" role="menuitem" onClick={modifyChatImage}>
-              <ComposeIcon size={22} />
-              <span>{t.modifyImage}</span>
+            <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => openGalleryContextPanel('information')}>
+              <InfoIcon size={22} />
+              <span>{t.imageInformation}</span>
             </button>
-            <button type="button" className="text-context-menu-item danger" role="menuitem" onClick={deleteChatImage}>
+            <button
+              type="button"
+              className="text-context-menu-item"
+              role="menuitem"
+              disabled={!(galleryImageContextMenu.target.generationPrompt || galleryImageContextMenu.target.prompt || galleryImageContextMenu.target.text || '').trim()}
+              onClick={() => openGalleryContextPanel('prompt')}
+            >
+              <TextSelectIcon size={22} />
+              <span>{t.viewPrompt}</span>
+            </button>
+            <button type="button" className="text-context-menu-item danger" role="menuitem" disabled={galleryImageContextBusy} onClick={() => void deleteGalleryContextImage()}>
               <TrashIcon size={22} />
               <span>{t.delete}</span>
             </button>
