@@ -17,6 +17,16 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.8.1
+
+Version 2.8.1 improves active-generation control, makes destructive actions safer, and polishes image and text interactions across desktop and mobile.
+
+- **Editable active generations:** prompts can be corrected while queued, preparing, or processing; an in-progress ComfyUI job is interrupted safely and its replacement is queued without losing rewritten-prompt behavior.
+- **Stable rapid regeneration:** repeated regeneration requests keep completed images in place, focus the active result after refresh, and preserve exact navigation back to the originating message.
+- **Safer deletion flows:** message, conversation, gallery, and bulk deletion actions prevent duplicate submissions, show progress, and keep grouped gallery contents and counters aligned.
+- **Expanded image actions:** gallery and conversation images expose consistent context menus, information and prompt panels, regeneration controls, and detached close buttons that work reliably after a touch long press.
+- **More reliable mobile clipboard handling:** pasted prompts strip embedded LoRA tags, text copying falls back when the asynchronous Clipboard API is unavailable, and contextual text actions remain editable during active generation.
+
 ## What's new in 2.8.0
 
 Version 2.8.0 turns the gallery into a more flexible image library, adds opt-in Civitai-compatible exports, and makes generation actions more precise across desktop and mobile.

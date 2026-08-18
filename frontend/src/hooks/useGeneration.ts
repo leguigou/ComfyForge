@@ -113,6 +113,9 @@ export const useGeneration = (
           prompt: data.prompt,
           generationPrompt: data.generationPrompt,
           tags: data.tags || [],
+          status: data.status || 'pending',
+          duration: 0,
+          generationStartedAt: undefined,
         };
       }
       if (typeof data.linkedUserText === 'string' && ((data.linkedUserMessageId && message.id === data.linkedUserMessageId)
@@ -223,13 +226,13 @@ export const useGeneration = (
             finalPrompt = enhanceData.enhancedPrompt;
             recoveredPrompt = finalPrompt;
             if (enhanceData.negativePrompt) finalNegativePrompt = enhanceData.negativePrompt;
-            // Mise à jour immédiate de la bulle bot avec le nouveau texte
+            // Replace the text shown in the working bot card with the rewritten prompt.
             if (shouldUpdateVisibleMessages) {
               setMessages(prev => prev.map(m => m.id === botMsgId ? {
                 ...m,
                 text: finalPrompt,
                 generationPrompt: finalPrompt,
-                // Keep the original template for display/editing; regeneration uses generationPrompt.
+                // Keep the source prompt to identify and hide its preceding card.
                 prompt: templatePrompt,
                 isEnhancing: false
               } : m));

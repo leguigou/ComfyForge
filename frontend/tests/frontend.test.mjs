@@ -24,6 +24,7 @@ let runtimeVersionReminder;
 let textLanguage;
 let manualGalleryGroups;
 let messagePairs;
+let textClipboard;
 
 before(async () => {
   vite = await createServer({
@@ -45,6 +46,7 @@ before(async () => {
   clipboardAutoGenerate = await vite.ssrLoadModule('/src/utils/clipboardAutoGenerate.ts');
   runtimeVersionReminder = await vite.ssrLoadModule('/src/utils/runtimeVersionReminder.ts');
   textLanguage = await vite.ssrLoadModule('/src/utils/textLanguage.ts');
+  textClipboard = await vite.ssrLoadModule('/src/utils/textClipboard.ts');
   manualGalleryGroups = await vite.ssrLoadModule('/src/services/manualGalleryGroups.ts');
   messagePairs = await vite.ssrLoadModule('/src/utils/messagePairs.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
@@ -88,6 +90,10 @@ test('normalizes and validates clipboard prompts without accepting unsupported b
     clipboardAutoGenerate.normalizeClipboardPrompt('<LoRA:first:0.8>, portrait <lora:second:1.2>'),
     'portrait'
   );
+  assert.equal(
+    clipboardAutoGenerate.normalizeClipboardPrompt('portrait <lora:RLY-thot_shot-ZiB-ZiT-irena-v11-trigger-rlyirena:1>'),
+    'portrait'
+  );
   assert.equal(clipboardAutoGenerate.normalizeClipboardPrompt('<lora:only_lora:1>'), '');
   assert.equal(clipboardAutoGenerate.isClipboardPromptAllowed('portrait'), true);
   assert.equal(clipboardAutoGenerate.isClipboardPromptAllowed(''), false);
@@ -108,12 +114,15 @@ test('normalizes and validates clipboard prompts without accepting unsupported b
 
 test('wires clipboard permission, change detection, and the general-settings activation control', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
   const settingsSource = readFileSync('src/components/settings/SettingsModal.tsx', 'utf8');
   const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
 
   assert.match(appSource, /normalizeClipboardPrompt\(await navigator\.clipboard\.readText\(\)\)/);
   assert.match(appSource, /clipboard\.addEventListener\('clipboardchange', handleClipboardChange\)/);
   assert.match(appSource, /await onHandleSendRef\.current\(prompt\)/);
+  assert.match(chatSource, /stripClipboardLoraTags/);
+  assert.match(chatSource, /onPaste=\{handlePromptPaste\}/);
   assert.match(settingsSource, /clipboardAutoGenerateTitle/);
   assert.match(settingsSource, /onClipboardAutoGenerateChange\(event\.target\.checked\)/);
   assert.match(appSource, /civitaiMetadataOnDownload:\s*false/);
@@ -321,6 +330,25 @@ test('deletes empty chats immediately and asks for confirmation only when conten
   assert.match(sessionsSource, /confirmDeleteSession[\s\S]*?\/api\/history\/\$\{id\}/);
 });
 
+test('locks deletion confirmations and shows progress while requests are pending', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const sessionsSource = readFileSync('src/hooks/useSessions.ts', 'utf8');
+  const appCss = readFileSync('src/App.css', 'utf8');
+  const translations = readFileSync('src/i18n.ts', 'utf8');
+
+  assert.match(sessionsSource, /deletingSessionRef\.current/);
+  assert.match(sessionsSource, /deletingMessageRef\.current/);
+  assert.match(sessionsSource, /deletingSessionsScopeRef\.current/);
+  assert.match(appSource, /disabled=\{Boolean\(deletingMessageId\)\}/);
+  assert.match(appSource, /disabled=\{isDeletingSession\}/);
+  assert.match(appSource, /disabled=\{Boolean\(deletingSessionsScope\)\}/);
+  assert.match(appSource, /button-inline-loader/);
+  assert.match(appSource, /aria-busy=\{isDeletingLightboxImage\}/);
+  assert.match(appCss, /\.button-inline-loader\s*\{/);
+  assert.match(translations, /deleting: 'Suppression…'/);
+  assert.match(translations, /deleting: 'Deleting…'/);
+});
+
 test('keeps the lazy settings loader inside the settings modal', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
   const settingsCss = readFileSync('src/components/settings/SettingsModal.css', 'utf8');
@@ -337,6 +365,37 @@ test('shows the generation counter from two remaining through the final generati
   assert.match(appSource, /if \(queueRemaining >= 2\)/);
   assert.match(appSource, /else if \(queueRemaining <= 0\)/);
   assert.match(appSource, /showQueueIndicator && \(queueRemaining \?\? 0\) >= 1/);
+});
+
+test('focuses the active generation at its exact message after a page refresh', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /performance\.getEntriesByType\('navigation'\)[\s\S]*?type === 'reload'/);
+  assert.match(appSource, /const requestMessageAnchor = useCallback[\s\S]*?setImageAnchorRequest/);
+  assert.match(appSource, /didFocusActiveGenerationAfterReloadRef\.current = true;\s*void focusActiveGeneration\(\)/);
+  assert.match(appSource, /if \(targetIsLoaded\)[\s\S]*?requestMessageAnchor\(target\.messageId\)/);
+});
+
+test('keeps regenerate available while an image is pending, preparing, or processing', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+
+  assert.match(chatSource, /const canRegenerateActiveImage = msg\.role === 'bot'[\s\S]*?msg\.status === 'pending'[\s\S]*?msg\.status === 'preparing'[\s\S]*?msg\.status === 'processing'/);
+  assert.match(chatSource, /\{canRegenerateActiveImage && regenerationPrompt\.trim\(\) && \([\s\S]*?handleSend\(regenerationPrompt, true\)/);
+});
+
+test('keeps a completed thread image in place during rapid regeneration clicks', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const completedImageActions = chatSource.slice(
+    chatSource.indexOf('{msg.imageUrl && ('),
+    chatSource.indexOf('{canRegenerateActiveImage && regenerationPrompt.trim() && (')
+  );
+
+  assert.match(completedImageActions, /Promise\.resolve\(handleSend\(prompt, true, false, false, true\)\)\.catch/);
+  assert.match(appSource, /runInBackground\?: boolean[\s\S]*?handleSend\(text, regen, targetSessionId, skipEnhancement, runInBackground, forceEnhancement\)/);
+  assert.match(chatSource, /THREAD_REGENERATION_SCROLL_DELAY_MS = 1000/);
+  assert.match(chatSource, /scheduleThreadRegenerationScroll[\s\S]*?clearTimeout\(threadRegenerationScrollTimeoutRef\.current\)[\s\S]*?latestMessagesRef\.current\.find\(message =>[\s\S]*?status === 'processing'[\s\S]*?status === 'preparing'[\s\S]*?status === 'pending'[\s\S]*?smoothScrollTo\(`msg-\$\{target\.id\}`\)/);
+  assert.match(completedImageActions, /recordRegeneration\(msg\.id\);\s*scheduleThreadRegenerationScroll\(\)/);
 });
 
 test('shows random lists from an empty prompt and closes them when existing text is cleared', () => {
@@ -438,6 +497,102 @@ test('opens a conversation-scoped photo gallery from the session menu', () => {
   assert.match(chatSource, /view !== 'thread-gallery' && <button[\s\S]*?gallery-filter-round archives/);
 });
 
+test('copies text on mobile when the asynchronous clipboard API is unavailable', async () => {
+  let copiedValue = '';
+  let appendedTextarea;
+  const fakeDocument = {
+    activeElement: null,
+    body: {
+      appendChild(element) {
+        appendedTextarea = element;
+      },
+    },
+    createElement() {
+      return {
+        value: '',
+        readOnly: false,
+        style: {},
+        setAttribute() {},
+        focus() {},
+        select() {},
+        setSelectionRange() {},
+        remove() {},
+      };
+    },
+    execCommand(command) {
+      assert.equal(command, 'copy');
+      copiedValue = appendedTextarea.value;
+      return true;
+    },
+  };
+
+  await textClipboard.copyTextToClipboard('texte mobile', undefined, fakeDocument);
+  assert.equal(copiedValue, 'texte mobile');
+});
+
+test('falls back to text selection when the exposed clipboard API rejects', async () => {
+  let fallbackUsed = false;
+  const fakeDocument = {
+    activeElement: null,
+    body: { appendChild() {} },
+    createElement() {
+      return {
+        value: '', readOnly: false, style: {},
+        setAttribute() {}, focus() {}, select() {}, setSelectionRange() {}, remove() {},
+      };
+    },
+    execCommand() {
+      fallbackUsed = true;
+      return true;
+    },
+  };
+
+  await textClipboard.copyTextToClipboard('fallback', { writeText: async () => { throw new Error('denied'); } }, fakeDocument);
+  assert.equal(fallbackUsed, true);
+});
+
+test('opens gallery image actions on right click with prompt-aware regeneration and red deletion', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+  const galleryMenuSource = chatSource.slice(
+    chatSource.indexOf('{galleryImageContextMenu && ('),
+    chatSource.indexOf('{textTranslation && (')
+  );
+
+  assert.match(chatSource, /onContextMenu=\{event => openGalleryImageContextMenu\(event, item, canSelect\)\}/);
+  assert.match(chatSource, /const regenerateGalleryContextImage = async \(\) => \{[\s\S]*?batchRegenerateGalleryItems\(\[target\]\)/);
+  assert.match(galleryMenuSource, /t\.regenerate[\s\S]*?t\.imageInformation[\s\S]*?t\.viewPrompt[\s\S]*?className="text-context-menu-item danger"[\s\S]*?t\.delete/);
+  assert.match(appSource, /const openGalleryImagePanel = useCallback[\s\S]*?pendingLightboxPanelRef\.current = panel[\s\S]*?setActiveLightbox/);
+  assert.match(appSource, /const pendingPanel = activeLightbox \? pendingLightboxPanelRef\.current : null[\s\S]*?setShowLightboxPrompt\(pendingPanel === 'prompt'\)[\s\S]*?setShowLightboxInfo\(pendingPanel === 'information'\)/);
+  assert.match(chatCss, /\.text-context-menu-item\.danger\s*\{[^}]*color:\s*#ff5c67/);
+});
+
+test('offers batch generation and deletion alongside single-image information actions', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const batchMenuSource = chatSource.slice(
+    chatSource.indexOf('{galleryBatchMenuOpen && ('),
+    chatSource.indexOf('{isGalleryView && galleryTotal > 1')
+  );
+
+  assert.match(chatSource, /const openSelectedGalleryPanel = \(panel: 'information' \| 'prompt'\) => \{[\s\S]*?selectedGalleryItems\.length !== 1[\s\S]*?openGalleryImagePanel\(target, panel\)/);
+  assert.match(batchMenuSource, /batchRegenerateGalleryItems\(selectedGalleryItems\)[\s\S]*?disabled=\{galleryBatchBusy\}/);
+  assert.match(batchMenuSource, /openSelectedGalleryPanel\('information'\)[\s\S]*?disabled=\{galleryBatchBusy \|\| selectedGalleryItems\.length !== 1\}[\s\S]*?t\.imageInformation/);
+  assert.match(batchMenuSource, /openSelectedGalleryPanel\('prompt'\)[\s\S]*?selectedGalleryItems\.length !== 1[\s\S]*?t\.viewPrompt/);
+  assert.match(batchMenuSource, /className="danger"[\s\S]*?containsGroups = selectedGalleryItems\.some[\s\S]*?t\.batchDeleteGlobalConfirm[\s\S]*?disabled=\{galleryBatchBusy\}/);
+  assert.match(batchMenuSource, /t\.batchRegenerate[\s\S]*?t\.imageInformation[\s\S]*?t\.viewPrompt[\s\S]*?\{!selectionContainsPromptGroup && <>[\s\S]*?t\.batchLucky[\s\S]*?<\/>\}[\s\S]*?className="danger"/);
+});
+
+test('keeps touch long press in gallery selection mode while mouse right click opens image actions', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+
+  assert.match(chatSource, /galleryPointerTypeRef\.current = event\.pointerType/);
+  assert.match(chatSource, /const activateGallerySelection = \(messageId: string\) => \{[\s\S]*?gallerySelectionModeRef\.current = true[\s\S]*?setSelectedGalleryIds/);
+  assert.match(chatSource, /const openGalleryImageContextMenu[\s\S]*?pointerType !== 'mouse'[\s\S]*?activateGallerySelection\(item\.messageId\)[\s\S]*?setGalleryImageContextMenu/);
+  assert.match(chatSource, /onContextMenu=\{event => openGalleryImageContextMenu\(event, item, canSelect\)\}/);
+  assert.match(chatSource, /selectedGalleryIds\.size > 0 && \([\s\S]*?className="gallery-batch-bar"/);
+});
+
 test('replaces the native long-press image menu with lightbox actions', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
   const appCss = readFileSync('src/App.css', 'utf8');
@@ -453,7 +608,7 @@ test('replaces the native long-press image menu with lightbox actions', () => {
   assert.match(imageClipboardSource, /const pngPromise = fetch/);
   assert.match(imageClipboardSource, /new ClipboardItem\(\{ 'image\/png': pngPromise \}\)/);
   assert.match(appSource, /className="lightbox-prompt-panel lightbox-info-panel"[\s\S]*?currentLightboxMetadata\.map/);
-  assert.match(appCss, /\.lightbox-context-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*45/);
+  assert.match(appCss, /\.lightbox-context-menu-shell\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*45/);
 });
 
 test('offers a confirmed red image deletion action at the bottom of both lightbox menus', () => {
@@ -490,7 +645,7 @@ test('distinguishes manual gallery groups without recoloring their count', () =>
   assert.match(appSource, /manualGroupId\?\.trim\(\)[\s\S]*?return `__manual__:/);
   assert.match(chatSource, /PromptGroupIcon size=\{13\} className=\{item\.manualGroupId \? 'manual-gallery-group-icon' : undefined\}/);
   assert.match(chatSource, /const canSelect = !groupByPrompt \|\| !item\.manualGroupId/);
-  assert.match(chatSource, /onPointerDown=\{event => \{ if \(canSelect\) startGalleryLongPress/);
+  assert.match(chatSource, /onPointerDown=\{event => \{[\s\S]*?galleryPointerTypeRef\.current = event\.pointerType;[\s\S]*?if \(canSelect\) startGalleryLongPress/);
   assert.match(chatSource, /selectedGalleryIds\.size > 0 && canSelect &&/);
   assert.match(chatSource, /selectionContainsPromptGroup = selectedGalleryItems\.some/);
   assert.match(chatSource, /!selectionContainsPromptGroup && <>/);
@@ -544,6 +699,35 @@ test('expands selected prompt groups before creating a manual group', async () =
   }
 });
 
+test('expands every selected gallery group before global deletion', async () => {
+  const originalFetch = globalThis.fetch;
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    return new Response(JSON.stringify({
+      items: [
+        { messageId: 'cover', sessionId: 'session-a' },
+        { messageId: 'member', sessionId: 'session-b' },
+      ],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const items = await manualGalleryGroups.expandGalleryGroupItems([
+      { messageId: 'cover', sessionId: 'session-a', groupCount: 2 },
+      { messageId: 'single', sessionId: 'session-c', groupCount: 1 },
+    ]);
+    assert.deepEqual(items.map(item => [item.messageId, item.sessionId]), [
+      ['cover', 'session-a'],
+      ['member', 'session-b'],
+      ['single', 'session-c'],
+    ]);
+    assert.equal(requested.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('toggles a fullscreen image favorite on double click', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
 
@@ -563,6 +747,14 @@ test('closes the lightbox action menu when the fullscreen image is tapped', () =
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
   assert.ok(handlerSource.indexOf('if (showLightboxMenu)') < handlerSource.indexOf('if (suppressLightboxClickRef.current)'));
   assert.match(handlerSource, /if \(showLightboxMenu\) \{[\s\S]*?setShowLightboxMenu\(false\);[\s\S]*?e\.stopPropagation\(\);[\s\S]*?return;/);
+});
+
+test('dismisses the long-press image menu with a close action or an outside pointer', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /const handleLightboxPointerDown = useCallback[\s\S]*?closest\('\.lightbox-context-menu-shell'\)[\s\S]*?setLightboxContextMenu\(null\)/);
+  assert.match(appSource, /className=\{`lightbox[\s\S]*?onPointerDown=\{handleLightboxPointerDown\}/);
+  assert.match(appSource, /className="lightbox-context-menu-shell"[\s\S]*?className="lightbox-context-menu-close"[\s\S]*?aria-label=\{t\.close\}[\s\S]*?setLightboxContextMenu\(null\)[\s\S]*?<XIcon size=\{20\}/);
 });
 
 test('keeps the lightbox regeneration menu open until one second after the last click', () => {
@@ -872,6 +1064,44 @@ test('allows one-shot AI enhancement without enabling the global toggle', () => 
   assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, skipEnhancement: true, forceEnhancement: true }), false);
 });
 
+test('moves one-shot AI prompts into the thread and reflects while enhancement is pending', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+
+  const sendStart = appSource.indexOf('const onHandleSend = useCallback');
+  const sendEnd = appSource.indexOf('const onHandleSendRef', sendStart);
+  const sendSource = appSource.slice(sendStart, sendEnd);
+  assert.ok(sendSource.indexOf("if (override === undefined) setInput('');") < sendSource.indexOf('await handleSend('));
+  assert.match(chatSource, /const enhancePromptOnce = async[\s\S]*?setIsOneShotAiSubmitting\(true\)[\s\S]*?await handleSend\(undefined, false, false, true\)/);
+  assert.match(chatSource, /isEnhancing \|\| isOneShotAiSubmitting \? 'ai-processing'/);
+  assert.match(chatSource, /aria-busy=\{isEnhancing \|\| isOneShotAiSubmitting\}/);
+  assert.match(chatCss, /\.input-box\.ai-processing\s*\{[\s\S]*?animation: ai-border-reflection/);
+});
+
+test('hides the source prompt after AI rewriting and keeps the rewritten result', () => {
+  const generationSource = readFileSync('src/hooks/useGeneration.ts', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+
+  assert.match(generationSource, /m\.id === botMsgId[\s\S]*?text: finalPrompt[\s\S]*?generationPrompt: finalPrompt[\s\S]*?prompt: templatePrompt/);
+  assert.match(chatSource, /const isRewrittenPromptSource = msg\.role === 'user'[\s\S]*?!nextMessage\.isEnhancing[\s\S]*?nextMessage\.generationPrompt\?\.trim\(\) !== \(nextMessage\.prompt \|\| msg\.text \|\| ''\)\.trim\(\)/);
+  assert.match(chatSource, /if \(isRewrittenPromptSource\) return null/);
+  assert.match(chatSource, /const shouldShowText = messageText && !isRedundant/);
+});
+
+test('edits the visible prompt while its generation is queued or already running', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const generationRouteSource = readFileSync('../backend/src/routes/generation.ts', 'utf8');
+
+  assert.match(chatSource, /const beginPendingPromptEdit = useCallback[\s\S]*?\['pending', 'preparing', 'processing'\]\.includes\(targetMessage\.status \|\| ''\)[\s\S]*?setPendingPromptEditor/);
+  assert.match(chatSource, /target\.kind === 'message' && beginPendingPromptEdit\(target\.messageId, text\)/);
+  assert.match(chatSource, /!editablePendingMessage \|\| !beginPendingPromptEdit\(msg\.id, textToEdit\)/);
+  assert.match(generationRouteSource, /const keepsRewrittenSourceHidden = Boolean[\s\S]*?pendingMessage\.generationPrompt\.trim\(\) !== pendingMessage\.prompt\.trim\(\)/);
+  assert.match(generationRouteSource, /keepsRewrittenSourceHidden \? pendingMessage\.prompt : prompt/);
+  assert.match(generationRouteSource, /DELETE FROM queue WHERE id = \? AND status = 'processing'[\s\S]*?INSERT INTO queue[\s\S]*?disconnectQueueTask\(pendingMessage\.queueId\)/);
+  assert.match(generationRouteSource, /axios\.post\(`\$\{targetUrl\}\/interrupt`/);
+});
+
 test('opens a custom long-press menu for draft and message text', () => {
   const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
   const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
@@ -934,6 +1164,7 @@ test('opens image actions from a long press in the message thread', () => {
   assert.match(imageMenuSource, /downloadChatImage/);
   assert.match(imageMenuSource, /modifyChatImage/);
   assert.match(imageMenuSource, /deleteChatImage/);
+  assert.match(imageMenuSource, /className="chat-image-context-menu-shell"[\s\S]*?className="lightbox-context-menu-close"[\s\S]*?setChatImageContextMenu\(null\)[\s\S]*?<XIcon size=\{20\}/);
   assert.doesNotMatch(imageMenuSource, /share|partager/i);
   assert.match(chatSource, /copyImageToClipboard\(getFullImageUrl\(url\)\)/);
   assert.match(chatSource, /downloadImageByMessageId\(messageId, `img-\$\{messageId\}\.webp`\)/);
@@ -944,6 +1175,7 @@ test('opens image actions from a long press in the message thread', () => {
   assert.match(appSource, /const handleImageModify = useCallback[\s\S]*?setActiveLightbox\(\{ \.\.\.item, source: 'chat' \}\)/);
   assert.match(appSource, /setShowLightboxModify\(Boolean\(pendingModify\)\)/);
   assert.match(chatCss, /\.image-wrapper\s*\{[\s\S]*?-webkit-touch-callout:\s*none;[\s\S]*?user-select:\s*none;/);
+  assert.match(chatCss, /\.chat-image-context-menu\s*\{[^}]*background:\s*rgba\(24, 24, 28, 0\.94\);[^}]*backdrop-filter:\s*blur\(16px\)/);
 });
 
 test('parses slash commands and their numeric values', () => {

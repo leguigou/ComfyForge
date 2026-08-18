@@ -56,12 +56,18 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
   const [renameValue, setRenameValue] = useState('');
   const [activeInfoId, setActiveInfoId] = useState<string | null>(null);
   const [massActionType, setMassActionType] = useState<'archiveAll' | 'deleteAll' | null>(null);
+  const [isDeletingSession, setIsDeletingSession] = useState(false);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [deletingSessionsScope, setDeletingSessionsScope] = useState<'active' | 'archived' | 'all' | null>(null);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const historySessionRef = useRef<string | null>(null);
   const historyCursorRef = useRef<HistoryCursor | null>(null);
   const historyHasMoreRef = useRef(false);
   const loadingOlderRef = useRef(false);
+  const deletingSessionRef = useRef(false);
+  const deletingMessageRef = useRef<string | null>(null);
+  const deletingSessionsScopeRef = useRef<'active' | 'archived' | 'all' | null>(null);
 
   const fetchSessions = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -272,8 +278,10 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
   };
 
   const confirmDeleteSession = async () => {
-    if (!sessionToDelete) return;
+    if (!sessionToDelete || deletingSessionRef.current) return;
     const id = sessionToDelete;
+    deletingSessionRef.current = true;
+    setIsDeletingSession(true);
     try {
       const response = await fetch(`${API_BASE}/api/history/${id}`, {
         method: 'DELETE',
@@ -284,6 +292,8 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
     } catch (err) {
       console.error('Error deleting session:', err);
     } finally {
+      deletingSessionRef.current = false;
+      setIsDeletingSession(false);
       setSessionToDelete(null);
     }
   };
@@ -316,33 +326,48 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
   };
 
   const deleteSessions = async (scope: 'active' | 'archived' | 'all') => {
-    const response = await fetch(`${API_BASE}/api/history/all/${scope}`, { method: 'DELETE', credentials: 'include' });
-    if (!response.ok) throw new Error('Failed to delete sessions');
-    if (
-      scope === 'all'
-      || (scope === 'archived' && view === 'archives')
-      || (scope === 'active' && view !== 'archives')
-    ) {
-      setCurrentSessionId(null);
-      setMessages([]);
+    if (deletingSessionsScopeRef.current) return;
+    deletingSessionsScopeRef.current = scope;
+    setDeletingSessionsScope(scope);
+    try {
+      const response = await fetch(`${API_BASE}/api/history/all/${scope}`, { method: 'DELETE', credentials: 'include' });
+      if (!response.ok) throw new Error('Failed to delete sessions');
+      if (
+        scope === 'all'
+        || (scope === 'archived' && view === 'archives')
+        || (scope === 'active' && view !== 'archives')
+      ) {
+        setCurrentSessionId(null);
+        setMessages([]);
+      }
+      await fetchSessions();
+      setMassActionType(null);
+    } finally {
+      deletingSessionsScopeRef.current = null;
+      setDeletingSessionsScope(null);
     }
-    await fetchSessions();
-    setMassActionType(null);
   };
 
   const deleteMessage = async (messageId: string) => {
-    if (!currentSessionId) return;
-    const response = await fetch(`${API_BASE}/api/history/${currentSessionId}/message/${messageId}`, { method: 'DELETE', credentials: 'include' });
-    if (!response.ok) throw new Error('Failed to delete message');
-    const data = await response.json() as { deletedMessageIds?: string[] };
-    setMessages(previous => {
-      const deletedIds = new Set([
-        ...getLinkedMessageIds(previous, messageId),
-        ...(Array.isArray(data.deletedMessageIds) ? data.deletedMessageIds : []),
-      ]);
-      return previous.filter(message => !deletedIds.has(message.id));
-    });
-    setMessageToDelete(null);
+    if (!currentSessionId || deletingMessageRef.current) return;
+    deletingMessageRef.current = messageId;
+    setDeletingMessageId(messageId);
+    try {
+      const response = await fetch(`${API_BASE}/api/history/${currentSessionId}/message/${messageId}`, { method: 'DELETE', credentials: 'include' });
+      if (!response.ok) throw new Error('Failed to delete message');
+      const data = await response.json() as { deletedMessageIds?: string[] };
+      setMessages(previous => {
+        const deletedIds = new Set([
+          ...getLinkedMessageIds(previous, messageId),
+          ...(Array.isArray(data.deletedMessageIds) ? data.deletedMessageIds : []),
+        ]);
+        return previous.filter(message => !deletedIds.has(message.id));
+      });
+      setMessageToDelete(null);
+    } finally {
+      deletingMessageRef.current = null;
+      setDeletingMessageId(null);
+    }
   };
 
   return {
@@ -364,6 +389,9 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
     setActiveInfoId,
     massActionType,
     setMassActionType,
+    isDeletingSession,
+    deletingMessageId,
+    deletingSessionsScope,
     fetchSessions,
     createNewSession,
     fetchSessionDetails,

@@ -1,6 +1,9 @@
 export const MAX_CLIPBOARD_PROMPT_LENGTH = 20_000;
 
 const LORA_TAG_PATTERN = /<\s*lora\s*:[^>\r\n]*>/gi;
+const LORA_TAG_TEST_PATTERN = /<\s*lora\s*:[^>\r\n]*>/i;
+
+export const hasClipboardLoraTags = (value: string) => LORA_TAG_TEST_PATTERN.test(value);
 
 export const stripClipboardLoraTags = (value: string) => value
   .replace(LORA_TAG_PATTERN, '')

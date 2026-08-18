@@ -336,78 +336,127 @@ router.post('/retry-incomplete', authenticate, (req, res) => {
   }
 });
 
-router.patch('/pending/:messageId/prompt', authenticate, (req, res) => {
+router.patch('/pending/:messageId/prompt', authenticate, async (req, res) => {
   try {
     const user = (req as any).user;
     const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 20_000) : '';
     if (!prompt) return res.status(400).json({ success: false, error: 'Prompt is required' });
 
     const pendingMessage = db.prepare(`
-      SELECT m.id, m.sessionId, m.timestamp, m.prompt, q.id AS queueId
+      SELECT m.id, m.sessionId, m.timestamp, m.prompt, m.generationPrompt,
+             q.id AS queueId, q.userId AS queueUserId, q.params AS queueParams,
+             q.status AS queueStatus, q.createdAt AS queueCreatedAt
       FROM messages m
       JOIN sessions s ON s.id = m.sessionId
       JOIN queue q ON q.messageId = m.id
       WHERE m.id = ? AND s.userId = ? AND m.role = 'bot'
-        AND m.status = 'pending' AND q.status = 'pending'
+        AND m.status IN ('pending', 'preparing', 'processing')
+        AND q.status IN ('pending', 'processing')
     `).get(req.params.messageId, user.id) as {
       id: string;
       sessionId: string;
       timestamp: number;
       prompt: string;
+      generationPrompt: string | null;
       queueId: number;
+      queueUserId: string | null;
+      queueParams: string;
+      queueStatus: 'pending' | 'processing';
+      queueCreatedAt: number;
     } | undefined;
     if (!pendingMessage) {
       return res.status(409).json({
         success: false,
-        code: 'GENERATION_ALREADY_STARTED',
-        error: 'Generation has already started and can no longer be edited',
+        code: 'GENERATION_NOT_EDITABLE',
+        error: 'Generation is no longer active and cannot be edited',
       });
     }
 
+    const keepsRewrittenSourceHidden = Boolean(
+      pendingMessage.generationPrompt?.trim()
+      && pendingMessage.generationPrompt.trim() !== pendingMessage.prompt.trim()
+    );
     const linkedUserMessage = db.prepare(`
       SELECT id FROM messages
       WHERE sessionId = ? AND role = 'user' AND timestamp = ? AND text = ?
       LIMIT 1
     `).get(pendingMessage.sessionId, pendingMessage.timestamp - 1, pendingMessage.prompt) as { id: string } | undefined;
 
+    const wasAlreadyClaimed = pendingMessage.queueStatus === 'processing';
+    const targetUrl = wasAlreadyClaimed
+      ? getTargetComfyUrl((JSON.parse(pendingMessage.queueParams || '{}') as GenerationParams).comfyUrl)
+      : null;
     const tags = db.transaction(() => {
-      const queueUpdate = db.prepare(`
-        UPDATE queue SET prompt = ?, originalPrompt = ?
-        WHERE id = ? AND status = 'pending'
-      `).run(prompt, prompt, pendingMessage.queueId);
-      if (queueUpdate.changes !== 1) throw new Error('GENERATION_ALREADY_STARTED');
+      const originalPrompt = keepsRewrittenSourceHidden ? pendingMessage.prompt : prompt;
+      if (wasAlreadyClaimed) {
+        const deletion = db.prepare("DELETE FROM queue WHERE id = ? AND status = 'processing'")
+          .run(pendingMessage.queueId);
+        if (deletion.changes !== 1) throw new Error('GENERATION_NOT_EDITABLE');
+        db.prepare(`
+          INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+        `).run(
+          pendingMessage.id,
+          pendingMessage.queueUserId || user.id,
+          prompt,
+          originalPrompt,
+          pendingMessage.sessionId,
+          pendingMessage.queueParams,
+          pendingMessage.queueCreatedAt,
+        );
+      } else {
+        const queueUpdate = db.prepare(`
+          UPDATE queue SET prompt = ?, originalPrompt = ?
+          WHERE id = ? AND status = 'pending'
+        `).run(prompt, originalPrompt, pendingMessage.queueId);
+        if (queueUpdate.changes !== 1) throw new Error('GENERATION_NOT_EDITABLE');
+      }
 
       db.prepare(`
         UPDATE messages
-        SET text = '', prompt = ?, generationPrompt = ?
-        WHERE id = ? AND status = 'pending'
-      `).run(prompt, prompt, pendingMessage.id);
-      if (linkedUserMessage) {
+        SET text = ?, prompt = ?, generationPrompt = ?, status = 'pending',
+            generationStartedAt = NULL, duration = 0
+        WHERE id = ? AND status IN ('pending', 'preparing', 'processing')
+      `).run(
+        keepsRewrittenSourceHidden ? prompt : '',
+        keepsRewrittenSourceHidden ? pendingMessage.prompt : prompt,
+        prompt,
+        pendingMessage.id,
+      );
+      if (linkedUserMessage && !keepsRewrittenSourceHidden) {
         db.prepare('UPDATE messages SET text = ? WHERE id = ?').run(prompt, linkedUserMessage.id);
       }
       db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(Date.now(), pendingMessage.sessionId);
       return replaceAutoPromptTags(db, pendingMessage.id, prompt)
         .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
     })();
+    if (wasAlreadyClaimed) disconnectQueueTask(pendingMessage.queueId);
 
     const update = {
       messageId: pendingMessage.id,
       status: 'pending' as const,
-      text: '',
-      prompt,
+      text: keepsRewrittenSourceHidden ? prompt : '',
+      prompt: keepsRewrittenSourceHidden ? pendingMessage.prompt : prompt,
       generationPrompt: prompt,
       tags,
-      linkedUserMessageId: linkedUserMessage?.id,
-      linkedUserText: linkedUserMessage ? prompt : undefined,
+      linkedUserMessageId: keepsRewrittenSourceHidden ? undefined : linkedUserMessage?.id,
+      linkedUserText: linkedUserMessage && !keepsRewrittenSourceHidden ? prompt : undefined,
     };
     broadcastToSession(pendingMessage.sessionId, update);
+    if (targetUrl) {
+      try {
+        await axios.post(`${targetUrl}/interrupt`, undefined, { timeout: 10_000 });
+      } catch {
+        console.warn('[Prompt edit] ComfyUI interrupt call failed (the replacement remains queued)');
+      }
+    }
     return res.json({ success: true, ...update });
   } catch (error: any) {
-    if (error?.message === 'GENERATION_ALREADY_STARTED') {
+    if (error?.message === 'GENERATION_NOT_EDITABLE') {
       return res.status(409).json({
         success: false,
-        code: 'GENERATION_ALREADY_STARTED',
-        error: 'Generation has already started and can no longer be edited',
+        code: 'GENERATION_NOT_EDITABLE',
+        error: 'Generation is no longer active and cannot be edited',
       });
     }
     return res.status(500).json({ success: false, error: error.message || 'Failed to update prompt' });
