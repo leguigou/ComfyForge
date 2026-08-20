@@ -41,6 +41,9 @@ export interface Message {
   randomSelections: string | null;
   generationPrompt: string | null;
   generationParams: string | null;
+  photoFilterId: string | null;
+  photoFilterLabel: string | null;
+  photoFilterPrompt: string | null;
 }
 
 export interface Session {

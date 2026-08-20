@@ -4,6 +4,7 @@ import type { Message, GenParameters } from '../types';
 import { resolveRandomPromptsWithSelections } from '../utils/randomPrompts';
 import { shouldEnhancePrompt } from '../utils/promptEnhancement';
 import { toGenerationRequestParams } from '../utils/generationParams';
+import type { PhotoFilterPreset } from '../utils/photoFilters';
 
 const readApiResponse = async (response: Response) => {
   const contentType = response.headers.get('content-type') || '';
@@ -21,7 +22,8 @@ export const useGeneration = (
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>,
   smoothScrollTo: (id: string) => void,
   fetchSessions: () => void,
-  acknowledgeQueueMessage: (messageId: string, temporaryMessageId: string) => void
+  acknowledgeQueueMessage: (messageId: string, temporaryMessageId: string) => void,
+  selectedPhotoFilter: PhotoFilterPreset | null,
 ) => {
   const [isEnhancing, setIsEnhancing] = useState(false);
   const enhancingCount = useRef(0);
@@ -103,7 +105,11 @@ export const useGeneration = (
       credentials: 'include'
     });
     const data = await readApiResponse(res);
-    if (!res.ok || !data.success) throw new Error(data.error || 'Prompt update failed');
+    if (!res.ok || !data.success) {
+      const error = new Error(data.error || 'Prompt update failed') as Error & { code?: string };
+      if (typeof data.code === 'string') error.code = data.code;
+      throw error;
+    }
 
     setMessages(previous => previous.map(message => {
       if (message.id === data.messageId) {
@@ -174,6 +180,9 @@ export const useGeneration = (
         role: 'bot', 
         prompt: templatePrompt,
         generationPrompt: resolvedPrompt,
+        photoFilterId: selectedPhotoFilter?.id || null,
+        photoFilterLabel: selectedPhotoFilter?.labelFr || null,
+        photoFilterPrompt: selectedPhotoFilter?.prompt || null,
         text: resolvedPrompt !== templatePrompt ? resolvedPrompt : '',
         randomSelections: randomResult.selections,
         status: 'pending',
@@ -261,7 +270,13 @@ export const useGeneration = (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           prompt: finalPrompt, 
+          baseGenerationPrompt: finalPrompt,
           originalPrompt: templatePrompt,
+          photoFilter: selectedPhotoFilter ? {
+            id: selectedPhotoFilter.id,
+            label: selectedPhotoFilter.labelFr,
+            prompt: selectedPhotoFilter.prompt,
+          } : null,
           recoveryMessageId,
           randomSelections: randomResult.selections,
           sessionId: activeSessionId,
@@ -315,6 +330,9 @@ export const useGeneration = (
                   ? (m.generationStartedAt ?? data.generationStartedAt)
                   : undefined,
                 generationPrompt: finalPrompt,
+                photoFilterId: data.photoFilterId ?? null,
+                photoFilterLabel: data.photoFilterLabel ?? null,
+                photoFilterPrompt: data.photoFilterPrompt ?? null,
                 tags: data.tags || []
               };
             });
@@ -352,7 +370,7 @@ export const useGeneration = (
       }
       if (runInBackground) throw error;
     }
-  }, [currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions, acknowledgeQueueMessage]);
+  }, [currentSessionId, params, clientIdRef, setMessages, smoothScrollTo, fetchSessions, acknowledgeQueueMessage, selectedPhotoFilter]);
 
   return { handleSend, retryMessage, retryAllIncomplete, updatePendingPrompt, interruptGeneration, isEnhancing };
 };

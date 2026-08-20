@@ -25,6 +25,7 @@ let textLanguage;
 let manualGalleryGroups;
 let messagePairs;
 let textClipboard;
+let promptComparison;
 
 before(async () => {
   vite = await createServer({
@@ -47,6 +48,7 @@ before(async () => {
   runtimeVersionReminder = await vite.ssrLoadModule('/src/utils/runtimeVersionReminder.ts');
   textLanguage = await vite.ssrLoadModule('/src/utils/textLanguage.ts');
   textClipboard = await vite.ssrLoadModule('/src/utils/textClipboard.ts');
+  promptComparison = await vite.ssrLoadModule('/src/utils/promptComparison.ts');
   manualGalleryGroups = await vite.ssrLoadModule('/src/services/manualGalleryGroups.ts');
   messagePairs = await vite.ssrLoadModule('/src/utils/messagePairs.ts');
   ({ WelcomeScreen } = await vite.ssrLoadModule('/src/components/chat/WelcomeScreen.tsx'));
@@ -367,6 +369,70 @@ test('shows the generation counter from two remaining through the final generati
   assert.match(appSource, /showQueueIndicator && \(queueRemaining \?\? 0\) >= 1/);
 });
 
+test('compares prompt sequences against the first selected reference', () => {
+  const metrics = promptComparison.comparePrompts(
+    'red dress by the sea',
+    'blue dress by the calm sea',
+  );
+
+  assert.equal(metrics.wordCount, 6);
+  assert.equal(metrics.uniqueWordCount, 6);
+  assert.equal(metrics.commonWordCount, 4);
+  assert.equal(metrics.addedWordCount, 2);
+  assert.equal(metrics.removedWordCount, 1);
+  assert.equal(metrics.similarityPercent, 72.7);
+  assert.equal(metrics.differencePercent, 27.3);
+  assert.equal(metrics.jaccardPercent, 57.1);
+  assert.equal(metrics.lengthRatio, 1.2);
+});
+
+test('offers a horizontally scrollable prompt comparison without leaving the gallery', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const modalSource = readFileSync('src/components/chat/PromptComparisonModal.tsx', 'utf8');
+  const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
+
+  assert.match(chatSource, /<strong>\{t\.comparePrompts\}<\/strong>/);
+  assert.match(chatSource, /\[\.\.\.selectedGalleryIds\][\s\S]*?galleryItems\.find/);
+  assert.match(chatSource, /<PromptComparisonModal/);
+  assert.match(modalSource, /const referencePrompt = getPrompt\(items\[0\]\)/);
+  assert.match(modalSource, /openPromptIds/);
+  assert.match(modalSource, /aria-expanded=\{isPromptOpen\}/);
+  assert.match(chatCss, /\.prompt-comparison-scroll\s*\{[\s\S]*?overflow-x:\s*auto/);
+  assert.match(chatCss, /\.prompt-comparison-track\s*\{[^}]*display:\s*flex/);
+});
+
+test('exposes configurable fuzzy prompt grouping in general settings', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const settingsSource = readFileSync('src/components/settings/SettingsModal.tsx', 'utf8');
+  const translationsSource = readFileSync('src/i18n.ts', 'utf8');
+
+  assert.match(appSource, /galleryPromptSimilarityMinWords:\s*20/);
+  assert.match(appSource, /galleryPromptSimilarityThreshold:\s*90/);
+  assert.match(settingsSource, /value=\{params\.galleryPromptSimilarityMinWords\}/);
+  assert.match(settingsSource, /value=\{params\.galleryPromptSimilarityThreshold\}/);
+  assert.match(settingsSource, /\/api\/gallery\/prompt-group-cache\/rebuild/);
+  assert.match(settingsSource, /role="progressbar"/);
+  assert.match(settingsSource, /manualGroupsPreserved/);
+  assert.match(settingsSource, /settingsSaveState/);
+  assert.match(translationsSource, /promptGroupingSettingsTitle/);
+  assert.match(appSource, /promptGroupCacheVersion/);
+  assert.doesNotMatch(appSource, /query\.set\('promptSimilarity/);
+});
+
+test('refreshes visible galleries as generations finish without reloading the page', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const liveRefreshStart = appSource.indexOf('const requestLiveGalleryRefresh = useCallback');
+  const generationStatusStart = appSource.indexOf('const handleGenerationStatus = useCallback');
+  const generationStatusEnd = appSource.indexOf('const { clientIdRef, acknowledgeQueueMessage }', generationStatusStart);
+  const generationStatusSource = appSource.slice(generationStatusStart, generationStatusEnd);
+
+  assert.ok(liveRefreshStart >= 0);
+  assert.match(appSource.slice(liveRefreshStart, generationStatusStart), /window\.setTimeout[\s\S]*?refreshGalleryRef\.current\?\.\(\)/);
+  assert.match(generationStatusSource, /status === 'completed'[\s\S]*?view === 'gallery'[\s\S]*?requestLiveGalleryRefresh\(\)/);
+  assert.match(generationStatusSource, /queueRemaining < previousQueueRemaining[\s\S]*?view === 'gallery' \|\| view === 'thread-gallery'[\s\S]*?requestLiveGalleryRefresh\(\)/);
+  assert.doesNotMatch(generationStatusSource, /window\.location\.reload/);
+});
+
 test('focuses the active generation at its exact message after a page refresh', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
 
@@ -560,7 +626,7 @@ test('opens gallery image actions on right click with prompt-aware regeneration 
     chatSource.indexOf('{textTranslation && (')
   );
 
-  assert.match(chatSource, /onContextMenu=\{event => openGalleryImageContextMenu\(event, item, canSelect\)\}/);
+  assert.match(chatSource, /onContextMenu=\{event => openGalleryImageContextMenu\(event, item\)\}/);
   assert.match(chatSource, /const regenerateGalleryContextImage = async \(\) => \{[\s\S]*?batchRegenerateGalleryItems\(\[target\]\)/);
   assert.match(galleryMenuSource, /t\.regenerate[\s\S]*?t\.imageInformation[\s\S]*?t\.viewPrompt[\s\S]*?className="text-context-menu-item danger"[\s\S]*?t\.delete/);
   assert.match(appSource, /const openGalleryImagePanel = useCallback[\s\S]*?pendingLightboxPanelRef\.current = panel[\s\S]*?setActiveLightbox/);
@@ -589,7 +655,7 @@ test('keeps touch long press in gallery selection mode while mouse right click o
   assert.match(chatSource, /galleryPointerTypeRef\.current = event\.pointerType/);
   assert.match(chatSource, /const activateGallerySelection = \(messageId: string\) => \{[\s\S]*?gallerySelectionModeRef\.current = true[\s\S]*?setSelectedGalleryIds/);
   assert.match(chatSource, /const openGalleryImageContextMenu[\s\S]*?pointerType !== 'mouse'[\s\S]*?activateGallerySelection\(item\.messageId\)[\s\S]*?setGalleryImageContextMenu/);
-  assert.match(chatSource, /onContextMenu=\{event => openGalleryImageContextMenu\(event, item, canSelect\)\}/);
+  assert.match(chatSource, /onContextMenu=\{event => openGalleryImageContextMenu\(event, item\)\}/);
   assert.match(chatSource, /selectedGalleryIds\.size > 0 && \([\s\S]*?className="gallery-batch-bar"/);
 });
 
@@ -637,22 +703,29 @@ test('keeps gallery lightbox navigation and counters aligned after deleting an i
   assert.match(handlerSource, /setActiveLightbox\(nextGalleryItem \? \{[\s\S]*?source: 'gallery'/);
 });
 
-test('distinguishes manual gallery groups without recoloring their count', () => {
+test('keeps manual gallery groups selectable without recoloring their count', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
   const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
   const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
 
   assert.match(appSource, /manualGroupId\?\.trim\(\)[\s\S]*?return `__manual__:/);
   assert.match(chatSource, /PromptGroupIcon size=\{13\} className=\{item\.manualGroupId \? 'manual-gallery-group-icon' : undefined\}/);
-  assert.match(chatSource, /const canSelect = !groupByPrompt \|\| !item\.manualGroupId/);
-  assert.match(chatSource, /onPointerDown=\{event => \{[\s\S]*?galleryPointerTypeRef\.current = event\.pointerType;[\s\S]*?if \(canSelect\) startGalleryLongPress/);
-  assert.match(chatSource, /selectedGalleryIds\.size > 0 && canSelect &&/);
+  assert.doesNotMatch(chatSource, /const canSelect = !groupByPrompt \|\| !item\.manualGroupId/);
+  assert.match(chatSource, /onPointerDown=\{event => \{[\s\S]*?galleryPointerTypeRef\.current = event\.pointerType;[\s\S]*?startGalleryLongPress\(event, item\.messageId\)/);
+  assert.match(chatSource, /selectedGalleryIds\.size > 0 && \(/);
   assert.match(chatSource, /selectionContainsPromptGroup = selectedGalleryItems\.some/);
   assert.match(chatSource, /!selectionContainsPromptGroup && <>/);
   assert.match(appSource, /helpers\.createPositionedGroup\(/);
   assert.match(appSource, /refreshGalleryRef\.current\?\.\(centeredOffset\)\.then/);
   assert.match(chatCss, /\.gallery-group-count \.manual-gallery-group-icon\s*\{[^}]*color:\s*#4da3ff/);
   assert.doesNotMatch(chatCss, /\.gallery-group-count\.manual[^}]*color:/);
+});
+
+test('keeps the gallery group count visible while selecting images', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+
+  assert.match(chatSource, /\{\(item\.groupCount \|\| 0\) > 1 && \(\s*<div className="gallery-group-count"/);
+  assert.doesNotMatch(chatSource, /\(item\.groupCount \|\| 0\) > 1 && selectedGalleryIds\.size === 0/);
 });
 
 test('keeps a newly created manual group centered after refreshing the gallery', () => {
@@ -675,7 +748,7 @@ test('keeps a newly created manual group centered after refreshing the gallery',
   assert.match(helpersSource, /centerGalleryItem\(container, messageId\) \|\| attempts <= 0/);
 });
 
-test('expands selected prompt groups before creating a manual group', async () => {
+test('expands selected prompt and manual groups before creating a manual group', async () => {
   const originalFetch = globalThis.fetch;
   const requested = [];
   globalThis.fetch = async (url) => {
@@ -691,9 +764,10 @@ test('expands selected prompt groups before creating a manual group', async () =
       { messageId: 'prompt-a', groupCount: 4 },
       { messageId: 'single', groupCount: 1 },
       { messageId: 'prompt-b', groupCount: 2 },
+      { messageId: 'manual-a', groupCount: 5, manualGroupId: 'manual-group' },
     ]);
-    assert.deepEqual(ids, ['prompt-a', 'prompt-a-second', 'single', 'prompt-b', 'prompt-b-second']);
-    assert.equal(requested.length, 2);
+    assert.deepEqual(ids, ['prompt-a', 'prompt-a-second', 'single', 'prompt-b', 'prompt-b-second', 'manual-a', 'manual-a-second']);
+    assert.equal(requested.length, 3);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1089,17 +1163,25 @@ test('hides the source prompt after AI rewriting and keeps the rewritten result'
   assert.match(chatSource, /const shouldShowText = messageText && !isRedundant/);
 });
 
-test('edits the visible prompt while its generation is queued or already running', () => {
+test('edits active prompts in the composer without replacing a generation that already started', () => {
   const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const generationHookSource = readFileSync('src/hooks/useGeneration.ts', 'utf8');
   const generationRouteSource = readFileSync('../backend/src/routes/generation.ts', 'utf8');
+  const promptEditRoute = generationRouteSource.slice(
+    generationRouteSource.indexOf("router.patch('/pending/:messageId/prompt'"),
+    generationRouteSource.indexOf("router.post('/interrupt'"),
+  );
 
-  assert.match(chatSource, /const beginPendingPromptEdit = useCallback[\s\S]*?\['pending', 'preparing', 'processing'\]\.includes\(targetMessage\.status \|\| ''\)[\s\S]*?setPendingPromptEditor/);
+  assert.match(chatSource, /const beginPendingPromptEdit = useCallback[\s\S]*?setPendingPromptEditor[\s\S]*?handleEdit\(text \|\| targetMessage\.generationPrompt/);
   assert.match(chatSource, /target\.kind === 'message' && beginPendingPromptEdit\(target\.messageId, text\)/);
   assert.match(chatSource, /!editablePendingMessage \|\| !beginPendingPromptEdit\(msg\.id, textToEdit\)/);
-  assert.match(generationRouteSource, /const keepsRewrittenSourceHidden = Boolean[\s\S]*?pendingMessage\.generationPrompt\.trim\(\) !== pendingMessage\.prompt\.trim\(\)/);
-  assert.match(generationRouteSource, /keepsRewrittenSourceHidden \? pendingMessage\.prompt : prompt/);
-  assert.match(generationRouteSource, /DELETE FROM queue WHERE id = \? AND status = 'processing'[\s\S]*?INSERT INTO queue[\s\S]*?disconnectQueueTask\(pendingMessage\.queueId\)/);
-  assert.match(generationRouteSource, /axios\.post\(`\$\{targetUrl\}\/interrupt`/);
+  assert.match(chatSource, /targetMessage\.status !== 'pending'[\s\S]*?await queueAsNewGeneration\(\)/);
+  assert.match(chatSource, /code === 'GENERATION_NOT_EDITABLE'[\s\S]*?await queueAsNewGeneration\(\)/);
+  assert.match(chatSource, /setInput\(''\)[\s\S]*?handleSend\(prompt, true\)/);
+  assert.match(generationHookSource, /if \(typeof data\.code === 'string'\) error\.code = data\.code/);
+  assert.match(promptEditRoute, /AND q\.status = 'pending'/);
+  assert.match(promptEditRoute, /UPDATE queue SET prompt = \?, originalPrompt = \?[\s\S]*?WHERE id = \? AND status = 'pending'/);
+  assert.doesNotMatch(promptEditRoute, /DELETE FROM queue|disconnectQueueTask|\/interrupt/);
 });
 
 test('opens a custom long-press menu for draft and message text', () => {
@@ -1176,6 +1258,23 @@ test('opens image actions from a long press in the message thread', () => {
   assert.match(appSource, /setShowLightboxModify\(Boolean\(pendingModify\)\)/);
   assert.match(chatCss, /\.image-wrapper\s*\{[\s\S]*?-webkit-touch-callout:\s*none;[\s\S]*?user-select:\s*none;/);
   assert.match(chatCss, /\.chat-image-context-menu\s*\{[^}]*background:\s*rgba\(24, 24, 28, 0\.94\);[^}]*backdrop-filter:\s*blur\(16px\)/);
+});
+
+test('keeps photo filters outside visible prompts and applies only the active filter to generation', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const generationSource = readFileSync('src/hooks/useGeneration.ts', 'utf8');
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const filterSource = readFileSync('src/utils/photoFilters.ts', 'utf8');
+
+  assert.match(filterSource, /PHOTO_FILTER_FAMILIES/);
+  assert.match(filterSource, /id: 'era-y2k'/);
+  assert.match(appSource, /selectedPhotoFilter[\s\S]*?useGeneration\([\s\S]*?selectedPhotoFilter/);
+  assert.match(generationSource, /baseGenerationPrompt: finalPrompt/);
+  assert.match(generationSource, /photoFilter: selectedPhotoFilter \?/);
+  assert.doesNotMatch(generationSource, /finalPrompt\s*\+=\s*selectedPhotoFilter/);
+  assert.match(chatSource, /Filtres photo/);
+  assert.match(chatSource, /Aucun filtre/);
+  assert.match(chatSource, /photoFilterId/);
 });
 
 test('parses slash commands and their numeric values', () => {

@@ -4,6 +4,9 @@ export interface Message {
   text: string;
   prompt?: string;
   generationPrompt?: string;
+  photoFilterId?: string | null;
+  photoFilterLabel?: string | null;
+  photoFilterPrompt?: string | null;
   imageUrl?: string;
   thumbnailUrl?: string;
   model?: string;
@@ -38,6 +41,9 @@ export interface GalleryItem {
   prompt: string;
   text?: string;
   generationPrompt?: string;
+  photoFilterId?: string | null;
+  photoFilterLabel?: string | null;
+  photoFilterPrompt?: string | null;
   timestamp: number;
   model?: string;
   workflow?: string;
@@ -183,6 +189,8 @@ export interface GenParameters {
   visionModelTtlMinutes: number;
   luckyTemperature: number;
   luckyFavoriteCount: number;
+  galleryPromptSimilarityMinWords: number;
+  galleryPromptSimilarityThreshold: number;
   workflowFile: string;
   nodeMapping: NodeMapping;
   seedMode: 'random' | 'fixed';

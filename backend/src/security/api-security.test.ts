@@ -16,6 +16,7 @@ let server: http.Server;
 let websocketServer: WebSocketServer;
 let baseUrl: string;
 let db: typeof import('../services/database').default;
+let rebuildPromptGroupCacheForUser: typeof import('../services/prompt-group-cache').rebuildPromptGroupCacheForUser;
 let adminCookie: string;
 let adminId: string;
 let adminSessionId: string;
@@ -61,11 +62,13 @@ beforeAll(async () => {
   delete process.env.SERVICE_URL_ALLOWLIST;
   delete process.env.ALLOW_PRIVATE_SERVICE_URLS;
 
-  const [{ createApp }, databaseModule] = await Promise.all([
+  const [{ createApp }, databaseModule, promptGroupCacheModule] = await Promise.all([
     import('../app'),
     import('../services/database'),
+    import('../services/prompt-group-cache'),
   ]);
   db = databaseModule.default;
+  rebuildPromptGroupCacheForUser = promptGroupCacheModule.rebuildPromptGroupCacheForUser;
 
   server = http.createServer(createApp(authSecret));
   websocketServer = new WebSocketServer({ noServer: true });
@@ -181,6 +184,7 @@ describe('API security boundaries', () => {
       insert.run(ids[1], adminSessionId, 'Displayed middle prompt', 'Shared final prompt', `/api/image-files/${ids[1]}.png`, 20_002, 0, 1);
       insert.run(ids[2], adminSessionId, 'Displayed new prompt', 'Shared final prompt', `/api/image-files/${ids[2]}.png`, 20_003, 0, 0);
       insert.run(ids[3], adminSessionId, 'Another prompt', 'Another final prompt', `/api/image-files/${ids[3]}.png`, 20_000, 0, 0);
+      rebuildPromptGroupCacheForUser(adminId);
 
       const groupedResponse = await request('/api/gallery?groupByPrompt=true&limit=20&includeTotal=true', { cookie: adminCookie });
       const grouped = await json(groupedResponse);
@@ -276,6 +280,7 @@ describe('API security boundaries', () => {
         ids[2], adminSessionId, template, template, '[]',
         `/api/image-files/${ids[2]}.png`, 21_003
       );
+      rebuildPromptGroupCacheForUser(adminId);
 
       const groupedResponse = await request('/api/gallery?groupByPrompt=true&limit=100', { cookie: adminCookie });
       const grouped = await json(groupedResponse);

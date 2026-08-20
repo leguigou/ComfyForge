@@ -151,34 +151,56 @@ describe('targeted generation cancellation', () => {
     expect(db.prepare('SELECT id FROM queue WHERE messageId = ?').get('pending-kept')).toBeTruthy();
   });
 
-  it('replaces the prompt of a running generation and queues it again', async () => {
+  it('replaces the prompt in place while a generation is still pending', async () => {
     axiosPost.mockClear();
-    insertGeneration('processing-edited', 'processing', 4);
+    insertGeneration('pending-edited', 'pending', 4);
     const oldQueue = db.prepare('SELECT id FROM queue WHERE messageId = ?')
-      .get('processing-edited') as { id: number };
+      .get('pending-edited') as { id: number };
 
-    const response = await patchRequest('/api/generate/pending/processing-edited/prompt', {
+    const response = await patchRequest('/api/generate/pending/pending-edited/prompt', {
       prompt: 'replacement prompt',
     });
     const body = await response.json() as { success: boolean; status: string; generationPrompt: string };
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({ success: true, status: 'pending', generationPrompt: 'replacement prompt' });
-    expect(axiosPost).toHaveBeenCalledWith(
-      'http://127.0.0.1:8188/interrupt',
-      undefined,
-      { timeout: 10_000 },
-    );
-    expect(db.prepare('SELECT id, prompt, status FROM queue WHERE messageId = ?').get('processing-edited'))
-      .toMatchObject({ prompt: 'replacement prompt', status: 'pending' });
-    expect((db.prepare('SELECT id FROM queue WHERE messageId = ?').get('processing-edited') as { id: number }).id)
-      .not.toBe(oldQueue.id);
+    expect(axiosPost).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT id, prompt, status FROM queue WHERE messageId = ?').get('pending-edited'))
+      .toMatchObject({ id: oldQueue.id, prompt: 'replacement prompt', status: 'pending' });
     expect(db.prepare('SELECT prompt, generationPrompt, status, generationStartedAt FROM messages WHERE id = ?')
-      .get('processing-edited'))
+      .get('pending-edited'))
       .toEqual({
         prompt: 'replacement prompt',
         generationPrompt: 'replacement prompt',
         status: 'pending',
+        generationStartedAt: null,
+      });
+  });
+
+  it('leaves a running generation untouched so the client can queue a new one', async () => {
+    axiosPost.mockClear();
+    insertGeneration('processing-edited', 'processing', 5);
+    const oldQueue = db.prepare('SELECT id FROM queue WHERE messageId = ?')
+      .get('processing-edited') as { id: number };
+
+    const response = await patchRequest('/api/generate/pending/processing-edited/prompt', {
+      prompt: 'replacement prompt',
+    });
+    const body = await response.json() as { success: boolean; code: string };
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({ success: false, code: 'GENERATION_NOT_EDITABLE' });
+    expect(axiosPost).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT id, prompt, status FROM queue WHERE messageId = ?').get('processing-edited'))
+      .toMatchObject({ id: oldQueue.id, prompt: 'processing-edited prompt', status: 'processing' });
+    expect((db.prepare('SELECT id FROM queue WHERE messageId = ?').get('processing-edited') as { id: number }).id)
+      .toBe(oldQueue.id);
+    expect(db.prepare('SELECT prompt, generationPrompt, status, generationStartedAt FROM messages WHERE id = ?')
+      .get('processing-edited'))
+      .toEqual({
+        prompt: 'processing-edited prompt',
+        generationPrompt: null,
+        status: 'processing',
         generationStartedAt: null,
       });
   });

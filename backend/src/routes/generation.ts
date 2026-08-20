@@ -15,6 +15,12 @@ import {
 import { ServiceUrlError } from '../security/service-url';
 import { GenerationParams } from '../types';
 import { replaceAutoPromptTags } from '../services/prompt-tags';
+import {
+  appendPhotoFilter,
+  normalizePhotoFilter,
+  readStoredPhotoFilter,
+  StoredPhotoFilter,
+} from '../services/photo-filter';
 
 const router = express.Router();
 
@@ -33,6 +39,9 @@ type RetryableMessage = {
   seed: number | null;
   sampler: string | null;
   scheduler: string | null;
+  photoFilterId: string | null;
+  photoFilterLabel: string | null;
+  photoFilterPrompt: string | null;
 };
 
 const normalizeGenerationParams = (params: any, overrides: Partial<GenerationParams> = {}): GenerationParams => {
@@ -120,7 +129,13 @@ router.get('/active', authenticate, (req, res) => {
   res.json(generations);
 });
 
-const enqueueRetry = (message: RetryableMessage, userId: string, fallbackParams: any, createdAt: number) => {
+const enqueueRetry = (
+  message: RetryableMessage,
+  userId: string,
+  fallbackParams: any,
+  createdAt: number,
+  overrides?: { photoFilter?: StoredPhotoFilter | null; basePrompt?: string },
+) => {
   const params = normalizeGenerationParams(
     { ...fallbackParams, ...parseStoredParams(message.generationParams) },
     {
@@ -135,7 +150,11 @@ const enqueueRetry = (message: RetryableMessage, userId: string, fallbackParams:
       scheduler: message.scheduler || undefined
     }
   );
-  const executionPrompt = message.generationPrompt || message.prompt;
+  const basePrompt = overrides?.basePrompt?.trim() || message.generationPrompt || message.prompt;
+  const photoFilter = overrides && Object.prototype.hasOwnProperty.call(overrides, 'photoFilter')
+    ? overrides.photoFilter || null
+    : readStoredPhotoFilter(message);
+  const executionPrompt = appendPhotoFilter(basePrompt, photoFilter);
 
   db.prepare('DELETE FROM queue WHERE messageId = ?').run(message.id);
   db.prepare(`
@@ -145,9 +164,18 @@ const enqueueRetry = (message: RetryableMessage, userId: string, fallbackParams:
   db.prepare(`
     UPDATE messages
     SET status = 'pending', text = ?, imageUrl = NULL, thumbnailUrl = NULL,
-        duration = NULL, generationStartedAt = NULL, generationPrompt = ?, generationParams = ?
+        duration = NULL, generationStartedAt = NULL, generationPrompt = ?, generationParams = ?,
+        photoFilterId = ?, photoFilterLabel = ?, photoFilterPrompt = ?
     WHERE id = ?
-  `).run(executionPrompt !== message.prompt ? executionPrompt : '', executionPrompt, JSON.stringify(params), message.id);
+  `).run(
+    basePrompt !== message.prompt ? basePrompt : '',
+    basePrompt,
+    JSON.stringify(params),
+    photoFilter?.id || null,
+    photoFilter?.label || null,
+    photoFilter?.prompt || null,
+    message.id,
+  );
 };
 
 router.post('/generate', authenticate, async (req, res) => {
@@ -163,6 +191,12 @@ router.post('/generate', authenticate, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Unauthorized session' });
     }
     assertUserQueueCapacity(user.id);
+
+    const requestedBasePrompt = typeof req.body.baseGenerationPrompt === 'string'
+      ? req.body.baseGenerationPrompt.trim().slice(0, 20_000)
+      : prompt.trim().slice(0, 20_000);
+    const photoFilter = normalizePhotoFilter(req.body.photoFilter);
+    const executionPrompt = appendPhotoFilter(requestedBasePrompt, photoFilter);
 
     const timestamp = Date.now();
     let messageId: string;
@@ -189,9 +223,12 @@ router.post('/generate', authenticate, async (req, res) => {
 
       messageId = recovery.id;
       tags = db.transaction(() => {
-        enqueueRetry(recovery, user.id, params, timestamp);
+        enqueueRetry(recovery, user.id, params, timestamp, {
+          photoFilter,
+          basePrompt: requestedBasePrompt,
+        });
         db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
-        return replaceAutoPromptTags(db, messageId, recovery.generationPrompt || recovery.prompt)
+        return replaceAutoPromptTags(db, messageId, requestedBasePrompt)
           .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
       })();
     } else {
@@ -200,9 +237,9 @@ router.post('/generate', authenticate, async (req, res) => {
       userMessageId = uuidv4();
 
       // Si prompt est différent d'originalPrompt, c'est que l'IA a bossé
-      const isEnhanced = prompt && originalPrompt && prompt !== originalPrompt;
-      const displayPrompt = originalPrompt || prompt;
-      const enhancedText = isEnhanced ? prompt : '';
+      const isEnhanced = requestedBasePrompt && originalPrompt && requestedBasePrompt !== originalPrompt;
+      const displayPrompt = originalPrompt || requestedBasePrompt;
+      const enhancedText = isEnhanced ? requestedBasePrompt : '';
       const model = params?.comfyModel || 'dirtyRealism_DMDSAT.safetensors';
       const workflowFile = params?.workflowFile || 'workflow_lcm.json';
       const seed = (params?.seed && params.seed !== -1) ? params.seed : Math.floor(Math.random() * 1000000000000000);
@@ -215,19 +252,31 @@ router.post('/generate', authenticate, async (req, res) => {
           })).filter((selection: { slug: string; value: string }) => selection.slug && selection.value)
         : [];
 
-      const insertMsg = db.prepare('INSERT INTO messages (id, sessionId, role, text, prompt, imageUrl, timestamp, model, width, height, steps, cfg, workflow, status, seed, randomSelections, generationPrompt, generationParams) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      const insertMsg = db.prepare(`
+        INSERT INTO messages (
+          id, sessionId, role, text, prompt, imageUrl, timestamp, model, width, height,
+          steps, cfg, workflow, status, seed, randomSelections, generationPrompt,
+          generationParams, photoFilterId, photoFilterLabel, photoFilterPrompt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
 
       if (!req.body.isRegeneration) {
-        insertMsg.run(userMessageId, sessionId, 'user', displayPrompt, '', null, timestamp - 1, null, null, null, null, null, null, 'completed', null, null, null, null);
+        insertMsg.run(userMessageId, sessionId, 'user', displayPrompt, '', null, timestamp - 1, null, null, null, null, null, null, 'completed', null, null, null, null, null, null, null);
       }
 
       const storedParams = { ...safeParams, seed };
-      insertMsg.run(messageId, sessionId, 'bot', enhancedText, displayPrompt, null, timestamp, model, params?.width || 896, params?.height || 1152, params?.steps || 8, params?.cfg || 1.1, workflowFile, 'pending', seed, JSON.stringify(randomSelections), prompt, JSON.stringify(storedParams));
-      tags = replaceAutoPromptTags(db, messageId, prompt)
+      insertMsg.run(
+        messageId, sessionId, 'bot', enhancedText, displayPrompt, null, timestamp, model,
+        params?.width || 896, params?.height || 1152, params?.steps || 8, params?.cfg || 1.1,
+        workflowFile, 'pending', seed, JSON.stringify(randomSelections), requestedBasePrompt,
+        JSON.stringify(storedParams), photoFilter?.id || null, photoFilter?.label || null,
+        photoFilter?.prompt || null,
+      );
+      tags = replaceAutoPromptTags(db, messageId, requestedBasePrompt)
         .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
 
       db.prepare('INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(messageId, user.id, prompt, originalPrompt, sessionId, JSON.stringify(storedParams), 'pending', timestamp);
+        .run(messageId, user.id, executionPrompt, originalPrompt, sessionId, JSON.stringify(storedParams), 'pending', timestamp);
 
       db.prepare('UPDATE sessions SET title = ?, updatedAt = ? WHERE id = ? AND title = \'New Chat\'').run(displayPrompt.substring(0, 30), timestamp, sessionId);
       db.prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(timestamp, sessionId);
@@ -250,7 +299,10 @@ router.post('/generate', authenticate, async (req, res) => {
       userMessageId: req.body.isRegeneration ? undefined : userMessageId,
       status: currentMessageState?.status || 'pending',
       generationStartedAt: currentMessageState?.generationStartedAt,
-      tags
+      tags,
+      photoFilterId: photoFilter?.id || null,
+      photoFilterLabel: photoFilter?.label || null,
+      photoFilterPrompt: photoFilter?.prompt || null,
     });
   } catch (error: any) {
     if (error instanceof QueueCapacityError) return res.status(error.statusCode).json({
@@ -344,25 +396,24 @@ router.patch('/pending/:messageId/prompt', authenticate, async (req, res) => {
 
     const pendingMessage = db.prepare(`
       SELECT m.id, m.sessionId, m.timestamp, m.prompt, m.generationPrompt,
-             q.id AS queueId, q.userId AS queueUserId, q.params AS queueParams,
-             q.status AS queueStatus, q.createdAt AS queueCreatedAt
+             m.photoFilterId, m.photoFilterLabel, m.photoFilterPrompt,
+             q.id AS queueId
       FROM messages m
       JOIN sessions s ON s.id = m.sessionId
       JOIN queue q ON q.messageId = m.id
       WHERE m.id = ? AND s.userId = ? AND m.role = 'bot'
         AND m.status IN ('pending', 'preparing', 'processing')
-        AND q.status IN ('pending', 'processing')
+        AND q.status = 'pending'
     `).get(req.params.messageId, user.id) as {
       id: string;
       sessionId: string;
       timestamp: number;
       prompt: string;
       generationPrompt: string | null;
+      photoFilterId: string | null;
+      photoFilterLabel: string | null;
+      photoFilterPrompt: string | null;
       queueId: number;
-      queueUserId: string | null;
-      queueParams: string;
-      queueStatus: 'pending' | 'processing';
-      queueCreatedAt: number;
     } | undefined;
     if (!pendingMessage) {
       return res.status(409).json({
@@ -382,35 +433,15 @@ router.patch('/pending/:messageId/prompt', authenticate, async (req, res) => {
       LIMIT 1
     `).get(pendingMessage.sessionId, pendingMessage.timestamp - 1, pendingMessage.prompt) as { id: string } | undefined;
 
-    const wasAlreadyClaimed = pendingMessage.queueStatus === 'processing';
-    const targetUrl = wasAlreadyClaimed
-      ? getTargetComfyUrl((JSON.parse(pendingMessage.queueParams || '{}') as GenerationParams).comfyUrl)
-      : null;
+    const pendingPhotoFilter = readStoredPhotoFilter(pendingMessage);
+    const executionPrompt = appendPhotoFilter(prompt, pendingPhotoFilter);
     const tags = db.transaction(() => {
       const originalPrompt = keepsRewrittenSourceHidden ? pendingMessage.prompt : prompt;
-      if (wasAlreadyClaimed) {
-        const deletion = db.prepare("DELETE FROM queue WHERE id = ? AND status = 'processing'")
-          .run(pendingMessage.queueId);
-        if (deletion.changes !== 1) throw new Error('GENERATION_NOT_EDITABLE');
-        db.prepare(`
-          INSERT INTO queue (messageId, userId, prompt, originalPrompt, sessionId, params, status, createdAt)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-        `).run(
-          pendingMessage.id,
-          pendingMessage.queueUserId || user.id,
-          prompt,
-          originalPrompt,
-          pendingMessage.sessionId,
-          pendingMessage.queueParams,
-          pendingMessage.queueCreatedAt,
-        );
-      } else {
-        const queueUpdate = db.prepare(`
-          UPDATE queue SET prompt = ?, originalPrompt = ?
-          WHERE id = ? AND status = 'pending'
-        `).run(prompt, originalPrompt, pendingMessage.queueId);
-        if (queueUpdate.changes !== 1) throw new Error('GENERATION_NOT_EDITABLE');
-      }
+      const queueUpdate = db.prepare(`
+        UPDATE queue SET prompt = ?, originalPrompt = ?
+        WHERE id = ? AND status = 'pending'
+      `).run(executionPrompt, originalPrompt, pendingMessage.queueId);
+      if (queueUpdate.changes !== 1) throw new Error('GENERATION_NOT_EDITABLE');
 
       db.prepare(`
         UPDATE messages
@@ -430,7 +461,6 @@ router.patch('/pending/:messageId/prompt', authenticate, async (req, res) => {
       return replaceAutoPromptTags(db, pendingMessage.id, prompt)
         .map(({ slug, category, labelFr, labelEn }) => ({ slug, category, labelFr, labelEn }));
     })();
-    if (wasAlreadyClaimed) disconnectQueueTask(pendingMessage.queueId);
 
     const update = {
       messageId: pendingMessage.id,
@@ -443,13 +473,6 @@ router.patch('/pending/:messageId/prompt', authenticate, async (req, res) => {
       linkedUserText: linkedUserMessage && !keepsRewrittenSourceHidden ? prompt : undefined,
     };
     broadcastToSession(pendingMessage.sessionId, update);
-    if (targetUrl) {
-      try {
-        await axios.post(`${targetUrl}/interrupt`, undefined, { timeout: 10_000 });
-      } catch {
-        console.warn('[Prompt edit] ComfyUI interrupt call failed (the replacement remains queued)');
-      }
-    }
     return res.json({ success: true, ...update });
   } catch (error: any) {
     if (error?.message === 'GENERATION_NOT_EDITABLE') {

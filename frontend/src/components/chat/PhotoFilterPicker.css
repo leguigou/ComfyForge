@@ -1,0 +1,60 @@
+.photo-filter-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1250;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(8, 10, 16, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.photo-filter-picker {
+  width: min(920px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--bg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+}
+
+.photo-filter-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.photo-filter-title-wrap { display: flex; align-items: center; gap: 12px; }
+.photo-filter-title-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; color: var(--accent); background: var(--accent-bg); }
+.photo-filter-header h2 { margin: 0; font-size: 1.15rem; }
+.photo-filter-header p { margin: 4px 0 0; color: var(--text); font-size: 0.86rem; }
+.photo-filter-close { display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 50%; color: var(--text); background: transparent; cursor: pointer; }
+.photo-filter-close:hover { color: var(--text-h); background: var(--social-bg); }
+
+.photo-filter-body { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 430px; max-height: calc(100vh - 160px); }
+.photo-filter-families { display: flex; flex-direction: column; gap: 4px; padding: 14px; overflow-y: auto; border-right: 1px solid var(--border); }
+.photo-filter-families button { padding: 11px 12px; border: 0; border-radius: 10px; color: var(--text); background: transparent; text-align: left; font: inherit; cursor: pointer; }
+.photo-filter-families button:hover { color: var(--text-h); background: var(--social-bg); }
+.photo-filter-families button.active { color: var(--accent); background: var(--accent-bg); font-weight: 650; }
+
+.photo-filter-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 10px; padding: 18px; overflow-y: auto; }
+.photo-filter-card { display: flex; flex-direction: column; gap: 5px; min-height: 82px; padding: 14px; border: 1px solid var(--border); border-radius: 13px; color: var(--text-h); background: var(--social-bg); text-align: left; cursor: pointer; }
+.photo-filter-card:hover { border-color: var(--accent-border); transform: translateY(-1px); }
+.photo-filter-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-bg); }
+.photo-filter-card strong { font-size: 0.92rem; }
+.photo-filter-card span { color: var(--text); font-size: 0.8rem; line-height: 1.35; }
+.photo-filter-none { grid-column: 1 / -1; min-height: 68px; }
+
+@media (max-width: 700px) {
+  .photo-filter-overlay { align-items: end; padding: 0; }
+  .photo-filter-picker { max-height: 88vh; border-radius: 22px 22px 0 0; }
+  .photo-filter-header { padding: 16px; }
+  .photo-filter-body { display: flex; flex-direction: column; max-height: calc(88vh - 84px); }
+  .photo-filter-families { flex-direction: row; flex: 0 0 auto; padding: 10px; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  .photo-filter-families button { flex: 0 0 auto; white-space: nowrap; }
+  .photo-filter-presets { grid-template-columns: 1fr; padding: 12px; }
+}

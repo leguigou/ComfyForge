@@ -102,6 +102,18 @@ interface ThumbnailCacheStats {
   totalBytes: number;
 }
 
+interface PromptGroupRebuildStatus {
+  status: 'idle' | 'dirty' | 'running' | 'complete' | 'error';
+  processedPhotos: number;
+  totalPhotos: number;
+  groupsFormed: number;
+  percent: number;
+  manualGroupsPreserved: number;
+  needsRebuild: boolean;
+  completedAt?: number;
+  error?: string;
+}
+
 type NewAdminUser = {
   username: string;
   password: string;
@@ -436,6 +448,9 @@ interface SettingsModalProps {
   setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs') => void;
   params: GenParameters;
   setParams: Dispatch<SetStateAction<GenParameters>>;
+  settingsSaveState: 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
+  onSaveSettings: (params: GenParameters, silent?: boolean) => Promise<boolean>;
+  onPromptGroupsRebuilt: () => void;
   clipboardAutoGenerateSupported: boolean;
   isClipboardAutoGeneratePending: boolean;
   onClipboardAutoGenerateChange: (enabled: boolean) => Promise<void>;
@@ -475,6 +490,9 @@ export const SettingsModal = ({
   setActiveTab,
   params,
   setParams,
+  settingsSaveState,
+  onSaveSettings,
+  onPromptGroupsRebuilt,
   clipboardAutoGenerateSupported,
   isClipboardAutoGeneratePending,
   onClipboardAutoGenerateChange,
@@ -532,6 +550,10 @@ export const SettingsModal = ({
   const [isInspectingThumbnailCache, setIsInspectingThumbnailCache] = useState(false);
   const [isPurgingThumbnailCache, setIsPurgingThumbnailCache] = useState(false);
   const [showThumbnailCacheConfirm, setShowThumbnailCacheConfirm] = useState(false);
+  const [promptGroupRebuildStatus, setPromptGroupRebuildStatus] = useState<PromptGroupRebuildStatus | null>(null);
+  const [isStartingPromptGroupRebuild, setIsStartingPromptGroupRebuild] = useState(false);
+  const requestedPromptGroupRebuildRef = useRef(false);
+  const reportedPromptGroupCompletionRef = useRef<number | null>(null);
 
   // Local states for textareas to allow manual save
   const [localNegativePrompt, setLocalNegativePrompt] = useState(params.negativePrompt);
@@ -548,6 +570,59 @@ export const SettingsModal = ({
   const modalRef = useRef<HTMLDivElement>(null);
   const thumbnailCacheCancelRef = useRef<HTMLButtonElement>(null);
   const hydratedProfilesRef = useRef('');
+
+  useEffect(() => {
+    if (!showSettings || activeTab !== 'general') return;
+    let cancelled = false;
+    const loadStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/gallery/prompt-group-cache/status`, { credentials: 'include' });
+        const data = await response.json();
+        if (!response.ok || cancelled) return;
+        setPromptGroupRebuildStatus(data as PromptGroupRebuildStatus);
+        if (
+          requestedPromptGroupRebuildRef.current
+          && data.status === 'complete'
+          && typeof data.completedAt === 'number'
+          && reportedPromptGroupCompletionRef.current !== data.completedAt
+        ) {
+          reportedPromptGroupCompletionRef.current = data.completedAt;
+          requestedPromptGroupRebuildRef.current = false;
+          onPromptGroupsRebuilt();
+          toast.success(t.promptGroupingRebuildComplete);
+        }
+      } catch {
+        // A later poll can recover from a transient status failure.
+      }
+    };
+    void loadStatus();
+    const timer = window.setInterval(() => void loadStatus(), 750);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeTab, onPromptGroupsRebuilt, showSettings, t.promptGroupingRebuildComplete]);
+
+  const startPromptGroupRebuild = async () => {
+    if (promptGroupRebuildStatus?.status === 'running' || isStartingPromptGroupRebuild) return;
+    setIsStartingPromptGroupRebuild(true);
+    try {
+      const saved = await onSaveSettings(params, false);
+      if (!saved) return;
+      const response = await fetch(`${API_BASE}/api/gallery/prompt-group-cache/rebuild`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || t.promptGroupingRebuildFailed);
+      requestedPromptGroupRebuildRef.current = true;
+      setPromptGroupRebuildStatus(data as PromptGroupRebuildStatus);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.promptGroupingRebuildFailed);
+    } finally {
+      setIsStartingPromptGroupRebuild(false);
+    }
+  };
 
   const unloadLlmMemory = async () => {
     setIsUnloadingLlm(true);
@@ -1362,6 +1437,106 @@ export const SettingsModal = ({
                     {t.customizeCompanion} →
                   </button>
                 </div>
+              </section>
+
+              <section className="prompt-grouping-settings-card">
+                <div className="prompt-grouping-settings-heading">
+                  <div>
+                    <h4>{t.promptGroupingSettingsTitle}</h4>
+                    <p>{t.promptGroupingSettingsHelp}</p>
+                  </div>
+                  <div className="prompt-grouping-heading-status">
+                    <span className={`settings-save-indicator ${settingsSaveState}`} role="status">
+                      {settingsSaveState === 'saving' ? t.settingsSaving
+                        : settingsSaveState === 'dirty' ? t.settingsUnsaved
+                          : settingsSaveState === 'error' ? t.settingsSaveError
+                            : t.settingsSavedIndicator}
+                    </span>
+                    <span className="prompt-grouping-settings-badge" aria-hidden="true">≈</span>
+                  </div>
+                </div>
+                <div className="prompt-grouping-settings-controls">
+                  <label className="lucky-slider">
+                    <span className="lucky-slider-label">
+                      <strong>{t.promptGroupingMinWords}</strong>
+                      <output>{params.galleryPromptSimilarityMinWords}</output>
+                    </span>
+                    <input
+                      type="range"
+                      min="2"
+                      max="200"
+                      step="1"
+                      value={params.galleryPromptSimilarityMinWords}
+                      onChange={event => setParams({
+                        ...params,
+                        galleryPromptSimilarityMinWords: Number(event.target.value),
+                      })}
+                    />
+                    <small>{t.promptGroupingMinWordsHelp}</small>
+                  </label>
+                  <label className="lucky-slider">
+                    <span className="lucky-slider-label">
+                      <strong>{t.promptGroupingSimilarity}</strong>
+                      <output>{params.galleryPromptSimilarityThreshold}%</output>
+                    </span>
+                    <input
+                      type="range"
+                      min="50"
+                      max="100"
+                      step="1"
+                      value={params.galleryPromptSimilarityThreshold}
+                      onChange={event => setParams({
+                        ...params,
+                        galleryPromptSimilarityThreshold: Number(event.target.value),
+                      })}
+                    />
+                    <small>{t.promptGroupingSimilarityHelp}</small>
+                  </label>
+                </div>
+                <div className="prompt-grouping-rebuild">
+                  <div className="prompt-grouping-rebuild-status" aria-live="polite">
+                    <div className="prompt-grouping-progress-label">
+                      <strong>{promptGroupRebuildStatus?.status === 'running'
+                        ? t.promptGroupingRebuildRunning
+                        : promptGroupRebuildStatus?.needsRebuild
+                          ? t.promptGroupingRebuildNeeded
+                          : t.promptGroupingRebuildReady}</strong>
+                      <span>{promptGroupRebuildStatus?.percent || 0}%</span>
+                    </div>
+                    <div
+                      className="prompt-grouping-progress-track"
+                      role="progressbar"
+                      aria-label={t.promptGroupingRebuildProgress}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={promptGroupRebuildStatus?.percent || 0}
+                    >
+                      <span style={{ width: `${Math.min(100, Math.max(0, promptGroupRebuildStatus?.percent || 0))}%` }} />
+                    </div>
+                    <div className="prompt-grouping-progress-stats">
+                      <span><strong>{promptGroupRebuildStatus?.processedPhotos || 0}</strong> / {promptGroupRebuildStatus?.totalPhotos || 0} {t.promptGroupingPhotos}</span>
+                      <span><strong>{promptGroupRebuildStatus?.groupsFormed || 0}</strong> {t.promptGroupingGroupsFormed}</span>
+                      <span><strong>{promptGroupRebuildStatus?.manualGroupsPreserved || 0}</strong> {t.promptGroupingManualPreserved}</span>
+                    </div>
+                    {promptGroupRebuildStatus?.status === 'error' && (
+                      <small className="prompt-grouping-rebuild-error">{promptGroupRebuildStatus.error || t.promptGroupingRebuildFailed}</small>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="prompt-grouping-rebuild-btn"
+                    onClick={() => void startPromptGroupRebuild()}
+                    disabled={isStartingPromptGroupRebuild || promptGroupRebuildStatus?.status === 'running'}
+                  >
+                    <RefreshIcon size={17} />
+                    {isStartingPromptGroupRebuild
+                      ? t.settingsSaving
+                      : promptGroupRebuildStatus?.status === 'running'
+                        ? t.promptGroupingRebuildRunning
+                        : t.promptGroupingRebuildAction}
+                  </button>
+                </div>
+                <small className="prompt-grouping-manual-note"><CheckCircleIcon size={15} /> {t.promptGroupingManualSafety}</small>
               </section>
 
               <section className="lucky-settings-card">

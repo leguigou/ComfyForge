@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { syncPromptTags } from './prompt-tags';
 
-export const DATABASE_SCHEMA_VERSION = 7;
+export const DATABASE_SCHEMA_VERSION = 9;
 
 // Standardized path for Docker, local development, and isolated tests.
 let dbPath: string;
@@ -86,6 +86,9 @@ export const initDatabase = () => {
       randomSelections TEXT,
       generationPrompt TEXT,
       generationParams TEXT,
+      photoFilterId TEXT,
+      photoFilterLabel TEXT,
+      photoFilterPrompt TEXT,
       comparisonMessageId TEXT,
       comparisonSourceId TEXT,
       FOREIGN KEY (sessionId) REFERENCES sessions(id) ON DELETE CASCADE
@@ -128,6 +131,27 @@ export const initDatabase = () => {
     CREATE TABLE IF NOT EXISTS user_settings (
       userId TEXT PRIMARY KEY,
       data TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_group_cache (
+      messageId TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      groupId TEXT NOT NULL,
+      promptKind TEXT NOT NULL,
+      normalizedPrompt TEXT NOT NULL,
+      wordCount INTEGER NOT NULL,
+      settingsHash TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_group_cache_state (
+      userId TEXT PRIMARY KEY,
+      settingsHash TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'dirty',
       updatedAt INTEGER NOT NULL,
       FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -202,6 +226,12 @@ export const initDatabase = () => {
     CREATE INDEX IF NOT EXISTS idx_queue_sessionId ON queue(sessionId);
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
     CREATE INDEX IF NOT EXISTS idx_llm_providers_userId ON llm_providers(userId);
+    CREATE INDEX IF NOT EXISTS idx_prompt_group_cache_group
+      ON prompt_group_cache(userId, settingsHash, groupId);
+    CREATE INDEX IF NOT EXISTS idx_prompt_group_cache_exact
+      ON prompt_group_cache(userId, settingsHash, promptKind, normalizedPrompt);
+    CREATE INDEX IF NOT EXISTS idx_prompt_group_cache_candidates
+      ON prompt_group_cache(userId, settingsHash, promptKind, wordCount);
     CREATE INDEX IF NOT EXISTS idx_vision_recoveries_user_updated
       ON vision_prompt_recoveries(userId, updatedAt DESC);
     CREATE INDEX IF NOT EXISTS idx_message_tags_tagId ON message_tags(tagId);
@@ -219,7 +249,7 @@ export const initDatabase = () => {
   }
 
   // Migrations
-  const columnsToCheck = ['model', 'width', 'height', 'steps', 'cfg', 'workflow', 'status', 'thumbnailUrl', 'seed', 'duration', 'generationStartedAt', 'isFavorite', 'isPromptFavorite', 'sampler', 'scheduler', 'randomSelections', 'generationPrompt', 'generationParams', 'comparisonMessageId', 'comparisonSourceId'];
+  const columnsToCheck = ['model', 'width', 'height', 'steps', 'cfg', 'workflow', 'status', 'thumbnailUrl', 'seed', 'duration', 'generationStartedAt', 'isFavorite', 'isPromptFavorite', 'sampler', 'scheduler', 'randomSelections', 'generationPrompt', 'generationParams', 'photoFilterId', 'photoFilterLabel', 'photoFilterPrompt', 'comparisonMessageId', 'comparisonSourceId'];
   columnsToCheck.forEach(col => {
     try {
       db.prepare(`SELECT ${col} FROM messages LIMIT 1`).get();
@@ -397,6 +427,93 @@ export const initDatabase = () => {
       `);
       db.pragma('user_version = 7');
     })();
+    currentSchemaVersion = 7;
+  }
+
+  if (currentSchemaVersion < 8) {
+    db.transaction(() => {
+      for (const column of ['photoFilterId', 'photoFilterLabel', 'photoFilterPrompt']) {
+        try {
+          db.prepare(`SELECT ${column} FROM messages LIMIT 1`).get();
+        } catch {
+          db.exec(`ALTER TABLE messages ADD COLUMN ${column} TEXT`);
+        }
+      }
+      // Existing prompts deliberately remain untouched. NULL means that no
+      // application-managed photo filter was recorded for that generation.
+      db.pragma('user_version = 8');
+    })();
+    currentSchemaVersion = 8;
+  }
+
+  if (currentSchemaVersion < 9) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS prompt_group_cache (
+          messageId TEXT PRIMARY KEY,
+          userId TEXT NOT NULL,
+          groupId TEXT NOT NULL,
+          promptKind TEXT NOT NULL,
+          normalizedPrompt TEXT NOT NULL,
+          wordCount INTEGER NOT NULL,
+          settingsHash TEXT NOT NULL,
+          updatedAt INTEGER NOT NULL,
+          FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE,
+          FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS prompt_group_cache_state (
+          userId TEXT PRIMARY KEY,
+          settingsHash TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'dirty',
+          updatedAt INTEGER NOT NULL,
+          FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_prompt_group_cache_group
+          ON prompt_group_cache(userId, settingsHash, groupId);
+        CREATE INDEX IF NOT EXISTS idx_prompt_group_cache_exact
+          ON prompt_group_cache(userId, settingsHash, promptKind, normalizedPrompt);
+        CREATE INDEX IF NOT EXISTS idx_prompt_group_cache_candidates
+          ON prompt_group_cache(userId, settingsHash, promptKind, wordCount);
+
+        CREATE TRIGGER IF NOT EXISTS prompt_group_cache_message_insert
+        AFTER INSERT ON messages WHEN NEW.imageUrl IS NOT NULL BEGIN
+          INSERT INTO prompt_group_cache_state (userId, settingsHash, status, updatedAt)
+          SELECT s.userId, '', 'dirty', unixepoch('subsec') * 1000
+          FROM sessions s WHERE s.id = NEW.sessionId AND s.userId IS NOT NULL
+          ON CONFLICT(userId) DO UPDATE SET status = 'dirty', updatedAt = excluded.updatedAt;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS prompt_group_cache_message_update
+        AFTER UPDATE OF imageUrl, prompt, generationPrompt, text, randomSelections, manualGroupId ON messages
+        WHEN (OLD.imageUrl IS NOT NULL OR NEW.imageUrl IS NOT NULL) AND (OLD.imageUrl IS NOT NEW.imageUrl
+          OR OLD.prompt IS NOT NEW.prompt
+          OR OLD.generationPrompt IS NOT NEW.generationPrompt
+          OR OLD.text IS NOT NEW.text
+          OR OLD.randomSelections IS NOT NEW.randomSelections
+          OR OLD.manualGroupId IS NOT NEW.manualGroupId) BEGIN
+          INSERT INTO prompt_group_cache_state (userId, settingsHash, status, updatedAt)
+          SELECT s.userId, '', 'dirty', unixepoch('subsec') * 1000
+          FROM sessions s WHERE s.id = NEW.sessionId AND s.userId IS NOT NULL
+          ON CONFLICT(userId) DO UPDATE SET status = 'dirty', updatedAt = excluded.updatedAt;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS prompt_group_cache_message_delete
+        AFTER DELETE ON messages BEGIN
+          DELETE FROM prompt_group_cache WHERE messageId = OLD.id;
+          INSERT INTO prompt_group_cache_state (userId, settingsHash, status, updatedAt)
+          SELECT s.userId, '', 'dirty', unixepoch('subsec') * 1000
+          FROM sessions s WHERE s.id = OLD.sessionId AND s.userId IS NOT NULL
+          ON CONFLICT(userId) DO UPDATE SET status = 'dirty', updatedAt = excluded.updatedAt;
+        END;
+      `);
+      db.prepare(`
+        INSERT INTO prompt_group_cache_state (userId, settingsHash, status, updatedAt)
+        SELECT id, '', 'dirty', ? FROM users WHERE 1 = 1
+        ON CONFLICT(userId) DO UPDATE SET status = 'dirty', updatedAt = excluded.updatedAt
+      `).run(Date.now());
+      db.pragma('user_version = 9');
+    })();
+    currentSchemaVersion = 9;
   }
 
   // Default Admin

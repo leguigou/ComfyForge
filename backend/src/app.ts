@@ -26,6 +26,7 @@ import { startAuditLogRetention } from './services/audit-log';
 import { compressJsonResponses } from './middleware/response-compression';
 import { requestContext } from './middleware/request-context';
 import { createCsrfProtection } from './security/csrf';
+import { initializePromptGroupCaches } from './services/prompt-group-cache';
 
 const corsOptions = (req: Request): CorsOptions => ({
   origin: isAllowedRequestOrigin(req),
@@ -63,6 +64,7 @@ export const createApp = (authSecret: string) => {
   app.set('trust proxy', 1);
   configureProviderEncryption(authSecret);
   initDatabase();
+  initializePromptGroupCaches();
   startAuditLogRetention();
   app.use(requestContext);
 

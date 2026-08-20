@@ -39,7 +39,7 @@ export const centerGroupAfterRender = (container: HTMLElement | null, messageId:
 
 export const expandGalleryGroupMessageIds = async (items: GalleryGroupSelection[]) => {
   const groups = await Promise.all(items.map(async item => {
-    if ((item.groupCount || 1) <= 1 || item.manualGroupId) return [item.messageId];
+    if ((item.groupCount || 1) <= 1) return [item.messageId];
     const response = await fetch(`${API_BASE}/api/gallery/group/${encodeURIComponent(item.messageId)}`, {
       credentials: 'include',
     });
