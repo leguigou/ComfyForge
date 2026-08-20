@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../services/database';
 import { authenticate } from '../middleware/auth';
+import { rebuildPromptGroupCacheForUser } from '../services/prompt-group-cache';
 import { deleteFiles } from '../services/image';
 import { withParsedRandomSelections } from '../services/message-metadata';
 import { attachPromptTags } from '../services/prompt-tags';
@@ -12,7 +13,7 @@ const MAX_MESSAGE_PAGE_SIZE = 120;
 const MESSAGE_FIELDS = `id, role, text, prompt, generationPrompt, imageUrl, thumbnailUrl,
   model, width, height, steps, cfg, workflow, status, timestamp, seed, isFavorite,
   isPromptFavorite, duration, generationStartedAt, sampler, scheduler, randomSelections,
-  comparisonMessageId`;
+  photoFilterId, photoFilterLabel, photoFilterPrompt, comparisonMessageId`;
 
 const sessionListQuery = `
   SELECT
@@ -229,6 +230,9 @@ router.delete('/:sessionId/message/:messageId', authenticate, (req, res) => {
       : undefined;
   const messagesToDelete = [message, linkedMessage].filter(Boolean);
   const deletedMessageIds = messagesToDelete.map(candidate => candidate.id);
+  const affectedManualGroupIds = new Set(messagesToDelete
+    .map(deletedMessage => deletedMessage.manualGroupId)
+    .filter(Boolean));
   if (messagesToDelete.length) deleteFiles(messagesToDelete);
 
   db.transaction(() => {
@@ -266,9 +270,6 @@ router.delete('/:sessionId/message/:messageId', authenticate, (req, res) => {
       db.prepare('DELETE FROM queue WHERE messageId = ?').run(deletedMessage.id);
     }
 
-    const affectedManualGroupIds = new Set(messagesToDelete
-      .map(deletedMessage => deletedMessage.manualGroupId)
-      .filter(Boolean));
     for (const manualGroupId of affectedManualGroupIds) {
       const remaining = db.prepare(`
         SELECT COUNT(*) AS count
@@ -286,6 +287,7 @@ router.delete('/:sessionId/message/:messageId', authenticate, (req, res) => {
       }
     }
   })();
+  if (affectedManualGroupIds.size > 0) rebuildPromptGroupCacheForUser(user.id);
   res.json({ success: true, deletedMessageIds });
 });
 

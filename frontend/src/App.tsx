@@ -40,6 +40,7 @@ import {
 import { toGenerationRequestParams } from './utils/generationParams';
 import { isRuntimeVersionReminderSnoozed, snoozeRuntimeVersionReminder } from './utils/runtimeVersionReminder';
 import { copyImageToClipboard, ImageClipboardError } from './utils/imageClipboard';
+import { findPhotoFilter, type PhotoFilterPreset } from './utils/photoFilters';
 
 const SettingsModal = lazy(() => importWithRecovery(() => import('./components/settings/SettingsModal')).then(module => ({
   default: module.SettingsModal
@@ -181,6 +182,8 @@ const createDefaultGenParameters = (): GenParameters => ({
   visionModelTtlMinutes: 30,
   luckyTemperature: 0.95,
   luckyFavoriteCount: 6,
+  galleryPromptSimilarityMinWords: 20,
+  galleryPromptSimilarityThreshold: 90,
   workflowFile: 'workflow_lcm.json',
   nodeMapping: { checkpoint: "1", positive: "3", negative: "4", ksampler: "10", latent: "6", save: "99" },
   seedMode: 'random',
@@ -431,6 +434,7 @@ function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [comparisonMessageId, setComparisonMessageId] = useState<string | null>(null);
   const [queueRemaining, setQueueRemaining] = useState<number | null>(null);
+  const previousQueueRemainingRef = useRef<number | null>(null);
   const [showQueueIndicator, setShowQueueIndicator] = useState(
     () => sessionStorage.getItem('comfyforge.queueIndicatorLatched') === 'true'
   );
@@ -447,8 +451,20 @@ function App() {
   
   const [input, setInput] = useState('');
   const [openOptionsRequest, setOpenOptionsRequest] = useState(0);
+  const [selectedPhotoFilter, setSelectedPhotoFilter] = useState<PhotoFilterPreset | null>(() => (
+    findPhotoFilter(localStorage.getItem('comfyforge.photoFilterId'))
+  ));
+
+  useEffect(() => {
+    if (selectedPhotoFilter) localStorage.setItem('comfyforge.photoFilterId', selectedPhotoFilter.id);
+    else localStorage.removeItem('comfyforge.photoFilterId');
+  }, [selectedPhotoFilter]);
   
   const [params, setParams] = useState<GenParameters>(createDefaultGenParameters);
+  const [promptGroupCacheVersion, setPromptGroupCacheVersion] = useState(0);
+  const handlePromptGroupsRebuilt = useCallback(() => {
+    setPromptGroupCacheVersion(version => version + 1);
+  }, []);
   const [isClipboardAutoGeneratePending, setIsClipboardAutoGeneratePending] = useState(false);
   const lastSavedParamsRef = useRef<string>('');
   const settingsRequestIdRef = useRef(0);
@@ -479,6 +495,17 @@ function App() {
   );
   const didFocusActiveGenerationAfterReloadRef = useRef(false);
   const refreshGalleryRef = useRef<((requestedOffset?: number) => Promise<GalleryItem[]>) | null>(null);
+  const liveGalleryRefreshTimeoutRef = useRef<number | null>(null);
+
+  const requestLiveGalleryRefresh = useCallback(() => {
+    // Several generations can finish almost simultaneously. Coalesce their
+    // notifications so the gallery only performs one fresh, filter-aware load.
+    if (liveGalleryRefreshTimeoutRef.current !== null) return;
+    liveGalleryRefreshTimeoutRef.current = window.setTimeout(() => {
+      liveGalleryRefreshTimeoutRef.current = null;
+      void refreshGalleryRef.current?.();
+    }, 100);
+  }, []);
 
   const smoothScrollTo = useCallback((elementId: string) => {
     if (pendingAnchorRef.current || isAnchoringRef.current) return;
@@ -605,9 +632,30 @@ function App() {
     }
 
     if (status === 'completed' && (view === 'gallery' || (view === 'thread-gallery' && currentSessionId === sessionId))) {
-      refreshGalleryRef.current?.();
+      requestLiveGalleryRefresh();
     }
-  }, [currentSessionId, markSessionAsViewed, setSessions, view]);
+  }, [currentSessionId, markSessionAsViewed, requestLiveGalleryRefresh, setSessions, view]);
+
+  useEffect(() => {
+    const previousQueueRemaining = previousQueueRemainingRef.current;
+    previousQueueRemainingRef.current = queueRemaining;
+    if (
+      previousQueueRemaining !== null
+      && queueRemaining !== null
+      && queueRemaining < previousQueueRemaining
+      && (view === 'gallery' || view === 'thread-gallery')
+    ) {
+      // This also catches a completion that happened while the WebSocket was
+      // reconnecting; the active-generation poll still updates this counter.
+      requestLiveGalleryRefresh();
+    }
+  }, [queueRemaining, requestLiveGalleryRefresh, view]);
+
+  useEffect(() => () => {
+    if (liveGalleryRefreshTimeoutRef.current !== null) {
+      window.clearTimeout(liveGalleryRefreshTimeoutRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const markCurrentSessionAsViewed = () => {
@@ -637,7 +685,8 @@ function App() {
     setMessages,
     smoothScrollTo,
     fetchSessions,
-    acknowledgeQueueMessage
+    acknowledgeQueueMessage,
+    selectedPhotoFilter,
   );
 
   const isGenerating = isEnhancing || messages.some(m => m.role === 'bot' && (m.status === 'pending' || m.status === 'preparing' || m.status === 'processing'));
@@ -1103,6 +1152,7 @@ function App() {
   const [selectedGalleryAspects, setSelectedGalleryAspects] = useState<Array<'square' | 'portrait' | 'landscape'>>([]);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
   const [isSettingsResolved, setIsSettingsResolved] = useState(false);
+  const [settingsSaveState, setSettingsSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle');
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [favoritedId, setFavoritedId] = useState<string | null>(null);
@@ -1662,6 +1712,7 @@ function App() {
       if (settingsRequestIdRef.current !== requestId) return;
       setNeedsOnboarding(res.headers.get('X-ComfyForge-Settings-Source') === 'default');
       if (data && data.width) {
+        setSettingsSaveState('saved');
         setParams(prev => {
           const storedParams = {
             ...prev,
@@ -1672,6 +1723,12 @@ function App() {
             luckyFavoriteCount: typeof data.luckyFavoriteCount === 'number'
               ? Math.min(8, Math.max(1, Math.round(data.luckyFavoriteCount)))
               : prev.luckyFavoriteCount,
+            galleryPromptSimilarityMinWords: typeof data.galleryPromptSimilarityMinWords === 'number'
+              ? Math.min(200, Math.max(2, Math.round(data.galleryPromptSimilarityMinWords)))
+              : prev.galleryPromptSimilarityMinWords,
+            galleryPromptSimilarityThreshold: typeof data.galleryPromptSimilarityThreshold === 'number'
+              ? Math.min(100, Math.max(50, Math.round(data.galleryPromptSimilarityThreshold)))
+              : prev.galleryPromptSimilarityThreshold,
             favoriteModels: data.favoriteModels || prev.favoriteModels,
             civitaiModelLinks: Array.isArray(data.civitaiModelLinks) ? data.civitaiModelLinks : prev.civitaiModelLinks,
             randomPromptLists: data.randomPromptLists || prev.randomPromptLists,
@@ -1715,6 +1772,7 @@ function App() {
     settingsRequestIdRef.current += 1;
     settingsSaveRequestIdRef.current += 1;
     lastSavedParamsRef.current = '';
+    setSettingsSaveState('idle');
     setIsSettingsLoaded(false);
     setIsSettingsResolved(false);
     setNeedsOnboarding(false);
@@ -1737,12 +1795,16 @@ function App() {
   }, [isAuthenticated, showSettings, fetchComfyModels, fetchWorkflows]);
 
   const saveSettings = useCallback(async (newParams: GenParameters, silent = false) => {
-    if (!isSettingsLoaded) return;
+    if (!isSettingsLoaded) return false;
     
     // Stringify to compare content
     const paramsString = JSON.stringify(newParams);
-    if (paramsString === lastSavedParamsRef.current) return;
+    if (paramsString === lastSavedParamsRef.current) {
+      setSettingsSaveState('saved');
+      return true;
+    }
     const requestId = ++settingsSaveRequestIdRef.current;
+    setSettingsSaveState('saving');
 
     try {
       const res = await fetch(`${API_BASE}/api/settings`, {
@@ -1755,7 +1817,7 @@ function App() {
       if (!res.ok) {
         throw new Error(data?.error || `${t.settingsSaveFailed} (${res.status})`);
       }
-      if (requestId !== settingsSaveRequestIdRef.current) return;
+      if (requestId !== settingsSaveRequestIdRef.current) return false;
       const persistedParams: GenParameters = data?.settings
         ? {
             ...newParams,
@@ -1765,15 +1827,19 @@ function App() {
         : newParams;
       const persistedString = JSON.stringify(persistedParams);
       lastSavedParamsRef.current = persistedString;
+      setSettingsSaveState('saved');
       if (persistedString !== paramsString) {
         setParams(current => JSON.stringify(current) === paramsString ? persistedParams : current);
       }
       if (!silent) {
         toast.success(t.settingsSaved, { id: 'settings-save' });
       }
+      return true;
     } catch (err) {
       console.error('Error saving settings:', err);
+      if (requestId === settingsSaveRequestIdRef.current) setSettingsSaveState('error');
       toast.error(err instanceof Error ? err.message : t.settingsSaveFailed, { id: 'settings-save' });
+      return false;
     }
   }, [isSettingsLoaded, t.settingsSaved, t.settingsSaveFailed]);
 
@@ -1808,8 +1874,11 @@ function App() {
     // On first load after settings are fetched, initialize the ref without showing toast
     if (!lastSavedParamsRef.current) {
       lastSavedParamsRef.current = JSON.stringify(params);
+      setSettingsSaveState('saved');
       return;
     }
+
+    if (JSON.stringify(params) !== lastSavedParamsRef.current) setSettingsSaveState('dirty');
 
     const timer = setTimeout(() => saveSettings(params, !showSettings), 1000);
     return () => clearTimeout(timer);
@@ -2198,7 +2267,7 @@ function App() {
       resetGallery();
       void fetchPromptTags();
     }
-  }, [view, currentSessionId, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, selectedPromptTags, selectedGalleryModels, selectedGalleryWorkflows, selectedGalleryAspects, debouncedGallerySearch, resetGallery, fetchPromptTags]);
+  }, [view, currentSessionId, showArchivedInGallery, favoritesOnly, promptFavoritesOnly, groupByPrompt, promptGroupCacheVersion, selectedPromptTags, selectedGalleryModels, selectedGalleryWorkflows, selectedGalleryAspects, debouncedGallerySearch, resetGallery, fetchPromptTags]);
 
   const goToImage = useCallback((sessionId: string, messageId: string) => {
     requestMessageAnchor(messageId);
@@ -3155,6 +3224,7 @@ function App() {
     ? currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || ''
     : '';
   const currentLightboxTags = currentLightboxItem?.tags || [];
+  const currentLightboxPhotoFilter = findPhotoFilter(currentLightboxItem?.photoFilterId);
   const currentLightboxMetadata = currentLightboxItem && activeLightbox ? [
     {
       label: t.date,
@@ -3173,6 +3243,21 @@ function App() {
     { label: t.model, value: currentLightboxItem.model || t.unknown },
     { label: t.seed, value: currentLightboxItem.seed ?? t.unknown },
     { label: t.workflow, value: currentLightboxItem.workflow || t.unknown },
+    {
+      label: lang === 'fr' ? 'Filtre photo' : 'Photo filter',
+      value: currentLightboxItem.photoFilterId
+        ? <span className="metadata-photo-filter-value">
+            {currentLightboxPhotoFilter?.[lang === 'fr' ? 'labelFr' : 'labelEn']
+              || currentLightboxItem.photoFilterLabel
+              || t.unknown}
+            {currentLightboxPhotoFilter && selectedPhotoFilter?.id !== currentLightboxPhotoFilter.id && (
+              <button type="button" onClick={() => setSelectedPhotoFilter(currentLightboxPhotoFilter)}>
+                {lang === 'fr' ? 'Utiliser' : 'Use'}
+              </button>
+            )}
+          </span>
+        : (lang === 'fr' ? 'Aucun' : 'None'),
+    },
     { label: t.steps, value: currentLightboxItem.steps ?? t.unknown },
     { label: t.cfg, value: currentLightboxItem.cfg ?? t.unknown },
     { label: 'Sampler', value: currentLightboxItem.sampler || t.unknown },
@@ -3961,6 +4046,8 @@ function App() {
           <SettingsModal
             showSettings={showSettings} setShowSettings={setShowSettings} activeTab={activeTab} setActiveTab={setActiveTab}
             params={params} setParams={setParams} lang={lang} t={t} currentUser={currentUser}
+            settingsSaveState={settingsSaveState} onSaveSettings={saveSettings}
+            onPromptGroupsRebuilt={handlePromptGroupsRebuilt}
             clipboardAutoGenerateSupported={clipboardAutoGenerateSupported}
             isClipboardAutoGeneratePending={isClipboardAutoGeneratePending}
             onClipboardAutoGenerateChange={changeClipboardAutoGenerate}
@@ -4139,6 +4226,7 @@ function App() {
         ) : <Suspense fallback={<WorkspaceLoading />}><ChatInterface
           view={view} messages={messages} lang={lang} t={t} isGenerating={isGenerating} isEnhancing={isEnhancing}
           currentSessionId={currentSessionId} input={input} setInput={onInputChange} handleSend={onHandleSend}
+          selectedPhotoFilter={selectedPhotoFilter} setSelectedPhotoFilter={setSelectedPhotoFilter}
           createLuckyGeneration={createLuckyGeneration} isCreatingLuckyPrompt={isCreatingLuckyPrompt} isLoadingLuckyReferences={isLoadingLuckyReferences}
           regenerationCounts={regenerationCounts} recordRegeneration={recordRegeneration}
           retryMessage={retryMessage} dismissFailedMessage={dismissFailedMessage}

@@ -11,6 +11,7 @@ import { QueueTask, GenerationParams, ComfyHistoryEntry } from '../types';
 import { writeAuditLog } from './audit-log';
 import { resolveComfyHistoryImage, ResolvedComfyHistoryImage } from './comfy-history';
 import { getQueueLimits, selectNextFairTask } from './queue-policy';
+import { refreshPromptGroupCacheForMessage } from './prompt-group-cache';
 
 export { getQueueLimits } from './queue-policy';
 
@@ -360,6 +361,7 @@ export const processQueue = async () => {
     
     const completedAt = Date.now();
     db.prepare('UPDATE messages SET imageUrl = ?, thumbnailUrl = ?, status = ?, duration = ?, sampler = ?, scheduler = ? WHERE id = ?').run(imageUrl, thumbnailUrl, 'completed', finalDuration, sampler, scheduler, task.messageId);
+    refreshPromptGroupCacheForMessage(task.messageId);
     db.prepare('UPDATE sessions SET lastImageAt = ?, updatedAt = ? WHERE id = ?').run(completedAt, completedAt, task.sessionId);
     db.prepare('DELETE FROM queue WHERE id = ?').run(task.id);
     

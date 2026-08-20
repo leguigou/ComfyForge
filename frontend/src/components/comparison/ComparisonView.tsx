@@ -5,6 +5,7 @@ import type { CompanionSettings, FavoriteModel, Language } from '../../types';
 import { API_BASE, formatDuration, getFullImageUrl } from '../../services/api';
 import { getGenerationElapsedSeconds } from '../../utils/generationTimer';
 import { SeedyCompanion } from '../chat/SeedyCompanion';
+import { findPhotoFilter } from '../../utils/photoFilters';
 import './ComparisonView.css';
 
 type ComparisonImage = {
@@ -15,6 +16,9 @@ type ComparisonImage = {
   prompt?: string;
   text?: string;
   generationPrompt?: string;
+  photoFilterId?: string | null;
+  photoFilterLabel?: string | null;
+  photoFilterPrompt?: string | null;
   model?: string;
   workflow?: string;
   width?: number;
@@ -740,6 +744,12 @@ export const ComparisonView = ({
               <div><dt>{fr ? 'Dimensions' : 'Dimensions'}</dt><dd>{item.width} × {item.height}</dd></div>
               <div><dt>Steps / CFG</dt><dd>{item.steps} / {item.cfg}</dd></div>
               <div><dt>Sampler</dt><dd>{item.sampler || '—'} · {item.scheduler || '—'}</dd></div>
+              <div>
+                <dt>{fr ? 'Filtre photo' : 'Photo filter'}</dt>
+                <dd>{item.photoFilterId
+                  ? (findPhotoFilter(item.photoFilterId)?.[fr ? 'labelFr' : 'labelEn'] || item.photoFilterLabel || '—')
+                  : (fr ? 'Aucun' : 'None')}</dd>
+              </div>
               {item.duration !== undefined && <div><dt>{fr ? 'Durée' : 'Duration'}</dt><dd>{formatDuration(item.duration)}</dd></div>}
             </dl>
           </div>

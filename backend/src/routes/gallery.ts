@@ -8,6 +8,11 @@ import { withParsedRandomSelections } from '../services/message-metadata';
 import { attachPromptTags } from '../services/prompt-tags';
 import { imagesDir } from '../services/image';
 import { buildCivitaiGenerationData, embedCivitaiMetadataInWebp } from '../services/civitai-metadata';
+import {
+  getPromptGroupRebuildStatus,
+  rebuildPromptGroupCacheForUser,
+  startPromptGroupCacheRebuild,
+} from '../services/prompt-group-cache';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
@@ -24,28 +29,6 @@ const getMultiQueryValues = (value: unknown, maxItems = 50) => {
     .filter(Boolean))].slice(0, maxItems);
 };
 
-const effectivePromptSql = (messageAlias = 'm') => `CASE
-  WHEN NULLIF(TRIM(${messageAlias}.prompt), '') IS NOT NULL
-    AND CASE
-      WHEN json_valid(${messageAlias}.randomSelections)
-        THEN json_array_length(${messageAlias}.randomSelections)
-      ELSE 0
-    END > 0
-    THEN '__dynamic__:' || TRIM(${messageAlias}.prompt)
-  ELSE COALESCE(
-    NULLIF(TRIM(${messageAlias}.generationPrompt), ''),
-    NULLIF(TRIM(${messageAlias}.prompt), ''),
-    NULLIF(TRIM(${messageAlias}.text), ''),
-    '__message__:' || ${messageAlias}.id
-  )
-END`;
-
-const galleryGroupKeySql = (messageAlias = 'm') => `CASE
-  WHEN NULLIF(TRIM(${messageAlias}.manualGroupId), '') IS NOT NULL
-    THEN '__manual__:' || TRIM(${messageAlias}.manualGroupId)
-  ELSE '__prompt__:' || (${effectivePromptSql(messageAlias)})
-END`;
-
 const galleryColumnsSql = (messageAlias = 'm') => `
   ${messageAlias}.sessionId, ${messageAlias}.id as messageId, ${messageAlias}.imageUrl,
   ${messageAlias}.thumbnailUrl, ${messageAlias}.prompt, ${messageAlias}.text,
@@ -56,6 +39,7 @@ const galleryColumnsSql = (messageAlias = 'm') => `
   ${messageAlias}.manualGroupId,
   ${messageAlias}.duration, ${messageAlias}.sampler,
   ${messageAlias}.scheduler, ${messageAlias}.randomSelections,
+  ${messageAlias}.photoFilterId, ${messageAlias}.photoFilterLabel, ${messageAlias}.photoFilterPrompt,
   ${messageAlias}.comparisonMessageId
 `;
 
@@ -118,7 +102,7 @@ router.get('/download/:messageId', authenticate, async (req, res) => {
   const message = db.prepare(`
     SELECT m.id, m.text, m.prompt, m.generationPrompt, m.imageUrl, m.model,
       m.width, m.height, m.steps, m.cfg, m.seed, m.sampler, m.scheduler,
-      m.generationParams
+      m.generationParams, m.photoFilterId, m.photoFilterLabel, m.photoFilterPrompt
     FROM messages m
     JOIN sessions s ON s.id = m.sessionId
     WHERE m.id = ? AND s.userId = ? AND m.imageUrl IS NOT NULL
@@ -269,15 +253,27 @@ router.get('/random-prompt', authenticate, (req, res) => {
   res.json({ prompt: result.prompt, source });
 });
 
+router.get('/prompt-group-cache/status', authenticate, (req, res) => {
+  const user = (req as any).user;
+  res.json(getPromptGroupRebuildStatus(user.id));
+});
+
+router.post('/prompt-group-cache/rebuild', authenticate, (req, res) => {
+  const user = (req as any).user;
+  const status = startPromptGroupCacheRebuild(user.id);
+  res.status(status.status === 'running' ? 202 : 200).json(status);
+});
+
 router.get('/group/:messageId', authenticate, (req, res) => {
   const user = (req as any).user;
   const requestedSessionId = getRequestedSessionId(req);
   const representative = db.prepare(`
-    SELECT ${galleryGroupKeySql('m')} AS promptGroupKey, s.isArchived, m.sessionId
+    SELECT s.isArchived, m.sessionId, pgc.groupId
     FROM messages m
     JOIN sessions s ON s.id = m.sessionId
+    JOIN prompt_group_cache pgc ON pgc.messageId = m.id AND pgc.userId = s.userId
     WHERE m.id = ? AND s.userId = ? AND m.imageUrl IS NOT NULL
-  `).get(req.params.messageId, user.id) as { promptGroupKey: string; isArchived: number; sessionId: string } | undefined;
+  `).get(req.params.messageId, user.id) as { isArchived: number; sessionId: string; groupId: string } | undefined;
 
   if (!representative || (requestedSessionId && representative.sessionId !== requestedSessionId)) {
     return res.status(404).json({ error: 'Gallery group not found' });
@@ -287,17 +283,18 @@ router.get('/group/:messageId', authenticate, (req, res) => {
     SELECT ${galleryColumnsSql('m')}
     FROM messages m
     JOIN sessions s ON s.id = m.sessionId
+    JOIN prompt_group_cache pgc ON pgc.messageId = m.id AND pgc.userId = s.userId
     WHERE s.userId = ?
       AND s.isArchived = ?
       AND m.imageUrl IS NOT NULL
       ${requestedSessionId ? 'AND m.sessionId = ?' : ''}
-      AND ${galleryGroupKeySql('m')} = ?
+      AND pgc.groupId = ?
     ORDER BY COALESCE(m.isGroupCover, 0) DESC, m.timestamp DESC, m.id DESC
   `).all(
     user.id,
     representative.isArchived,
     ...(requestedSessionId ? [requestedSessionId] : []),
-    representative.promptGroupKey
+    representative.groupId,
   ) as Record<string, unknown>[];
 
   res.json({
@@ -309,11 +306,12 @@ router.get('/group/:messageId', authenticate, (req, res) => {
 router.put('/group/:messageId/cover', authenticate, (req, res) => {
   const user = (req as any).user;
   const representative = db.prepare(`
-    SELECT ${galleryGroupKeySql('m')} AS promptGroupKey, s.isArchived
+    SELECT s.isArchived, pgc.groupId
     FROM messages m
     JOIN sessions s ON s.id = m.sessionId
+    JOIN prompt_group_cache pgc ON pgc.messageId = m.id AND pgc.userId = s.userId
     WHERE m.id = ? AND s.userId = ? AND m.imageUrl IS NOT NULL
-  `).get(req.params.messageId, user.id) as { promptGroupKey: string; isArchived: number } | undefined;
+  `).get(req.params.messageId, user.id) as { isArchived: number; groupId: string } | undefined;
 
   if (!representative) {
     return res.status(404).json({ error: 'Gallery image not found' });
@@ -323,30 +321,21 @@ router.put('/group/:messageId/cover', authenticate, (req, res) => {
     SELECT m.id
     FROM messages m
     JOIN sessions s ON s.id = m.sessionId
+    JOIN prompt_group_cache pgc ON pgc.messageId = m.id AND pgc.userId = s.userId
     WHERE s.userId = ?
       AND s.isArchived = ?
       AND m.imageUrl IS NOT NULL
-      AND ${galleryGroupKeySql('m')} = ?
-  `).all(user.id, representative.isArchived, representative.promptGroupKey) as Array<{ id: string }>;
+      AND pgc.groupId = ?
+  `).all(user.id, representative.isArchived, representative.groupId)
+    .map((row: any) => String(row.id));
 
   if (groupIds.length < 2) {
     return res.status(409).json({ error: 'A gallery group needs at least two images' });
   }
 
   const updateCover = db.transaction(() => {
-    db.prepare(`
-      UPDATE messages
-      SET isGroupCover = 0
-      WHERE id IN (
-        SELECT m.id
-        FROM messages m
-        JOIN sessions s ON s.id = m.sessionId
-        WHERE s.userId = ?
-          AND s.isArchived = ?
-          AND m.imageUrl IS NOT NULL
-          AND ${galleryGroupKeySql('m')} = ?
-      )
-    `).run(user.id, representative.isArchived, representative.promptGroupKey);
+    db.prepare(`UPDATE messages SET isGroupCover = 0 WHERE id IN (${groupIds.map(() => '?').join(',')})`)
+      .run(...groupIds);
     db.prepare('UPDATE messages SET isGroupCover = 1 WHERE id = ?').run(req.params.messageId);
   });
   updateCover();
@@ -412,6 +401,7 @@ router.post('/manual-groups', authenticate, (req, res) => {
       if (remaining.count < 2) dissolveGroup.run(previousGroupId, user.id);
     });
   })();
+  rebuildPromptGroupCacheForUser(user.id);
 
   res.status(201).json({ success: true, manualGroupId, messageIds });
 });
@@ -436,6 +426,7 @@ router.delete('/group/:messageId/manual', authenticate, (req, res) => {
     WHERE manualGroupId = ?
       AND sessionId IN (SELECT id FROM sessions WHERE userId = ?)
   `).run(representative.manualGroupId, user.id);
+  rebuildPromptGroupCacheForUser(user.id);
 
   res.json({ success: true, ungrouped: result.changes });
 });
@@ -466,7 +457,9 @@ router.get('/', authenticate, (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 300) : '';
   
   let filteredSource = `
-    FROM messages m JOIN sessions s ON m.sessionId = s.id
+    FROM messages m
+    JOIN sessions s ON m.sessionId = s.id
+    ${groupByPrompt ? 'JOIN prompt_group_cache pgc ON pgc.messageId = m.id AND pgc.userId = s.userId' : ''}
     WHERE m.imageUrl IS NOT NULL AND s.userId = ?
   `;
   
@@ -536,11 +529,11 @@ router.get('/', authenticate, (req, res) => {
     const totalRow = includeTotal
       ? db.prepare(`
           SELECT COUNT(*) AS total FROM (
-            SELECT ${galleryGroupKeySql('m')} AS galleryGroupKey
+            SELECT pgc.groupId
             ${filteredSource}
-            GROUP BY ${galleryGroupKeySql('m')}
+            GROUP BY pgc.groupId
             ${groupHavingConditions.length ? `HAVING ${groupHavingConditions.join(' AND ')}` : ''}
-          ) grouped_prompts
+          ) cached_prompt_groups
         `).get(...params) as { total: number }
       : undefined;
     const groupCursorSql = hasCursor
@@ -551,16 +544,16 @@ router.get('/', authenticate, (req, res) => {
       : params;
     const results = db.prepare(`
       WITH filtered AS (
-        SELECT m.*, ${galleryGroupKeySql('m')} AS galleryGroupKey
+        SELECT m.*, pgc.groupId
         ${filteredSource}
       ), ranked AS (
         SELECT filtered.*,
-          COUNT(*) OVER (PARTITION BY galleryGroupKey) AS groupCount,
-          MAX(COALESCE(isFavorite, 0)) OVER (PARTITION BY galleryGroupKey) AS groupHasFavorite,
-          MAX(COALESCE(isPromptFavorite, 0)) OVER (PARTITION BY galleryGroupKey) AS groupHasPromptFavorite,
-          MAX(timestamp) OVER (PARTITION BY galleryGroupKey) AS groupTimestamp,
+          COUNT(*) OVER (PARTITION BY groupId) AS groupCount,
+          MAX(COALESCE(isFavorite, 0)) OVER (PARTITION BY groupId) AS groupHasFavorite,
+          MAX(COALESCE(isPromptFavorite, 0)) OVER (PARTITION BY groupId) AS groupHasPromptFavorite,
+          MAX(timestamp) OVER (PARTITION BY groupId) AS groupTimestamp,
           ROW_NUMBER() OVER (
-            PARTITION BY galleryGroupKey
+            PARTITION BY groupId
             ORDER BY COALESCE(isGroupCover, 0) DESC, timestamp DESC, id DESC
           ) AS promptGroupRank
         FROM filtered

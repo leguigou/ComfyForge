@@ -1,4 +1,5 @@
 import path from 'path';
+import { appendPhotoFilter, normalizePhotoFilter } from './photo-filter';
 
 export interface CivitaiGenerationSource {
   text?: unknown;
@@ -13,6 +14,9 @@ export interface CivitaiGenerationSource {
   sampler?: unknown;
   scheduler?: unknown;
   generationParams?: unknown;
+  photoFilterId?: unknown;
+  photoFilterLabel?: unknown;
+  photoFilterPrompt?: unknown;
 }
 
 export interface CivitaiResourceMetadata {
@@ -64,8 +68,14 @@ export const buildCivitaiGenerationData = (
   resource?: CivitaiResourceMetadata,
 ) => {
   const stored = parseGenerationParams(source.generationParams);
-  const prompt = firstString(source.generationPrompt, source.prompt, source.text)?.trim();
-  if (!prompt) return '';
+  const basePrompt = firstString(source.generationPrompt, source.prompt, source.text)?.trim();
+  if (!basePrompt) return '';
+  const photoFilter = normalizePhotoFilter({
+    id: source.photoFilterId,
+    label: source.photoFilterLabel,
+    prompt: source.photoFilterPrompt,
+  });
+  const prompt = appendPhotoFilter(basePrompt, photoFilter);
 
   const negativePrompt = firstString(stored.negativePrompt)?.trim();
   const steps = firstFiniteNumber(source.steps, stored.steps);
@@ -87,6 +97,7 @@ export const buildCivitaiGenerationData = (
   if (width !== undefined && height !== undefined) details.push(`Size: ${width}x${height}`);
   if (model) details.push(`Model: ${metadataValue(modelDisplayName(model))}`);
   if (modelHash) details.push(`Model hash: ${metadataValue(modelHash)}`);
+  if (photoFilter) details.push(`Photo filter: ${metadataValue(photoFilter.label)}`);
   details.push('Tool: ComfyUI');
   details.push('Technique: txt2img');
   details.push('Version: ComfyUI');

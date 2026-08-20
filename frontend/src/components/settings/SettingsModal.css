@@ -341,7 +341,8 @@
   filter: brightness(1.12);
 }
 
-.lucky-settings-card {
+.lucky-settings-card,
+.prompt-grouping-settings-card {
   display: flex;
   flex-direction: column;
   gap: 1.2rem;
@@ -351,20 +352,23 @@
   background: var(--social-bg);
 }
 
-.lucky-settings-heading {
+.lucky-settings-heading,
+.prompt-grouping-settings-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
 }
 
-.lucky-settings-heading h4 {
+.lucky-settings-heading h4,
+.prompt-grouping-settings-heading h4 {
   margin: 0 0 0.35rem;
   color: var(--text-h);
   font-size: 1.15rem;
 }
 
 .lucky-settings-heading p,
+.prompt-grouping-settings-heading p,
 .lucky-slider small {
   display: block;
   margin: 0;
@@ -374,7 +378,8 @@
   opacity: 0.7;
 }
 
-.lucky-settings-badge {
+.lucky-settings-badge,
+.prompt-grouping-settings-badge {
   display: grid;
   width: 38px;
   height: 38px;
@@ -385,10 +390,155 @@
   background: var(--accent-bg);
 }
 
-.lucky-settings-controls {
+.prompt-grouping-heading-status {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+}
+
+.settings-save-indicator {
+  padding: .3rem .55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: .68rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.settings-save-indicator.saved {
+  border-color: rgba(74, 222, 128, .3);
+  background: rgba(74, 222, 128, .1);
+  color: #66dc91;
+}
+
+.settings-save-indicator.dirty,
+.settings-save-indicator.saving {
+  border-color: rgba(245, 158, 11, .32);
+  background: rgba(245, 158, 11, .1);
+  color: #f5b942;
+}
+
+.settings-save-indicator.error {
+  border-color: rgba(255, 87, 87, .32);
+  background: rgba(255, 87, 87, .1);
+  color: #ff7474;
+}
+
+.prompt-grouping-settings-badge {
+  color: var(--accent);
+  font-size: 1.35rem;
+  font-weight: 850;
+}
+
+.lucky-settings-controls,
+.prompt-grouping-settings-controls {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1.25rem;
+}
+
+.prompt-grouping-rebuild {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.prompt-grouping-rebuild-status {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: .55rem;
+}
+
+.prompt-grouping-progress-label,
+.prompt-grouping-progress-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+}
+
+.prompt-grouping-progress-label {
+  color: var(--text-h);
+  font-size: .78rem;
+}
+
+.prompt-grouping-progress-label span {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.prompt-grouping-progress-track {
+  height: .55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, .16);
+}
+
+.prompt-grouping-progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #65d6ff);
+  transition: width .3s ease;
+}
+
+.prompt-grouping-progress-stats {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  color: var(--text);
+  font-size: .68rem;
+  opacity: .78;
+}
+
+.prompt-grouping-progress-stats span:not(:last-child)::after {
+  margin-left: .75rem;
+  content: '·';
+  opacity: .5;
+}
+
+.prompt-grouping-rebuild-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  min-height: 2.65rem;
+  padding: .7rem .9rem;
+  border: 1px solid var(--accent-border);
+  border-radius: .75rem;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 780;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.prompt-grouping-rebuild-btn:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
+.prompt-grouping-manual-note {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  color: var(--text);
+  font-size: .7rem;
+  opacity: .72;
+}
+
+.prompt-grouping-manual-note svg {
+  flex: 0 0 auto;
+  color: #66dc91;
+}
+
+.prompt-grouping-rebuild-error {
+  color: #ff7474;
 }
 
 .llm-memory-card {
@@ -946,8 +1096,27 @@
   }
 
   .lucky-settings-controls,
+  .prompt-grouping-settings-controls,
   .session-management-actions {
     grid-template-columns: 1fr;
+  }
+
+  .prompt-grouping-settings-heading,
+  .prompt-grouping-rebuild {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-grouping-settings-heading {
+    flex-direction: column;
+  }
+
+  .prompt-grouping-heading-status,
+  .prompt-grouping-rebuild-btn {
+    width: 100%;
+  }
+
+  .prompt-grouping-heading-status {
+    justify-content: space-between;
   }
 
   .llm-memory-card { grid-template-columns: 1fr; }

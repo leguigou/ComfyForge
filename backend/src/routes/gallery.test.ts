@@ -12,6 +12,8 @@ let baseUrl: string;
 let authCookie: string;
 let csrfToken: string;
 let db: typeof import('../services/database').default;
+let rebuildPromptGroupCacheForUser: typeof import('../services/prompt-group-cache').rebuildPromptGroupCacheForUser;
+let refreshPromptGroupCacheForMessage: typeof import('../services/prompt-group-cache').refreshPromptGroupCacheForMessage;
 
 const responseCookies = (response: Response) => {
   const headers = response.headers as Headers & { getSetCookie?: () => string[] };
@@ -36,11 +38,14 @@ beforeAll(async () => {
   process.env.IMAGES_DIR = path.join(runtimeDir, 'images');
   process.env.APP_PASSWORD = 'gallery-test-password';
 
-  const [{ createApp }, databaseModule] = await Promise.all([
+  const [{ createApp }, databaseModule, promptGroupCacheModule] = await Promise.all([
     import('../app'),
     import('../services/database'),
+    import('../services/prompt-group-cache'),
   ]);
   db = databaseModule.default;
+  rebuildPromptGroupCacheForUser = promptGroupCacheModule.rebuildPromptGroupCacheForUser;
+  refreshPromptGroupCacheForMessage = promptGroupCacheModule.refreshPromptGroupCacheForMessage;
   server = http.createServer(createApp(authSecret));
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -105,6 +110,27 @@ describe('manual gallery groups', () => {
     expect(groupedBody.total).toBe(2);
     expect(groupedBody.items.find(item => item.manualGroupId === created.manualGroupId)?.groupCount).toBe(2);
 
+    const rebuild = await request('/api/gallery/prompt-group-cache/rebuild', { method: 'POST' });
+    const rebuildStarted = await rebuild.json() as { status: string; totalPhotos: number; manualGroupsPreserved: number };
+    expect(rebuild.status).toBe(202);
+    expect(rebuildStarted).toMatchObject({ status: 'running', totalPhotos: 3, manualGroupsPreserved: 1 });
+    let rebuildStatus: { status: string; processedPhotos: number; totalPhotos: number; groupsFormed: number; manualGroupsPreserved: number } | undefined;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const statusResponse = await request('/api/gallery/prompt-group-cache/status');
+      rebuildStatus = await statusResponse.json() as typeof rebuildStatus;
+      if (rebuildStatus?.status === 'complete') break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(rebuildStatus).toMatchObject({
+      status: 'complete',
+      processedPhotos: 3,
+      totalPhotos: 3,
+      groupsFormed: 2,
+      manualGroupsPreserved: 1,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM messages WHERE manualGroupId = ?').get(created.manualGroupId))
+      .toEqual({ count: 2 });
+
     const group = await request('/api/gallery/group/manual-a');
     const groupBody = await group.json() as { items: Array<{ messageId: string; generationPrompt: string }> };
     expect(groupBody.items.map(item => item.generationPrompt)).toEqual(['portrait prompt', 'landscape prompt']);
@@ -131,6 +157,62 @@ describe('manual gallery groups', () => {
 });
 
 describe('session-scoped gallery', () => {
+  it('normalizes punctuation and applies configurable fuzzy prompt grouping', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string };
+    const sessionId = 'fuzzy-prompt-gallery';
+    const now = Date.now();
+    db.prepare(`INSERT INTO sessions (id, userId, title, updatedAt) VALUES (?, ?, 'Fuzzy prompts', ?)`)
+      .run(sessionId, user.id, now);
+    const insert = db.prepare(`
+      INSERT INTO messages (id, sessionId, role, generationPrompt, imageUrl, timestamp)
+      VALUES (?, ?, 'bot', ?, ?, ?)
+    `);
+    const base = 'one two three four five six seven eight nine ten';
+    insert.run('fuzzy-a', sessionId, `${base},`, '/fuzzy-a.webp', now + 1);
+    insert.run('fuzzy-b', sessionId, '  one two three four five six seven eight nine ten... ', '/fuzzy-b.webp', now + 2);
+    insert.run('fuzzy-c', sessionId, 'one two three four five six seven eight nine portrait', '/fuzzy-c.webp', now + 3);
+
+    db.prepare(`
+      INSERT INTO user_settings (userId, data, updatedAt) VALUES (?, ?, ?)
+      ON CONFLICT(userId) DO UPDATE SET data = excluded.data, updatedAt = excluded.updatedAt
+    `).run(user.id, JSON.stringify({
+      galleryPromptSimilarityMinWords: 11,
+      galleryPromptSimilarityThreshold: 90,
+    }), Date.now());
+    rebuildPromptGroupCacheForUser(user.id);
+    const exact = await request(`/api/gallery?sessionId=${sessionId}&groupByPrompt=true&includeTotal=true`);
+    const exactBody = await exact.json() as { total: number; items: Array<{ messageId: string; groupCount: number }> };
+    expect(exactBody.total).toBe(2);
+    expect(exactBody.items.find(entry => entry.groupCount === 2)).toBeTruthy();
+
+    db.prepare('UPDATE user_settings SET data = ?, updatedAt = ? WHERE userId = ?').run(JSON.stringify({
+      galleryPromptSimilarityMinWords: 10,
+      galleryPromptSimilarityThreshold: 90,
+    }), Date.now(), user.id);
+    rebuildPromptGroupCacheForUser(user.id);
+    const fuzzy = await request(`/api/gallery?sessionId=${sessionId}&groupByPrompt=true&includeTotal=true`);
+    const fuzzyBody = await fuzzy.json() as { total: number; items: Array<{ messageId: string; groupCount: number }> };
+    expect(fuzzyBody.total).toBe(1);
+    expect(fuzzyBody.items[0].groupCount).toBe(3);
+
+    const opened = await request(`/api/gallery/group/${fuzzyBody.items[0].messageId}?sessionId=${sessionId}`);
+    const openedBody = await opened.json() as { total: number };
+    expect(openedBody.total).toBe(3);
+
+    insert.run('fuzzy-d', sessionId, 'one two three four five six seven eight nine studio', '/fuzzy-d.webp', now + 4);
+    refreshPromptGroupCacheForMessage('fuzzy-d');
+    const incrementallyUpdated = await request(`/api/gallery?sessionId=${sessionId}&groupByPrompt=true&includeTotal=true`);
+    const incrementallyUpdatedBody = await incrementallyUpdated.json() as { total: number; items: Array<{ groupCount: number }> };
+    expect(incrementallyUpdatedBody.total).toBe(1);
+    expect(incrementallyUpdatedBody.items[0].groupCount).toBe(4);
+
+    db.prepare("UPDATE messages SET generationPrompt = 'entirely unrelated short prompt' WHERE id = 'fuzzy-d'").run();
+    const persisted = await request(`/api/gallery?sessionId=${sessionId}&groupByPrompt=true&includeTotal=true`);
+    const persistedBody = await persisted.json() as { total: number; items: Array<{ groupCount: number }> };
+    expect(persistedBody.total).toBe(1);
+    expect(persistedBody.items[0].groupCount).toBe(4);
+  });
+
   it('returns only the requested conversation and keeps prompt groups inside it', async () => {
     const user = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string };
     const firstSessionId = 'thread-gallery-first';
@@ -150,6 +232,7 @@ describe('session-scoped gallery', () => {
     insertMessage.run('thread-gallery-a', firstSessionId, '/thread-a.webp', now + 3);
     insertMessage.run('thread-gallery-b', firstSessionId, '/thread-b.webp', now + 2);
     insertMessage.run('thread-gallery-c', secondSessionId, '/thread-c.webp', now + 1);
+    rebuildPromptGroupCacheForUser(user.id);
 
     const first = await request(`/api/gallery?sessionId=${firstSessionId}&groupByPrompt=true&includeTotal=true`);
     const firstBody = await first.json() as {

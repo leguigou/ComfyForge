@@ -6,6 +6,7 @@ import {
   CompanionAssetError,
   externalizeCompanionAssets
 } from '../services/companion-assets';
+import { markPromptGroupCacheDirtyForUser } from '../services/prompt-group-cache';
 
 const router = express.Router();
 
@@ -54,6 +55,7 @@ router.post('/', authenticate, (req, res) => {
         data = excluded.data,
         updatedAt = excluded.updatedAt
     `).run(user.id, JSON.stringify(migrated.settings), Date.now());
+    markPromptGroupCacheDirtyForUser(user.id);
     if (migrated.shouldCleanup) cleanupCompanionAssets(user.id, migrated.retainedPaths);
     return res.json({ success: true, settings: migrated.settings });
   } catch (error) {

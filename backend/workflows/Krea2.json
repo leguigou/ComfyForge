@@ -1,0 +1,198 @@
+{
+  "85": {
+    "inputs": {
+      "samples": [
+        "190",
+        0
+      ],
+      "vae": [
+        "86",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "86": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Charger VAE"
+    }
+  },
+  "116": {
+    "inputs": {
+      "strength": 1.03,
+      "pre_cfg": false,
+      "model": [
+        "133",
+        0
+      ]
+    },
+    "class_type": "CFGNorm",
+    "_meta": {
+      "title": "CFGNorm"
+    }
+  },
+  "124": {
+    "inputs": {
+      "width": 896,
+      "height": 1152,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Image Latente Vide"
+    }
+  },
+  "128": {
+    "inputs": {
+      "images": [
+        "85",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "raw generation"
+    }
+  },
+  "133": {
+    "inputs": {
+      "extra": "{\"show_headings\":true,\"show_descriptions\":false,\"mode\":\"*\"}",
+      "ㅤ": "Stable Diffusion",
+      "info_comma_padding_backtrack": "",
+      "Prompt word wrap length limit": 20,
+      "enable_emphasis": true,
+      "info_RNG": "",
+      "RNG": "gpu",
+      "ㅤㅤ": "Compute Settings",
+      "info_disable_nan_check": "",
+      "disable_nan_check": true,
+      "ㅤㅤㅤ": "Sampler parameters",
+      "info_eta_ancestral": "",
+      "eta": 0,
+      "info_s_churn": "",
+      "s_churn": 0,
+      "info_s_tmin": "",
+      "s_tmin": 0,
+      "info_s_tmax": "",
+      "s_tmax": 0,
+      "info_s_noise": "",
+      "s_noise": 1,
+      "info_eta_noise_seed_delta": "",
+      "ENSD": 0,
+      "info_skip_early_cond": "",
+      "skip_early_cond": 0,
+      "info_sgm_noise_multiplier": "",
+      "sgm_noise_multiplier": false,
+      "info_upcast_sampling": "",
+      "upcast_sampling": true,
+      "ㅤㅤㅤㅤ": "Optimizations",
+      "info_NGMS": "",
+      "NGMS": 0,
+      "info_NGMS_all_steps": "",
+      "NGMS all steps": false,
+      "info_pad_cond_uncond": "",
+      "pad_cond_uncond": false,
+      "info_batch_cond_uncond": "",
+      "batch_cond_uncond": true,
+      "ㅤㅤㅤㅤㅤ": "Compatibility",
+      "info_use_prev_scheduling": "",
+      "Use previous prompt editing timelines": true,
+      "ㅤㅤㅤㅤㅤㅤ": "Experimental",
+      "info_use_CFGDenoiser": "",
+      "Use CFGDenoiser": false,
+      "info_debug": "",
+      "debug": false,
+      "*": [
+        "135",
+        0
+      ]
+    },
+    "class_type": "smZ Settings",
+    "_meta": {
+      "title": "Settings (smZ)"
+    }
+  },
+  "135": {
+    "inputs": {
+      "unet_name": "solordzZITZIBKrea2_v20Krea2W4a4.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Charger Modèle Diffusion"
+    }
+  },
+  "148": {
+    "inputs": {
+      "conditioning": [
+        "149",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "ConditioningZeroOut"
+    }
+  },
+  "149": {
+    "inputs": {
+      "text": "An amateur photo of a young brunette woman with long, dark hair in a high ponytail and wispy bangs. She is standing front. She wears a sheer, lightweight summer top that blows in the breeze. She sits by an outdoor pool in warm sunlight",
+      "clip": [
+        "187",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "187": {
+    "inputs": {
+      "clip_name": "qwen3vl_4b_int8_convrot.safetensors",
+      "type": "krea2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Charger CLIP"
+    }
+  },
+  "190": {
+    "inputs": {
+      "seed": 52992480762380,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "denoise": 1,
+      "model": [
+        "116",
+        0
+      ],
+      "positive": [
+        "149",
+        0
+      ],
+      "negative": [
+        "148",
+        0
+      ],
+      "latent_image": [
+        "124",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  }
+}

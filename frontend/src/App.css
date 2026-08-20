@@ -761,6 +761,23 @@ div:focus:not(:focus-visible) {
   overflow-wrap: anywhere;
 }
 
+.metadata-photo-filter-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.metadata-photo-filter-value button {
+  padding: 0.12rem 0.42rem;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .lightbox-info-grid .lightbox-info-prompt {
   display: block;
   margin-top: 0.55rem;

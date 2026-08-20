@@ -1,0 +1,9 @@
+{
+  "nodeMapping": {
+    "diffusionModel": "135",
+    "positive": "149",
+    "ksampler": "190",
+    "latent": "124",
+    "save": "128"
+  }
+}

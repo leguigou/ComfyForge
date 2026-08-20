@@ -17,6 +17,16 @@ ComfyForge connects a React application, an Express API, SQLite storage, and rea
 
 > ComfyForge is a companion for ComfyUI, not a replacement. You still need a working ComfyUI instance and the models and custom nodes required by your workflows.
 
+## What's new in 2.9.0
+
+Version 2.9.0 adds creative photo treatments, richer prompt comparison, and more flexible gallery grouping while improving generation continuity.
+
+- **Selectable photo filters:** apply a visual preset independently from the visible prompt, retain it across regeneration and comparisons, and expose it in image details and Civitai metadata.
+- **Side-by-side prompt analysis:** compare selected prompt sequences against a common reference in a dedicated, horizontally scrollable view without leaving the gallery.
+- **Configurable fuzzy grouping:** group near-identical prompts despite punctuation or small wording differences, tune matching thresholds in Settings, and rebuild the cached group index safely.
+- **Krea 2 workflow support:** use the bundled Krea 2 workflow and configuration as an additional generation option.
+- **More resilient live generation:** gallery results refresh as jobs finish, active messages remain focused after reloads, and queue, cancellation, and regeneration state stay synchronized.
+
 ## What's new in 2.8.1
 
 Version 2.8.1 improves active-generation control, makes destructive actions safer, and polishes image and text interactions across desktop and mobile.

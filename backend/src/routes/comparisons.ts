@@ -13,6 +13,7 @@ import {
 } from '../services/queue';
 import { getTargetComfyUrl } from '../services/comfy';
 import { deleteFiles } from '../services/image';
+import { appendPhotoFilter, readStoredPhotoFilter } from '../services/photo-filter';
 
 const router = express.Router();
 
@@ -27,7 +28,8 @@ const imageProjection = `
   m.id AS messageId, m.sessionId, m.imageUrl, m.thumbnailUrl, m.prompt, m.text,
   m.generationPrompt, m.timestamp, m.model, m.width, m.height, m.steps, m.cfg,
   m.workflow, m.seed, m.sampler, m.scheduler, m.duration, m.generationStartedAt, m.status,
-  m.isFavorite, m.isPromptFavorite, m.comparisonMessageId, m.comparisonSourceId
+  m.isFavorite, m.isPromptFavorite, m.photoFilterId, m.photoFilterLabel,
+  m.photoFilterPrompt, m.comparisonMessageId, m.comparisonSourceId
 `;
 
 const parseJson = (value: string | null | undefined): Record<string, any> => {
@@ -200,8 +202,10 @@ router.post('/batch/generate', authenticate, (req, res) => {
     const timestampBase = Date.now();
     db.transaction(() => {
       eligibleSources.forEach((source, index) => {
-        const executionPrompt = source.generationPrompt || source.prompt || source.text;
-        if (!executionPrompt || source.seed === null || source.seed === undefined) return;
+        const basePrompt = source.generationPrompt || source.prompt || source.text;
+        if (!basePrompt || source.seed === null || source.seed === undefined) return;
+        const photoFilter = readStoredPhotoFilter(source);
+        const executionPrompt = appendPhotoFilter(basePrompt, photoFilter);
         const sourceParams = parseJson(source.generationParams);
         const params: Record<string, any> = {
           ...sourceParams,
@@ -221,16 +225,18 @@ router.post('/batch/generate', authenticate, (req, res) => {
           INSERT INTO messages (
             id, sessionId, role, text, prompt, imageUrl, timestamp, model, width,
             height, steps, cfg, workflow, status, seed, randomSelections,
-            generationPrompt, generationParams, comparisonMessageId, comparisonSourceId
-          ) VALUES (?, ?, 'bot', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+            generationPrompt, generationParams, photoFilterId, photoFilterLabel,
+            photoFilterPrompt, comparisonMessageId, comparisonSourceId
+          ) VALUES (?, ?, 'bot', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           messageId, source.sessionId,
-          executionPrompt !== source.prompt ? executionPrompt : '', source.prompt,
+          basePrompt !== source.prompt ? basePrompt : '', source.prompt,
           timestamp, favorite.model,
           Number(params.width) || source.width, Number(params.height) || source.height,
           Number(params.steps) || source.steps, Number(params.cfg) || source.cfg,
           favorite.workflowFile, source.seed, source.randomSelections,
-          executionPrompt, JSON.stringify(params), source.id, source.id
+          basePrompt, JSON.stringify(params), photoFilter?.id || null, photoFilter?.label || null,
+          photoFilter?.prompt || null, source.id, source.id
         );
         db.prepare('UPDATE messages SET comparisonMessageId = ? WHERE id = ?').run(messageId, source.id);
         db.prepare(`
@@ -467,10 +473,12 @@ router.post('/:messageId', authenticate, (req, res) => {
       });
     }
 
-    const executionPrompt = source.generationPrompt || source.prompt || source.text;
-    if (!executionPrompt || source.seed === null) {
+    const basePrompt = source.generationPrompt || source.prompt || source.text;
+    if (!basePrompt || source.seed === null) {
       return res.status(400).json({ error: 'Le prompt ou la seed source est indisponible' });
     }
+    const photoFilter = readStoredPhotoFilter(source);
+    const executionPrompt = appendPhotoFilter(basePrompt, photoFilter);
 
     const sourceParams = parseJson(source.generationParams);
     // The target workflow is authoritative for resolution/sampling settings.
@@ -497,16 +505,18 @@ router.post('/:messageId', authenticate, (req, res) => {
         INSERT INTO messages (
           id, sessionId, role, text, prompt, imageUrl, timestamp, model, width,
           height, steps, cfg, workflow, status, seed, randomSelections,
-          generationPrompt, generationParams, comparisonMessageId, comparisonSourceId
-        ) VALUES (?, ?, 'bot', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+          generationPrompt, generationParams, photoFilterId, photoFilterLabel,
+          photoFilterPrompt, comparisonMessageId, comparisonSourceId
+        ) VALUES (?, ?, 'bot', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         messageId, source.sessionId,
-        executionPrompt !== source.prompt ? executionPrompt : '', source.prompt,
+        basePrompt !== source.prompt ? basePrompt : '', source.prompt,
         timestamp, favorite.model,
         Number(params.width) || source.width, Number(params.height) || source.height,
         Number(params.steps) || source.steps, Number(params.cfg) || source.cfg,
         favorite.workflowFile, source.seed, source.randomSelections,
-        executionPrompt, JSON.stringify(params), source.id, source.id
+        basePrompt, JSON.stringify(params), photoFilter?.id || null, photoFilter?.label || null,
+        photoFilter?.prompt || null, source.id, source.id
       );
       db.prepare('UPDATE messages SET comparisonMessageId = ? WHERE id = ?').run(messageId, source.id);
       db.prepare(`
