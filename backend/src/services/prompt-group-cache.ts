@@ -9,7 +9,8 @@ import {
   type PromptGroupingSettings,
 } from './prompt-grouping';
 
-const CACHE_ALGORITHM_VERSION = 1;
+const CACHE_ALGORITHM_VERSION = 2;
+const STARTUP_SYNC_REBUILD_MAX_ITEMS = 1_000;
 
 interface CachedPromptRow {
   messageId: string;
@@ -85,6 +86,81 @@ const prepareCacheEntryUpsert = () => db.prepare(`
     updatedAt = excluded.updatedAt
 `);
 
+const insertPromptGroupSummaries = (userId: string, groupIds?: string[]) => {
+  if (groupIds && groupIds.length === 0) return;
+  const groupFilter = groupIds?.length
+    ? `AND pgc.groupId IN (${groupIds.map(() => '?').join(',')})`
+    : '';
+  db.prepare(`
+    WITH ranked AS (
+      SELECT s.userId, s.isArchived, pgc.groupId, m.id AS messageId,
+        m.timestamp, COALESCE(m.isFavorite, 0) AS isFavorite,
+        COALESCE(m.isPromptFavorite, 0) AS isPromptFavorite,
+        ROW_NUMBER() OVER (
+          PARTITION BY s.userId, s.isArchived, pgc.groupId
+          ORDER BY COALESCE(m.isGroupCover, 0) DESC, m.timestamp DESC, m.id DESC
+        ) AS representativeRank
+      FROM messages m
+      JOIN sessions s ON s.id = m.sessionId
+      JOIN prompt_group_cache pgc ON pgc.messageId = m.id AND pgc.userId = s.userId
+      WHERE s.userId = ? AND m.imageUrl IS NOT NULL ${groupFilter}
+    )
+    INSERT INTO prompt_group_summary (
+      userId, isArchived, groupId, representativeMessageId, groupCount,
+      groupHasFavorite, groupHasPromptFavorite, groupTimestamp, updatedAt
+    )
+    SELECT userId, isArchived, groupId,
+      MAX(CASE WHEN representativeRank = 1 THEN messageId END),
+      COUNT(*), MAX(isFavorite), MAX(isPromptFavorite), MAX(timestamp), ?
+    FROM ranked
+    GROUP BY userId, isArchived, groupId
+  `).run(userId, ...(groupIds || []), Date.now());
+};
+
+export const rebuildPromptGroupSummariesForUser = (userId: string) => {
+  const settingsHash = promptGroupingSettingsHash(getPromptGroupingSettingsForUser(userId));
+  db.transaction(() => {
+    db.prepare('DELETE FROM prompt_group_summary WHERE userId = ?').run(userId);
+    insertPromptGroupSummaries(userId);
+    db.prepare(`
+      INSERT INTO prompt_group_summary_state (userId, settingsHash, updatedAt)
+      VALUES (?, ?, ?)
+      ON CONFLICT(userId) DO UPDATE SET
+        settingsHash = excluded.settingsHash,
+        updatedAt = excluded.updatedAt
+    `).run(userId, settingsHash, Date.now());
+  })();
+};
+
+const refreshPromptGroupSummaries = (userId: string, groupIds: string[]) => {
+  const uniqueGroupIds = [...new Set(groupIds.filter(Boolean))];
+  if (uniqueGroupIds.length === 0) return;
+  const placeholders = uniqueGroupIds.map(() => '?').join(',');
+  db.transaction(() => {
+    db.prepare(`
+      DELETE FROM prompt_group_summary WHERE userId = ? AND groupId IN (${placeholders})
+    `).run(userId, ...uniqueGroupIds);
+    insertPromptGroupSummaries(userId, uniqueGroupIds);
+  })();
+};
+
+export const refreshPromptGroupSummariesForMessage = (messageId: string) => {
+  const cached = db.prepare(`
+    SELECT pgc.userId, pgc.groupId
+    FROM prompt_group_cache pgc
+    WHERE pgc.messageId = ?
+  `).get(messageId) as { userId: string; groupId: string } | undefined;
+  if (cached) refreshPromptGroupSummaries(cached.userId, [cached.groupId]);
+};
+
+export const isPromptGroupSummaryReady = (userId: string) => {
+  const settingsHash = promptGroupingSettingsHash(getPromptGroupingSettingsForUser(userId));
+  const state = db.prepare(`
+    SELECT settingsHash FROM prompt_group_summary_state WHERE userId = ?
+  `).get(userId) as { settingsHash: string } | undefined;
+  return state?.settingsHash === settingsHash;
+};
+
 const loadPromptItemsForUser = (userId: string) => db.prepare(`
   SELECT m.id AS messageId, s.userId, m.prompt, m.generationPrompt, m.text,
     m.randomSelections, m.manualGroupId, m.timestamp, m.isGroupCover,
@@ -124,6 +200,7 @@ const persistPromptGroups = (
     }
     markCacheReady(userId, settingsHash);
   })();
+  rebuildPromptGroupSummariesForUser(userId);
 };
 
 export const rebuildPromptGroupCacheForUser = (
@@ -215,12 +292,13 @@ export const startPromptGroupCacheRebuild = (userId: string) => {
 
   void (async () => {
     try {
+      const yieldEvery = items.length > STARTUP_SYNC_REBUILD_MAX_ITEMS ? 1 : 20;
       const groups = await groupItemsByPromptAsync(items, settings, progress => {
         status.processedPhotos = progress.processed;
         status.totalPhotos = progress.total;
         status.groupsFormed = progress.groups;
         status.percent = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 100;
-      });
+      }, yieldEvery);
       if ((cacheRevisions.get(userId) || 0) !== rebuildRevision) {
         rebuildJobs.delete(userId);
         startPromptGroupCacheRebuild(userId);
@@ -238,18 +316,23 @@ export const startPromptGroupCacheRebuild = (userId: string) => {
         db.prepare(`UPDATE prompt_group_cache_state SET status = 'dirty', updatedAt = ? WHERE userId = ?`)
           .run(status.completedAt, userId);
       }
+      console.log(`[Prompt groups] Cached ${items.length} images in ${status.completedAt - startedAt} ms`);
     } catch (error) {
       status.status = 'error';
       status.error = error instanceof Error ? error.message : String(error);
       status.completedAt = Date.now();
       db.prepare(`UPDATE prompt_group_cache_state SET status = 'dirty', updatedAt = ? WHERE userId = ?`)
         .run(status.completedAt, userId);
+      console.error(`[Prompt groups] Background rebuild failed for user ${userId}:`, error);
     }
   })();
   return { ...status };
 };
 
 export const refreshPromptGroupCacheForMessage = (messageId: string) => {
+  const previousCache = db.prepare(`
+    SELECT userId, groupId FROM prompt_group_cache WHERE messageId = ?
+  `).get(messageId) as { userId: string; groupId: string } | undefined;
   const item = db.prepare(`
     SELECT m.id AS messageId, s.userId, m.prompt, m.generationPrompt, m.text,
       m.randomSelections, m.manualGroupId, m.timestamp, m.isGroupCover,
@@ -261,6 +344,7 @@ export const refreshPromptGroupCacheForMessage = (messageId: string) => {
 
   if (!item?.imageUrl) {
     db.prepare('DELETE FROM prompt_group_cache WHERE messageId = ?').run(messageId);
+    if (previousCache) refreshPromptGroupSummaries(previousCache.userId, [previousCache.groupId]);
     return null;
   }
 
@@ -269,6 +353,8 @@ export const refreshPromptGroupCacheForMessage = (messageId: string) => {
   const settings = getPromptGroupingSettingsForUser(item.userId);
   const settingsHash = promptGroupingSettingsHash(settings);
   const identity = getPromptGroupingIdentity(item);
+  const compatiblePromptKinds = identity.kind === 'message' ? ['message'] : ['dynamic', 'prompt'];
+  const compatiblePromptKindSql = compatiblePromptKinds.map(() => '?').join(', ');
   const manualGroupId = typeof item.manualGroupId === 'string' ? item.manualGroupId.trim() : '';
   let groupId = manualGroupId ? `manual:${manualGroupId}` : '';
 
@@ -276,11 +362,11 @@ export const refreshPromptGroupCacheForMessage = (messageId: string) => {
     const exact = db.prepare(`
       SELECT groupId
       FROM prompt_group_cache
-      WHERE userId = ? AND settingsHash = ? AND promptKind = ?
+      WHERE userId = ? AND settingsHash = ? AND promptKind IN (${compatiblePromptKindSql})
         AND normalizedPrompt = ? AND messageId <> ?
       ORDER BY groupId
       LIMIT 1
-    `).get(item.userId, settingsHash, identity.kind, identity.normalized, messageId) as { groupId: string } | undefined;
+    `).get(item.userId, settingsHash, ...compatiblePromptKinds, identity.normalized, messageId) as { groupId: string } | undefined;
     groupId = exact?.groupId || '';
   }
 
@@ -291,12 +377,12 @@ export const refreshPromptGroupCacheForMessage = (messageId: string) => {
     const candidates = db.prepare(`
       SELECT messageId, groupId, normalizedPrompt, wordCount
       FROM prompt_group_cache
-      WHERE userId = ? AND settingsHash = ? AND promptKind = ?
+      WHERE userId = ? AND settingsHash = ? AND promptKind IN (${compatiblePromptKindSql})
         AND wordCount BETWEEN ? AND ? AND messageId <> ?
     `).all(
       item.userId,
       settingsHash,
-      identity.kind,
+      ...compatiblePromptKinds,
       minimumWords,
       maximumWords,
       messageId,
@@ -335,6 +421,7 @@ export const refreshPromptGroupCacheForMessage = (messageId: string) => {
     );
     markCacheReady(item.userId, settingsHash);
   })();
+  refreshPromptGroupSummaries(item.userId, [previousCache?.groupId || '', groupId]);
   return { groupId, settingsHash };
 };
 
@@ -349,12 +436,36 @@ export const ensurePromptGroupCacheForUser = (userId: string) => {
 };
 
 export const initializePromptGroupCaches = () => {
-  const users = db.prepare('SELECT id FROM users ORDER BY createdAt, id').all() as Array<{ id: string }>;
-  const results = users.map(user => ensurePromptGroupCacheForUser(user.id)).filter(Boolean);
-  if (results.length) {
-    const totalItems = results.reduce((sum, result) => sum + (result?.items || 0), 0);
-    const totalDuration = results.reduce((sum, result) => sum + (result?.durationMs || 0), 0);
-    console.log(`[Prompt groups] Cached ${totalItems} images in ${totalDuration} ms`);
+  const users = db.prepare(`
+    SELECT u.id, COUNT(m.id) AS imageCount
+    FROM users u
+    LEFT JOIN sessions s ON s.userId = u.id
+    LEFT JOIN messages m ON m.sessionId = s.id AND m.imageUrl IS NOT NULL
+    GROUP BY u.id
+    ORDER BY u.createdAt, u.id
+  `).all() as Array<{ id: string; imageCount: number }>;
+  const rebuildUsers: Array<{ id: string; imageCount: number }> = [];
+  const summaryUsers: string[] = [];
+
+  for (const user of users) {
+    const settingsHash = promptGroupingSettingsHash(getPromptGroupingSettingsForUser(user.id));
+    const state = db.prepare(`
+      SELECT settingsHash, status FROM prompt_group_cache_state WHERE userId = ?
+    `).get(user.id) as { settingsHash: string; status: string } | undefined;
+    if (state?.settingsHash === settingsHash && state.status === 'ready') {
+      if (!isPromptGroupSummaryReady(user.id)) summaryUsers.push(user.id);
+      continue;
+    }
+    rebuildUsers.push(user);
   }
-  return results;
+
+  if (rebuildUsers.length || summaryUsers.length) {
+    const totalItems = rebuildUsers.reduce((sum, user) => sum + user.imageCount, 0);
+    console.log(`[Prompt groups] Scheduling ${totalItems} images and ${summaryUsers.length} summaries for background maintenance`);
+    setImmediate(() => {
+      summaryUsers.forEach(rebuildPromptGroupSummariesForUser);
+      rebuildUsers.forEach(user => startPromptGroupCacheRebuild(user.id));
+    });
+  }
+  return [];
 };

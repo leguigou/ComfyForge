@@ -768,6 +768,16 @@
   outline: none;
 }
 
+.action-btn-icon.random-regenerate {
+  border-color: color-mix(in srgb, #9b7cff 52%, var(--border));
+  background: color-mix(in srgb, #9b7cff 13%, var(--social-bg));
+  color: #a98fff;
+}
+
+.random-regenerate-menu-item {
+  color: #a98fff;
+}
+
 .regeneration-count-badge {
   position: absolute;
   top: -10px;
@@ -811,6 +821,12 @@
   color: var(--accent);
   transform: translateY(-2px);
 } 
+
+.action-btn-icon.random-regenerate:hover {
+  border-color: #a98fff;
+  background: color-mix(in srgb, #9b7cff 24%, var(--social-bg));
+  color: #c1afff;
+}
 }
 
 @media (hover: hover) {
@@ -2947,6 +2963,8 @@
 .gallery-batch-menu > button > span:last-child { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .gallery-batch-menu strong { color: var(--text-h); font-size: .78rem; }
 .gallery-batch-menu small { opacity: .53; font-size: .63rem; line-height: 1.35; }
+.gallery-batch-regeneration-label { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.gallery-batch-regeneration-count { flex: none; padding: 2px 7px; border-radius: 999px; color: white; background: #7c5cff; font-size: .68rem; font-variant-numeric: tabular-nums; }
 .gallery-batch-menu-icon { display: grid; place-items: center; width: 39px; height: 39px; border-radius: 11px; color: #c3b4ff; background: rgba(124,92,255,.12); }
 .gallery-batch-menu-icon svg { width: 21px; height: 21px; }
 .gallery-batch-heart { font-size: 1.45rem; }

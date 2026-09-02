@@ -5,8 +5,10 @@ import { resolveGenerationStartedAt } from '../utils/generationTimer';
 import { getLinkedMessageIds } from '../utils/messagePairs';
 
 const MESSAGE_PAGE_SIZE = 60;
+const SESSION_PAGE_SIZE = 50;
 
 type HistoryCursor = { timestamp: number; id: string };
+type SessionCursor = { updatedAt: number; id: string };
 type SessionFetchOptions = { reset?: boolean; all?: boolean };
 
 const mergeServerMessage = (incoming: Message, existing: Message | undefined) => {
@@ -61,6 +63,8 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
   const [deletingSessionsScope, setDeletingSessionsScope] = useState<'active' | 'archived' | 'all' | null>(null);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
+  const [hasMoreSessions, setHasMoreSessions] = useState(false);
+  const [isLoadingMoreSessions, setIsLoadingMoreSessions] = useState(false);
   const historySessionRef = useRef<string | null>(null);
   const historyCursorRef = useRef<HistoryCursor | null>(null);
   const historyHasMoreRef = useRef(false);
@@ -68,26 +72,75 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
   const deletingSessionRef = useRef(false);
   const deletingMessageRef = useRef<string | null>(null);
   const deletingSessionsScopeRef = useRef<'active' | 'archived' | 'all' | null>(null);
+  const sessionCursorRef = useRef<SessionCursor | null>(null);
+  const loadingMoreSessionsRef = useRef(false);
+  const sessionRequestRef = useRef(0);
+  const selectedSessionRef = useRef(currentSessionId);
 
-  const fetchSessions = useCallback(async () => {
+  useEffect(() => {
+    selectedSessionRef.current = currentSessionId;
+  }, [currentSessionId]);
+
+  const fetchSessions = useCallback(async (options: { append?: boolean } = {}) => {
     if (!isAuthenticated) return;
+    const append = options.append === true;
+    if (append && (loadingMoreSessionsRef.current || !sessionCursorRef.current)) return;
+    const requestId = append ? sessionRequestRef.current : ++sessionRequestRef.current;
+    if (!append) {
+      sessionCursorRef.current = null;
+      setHasMoreSessions(false);
+    }
+    if (append) {
+      loadingMoreSessionsRef.current = true;
+      setIsLoadingMoreSessions(true);
+    }
     try {
-      const url = view === 'archives' ? `${API_BASE}/api/history/archives` : `${API_BASE}/api/history`;
-      const res = await fetch(url, { credentials: 'include' });
+      const path = view === 'archives' ? '/api/history/archives' : '/api/history';
+      const query = new URLSearchParams({
+        limit: String(SESSION_PAGE_SIZE),
+        includeCursor: 'true',
+        includeTotal: String(!append),
+      });
+      if (!append && selectedSessionRef.current) query.set('pinnedId', selectedSessionRef.current);
+      if (append && sessionCursorRef.current) {
+        query.set('beforeUpdatedAt', String(sessionCursorRef.current.updatedAt));
+        query.set('beforeId', sessionCursorRef.current.id);
+      }
+      const res = await fetch(`${API_BASE}${path}?${query.toString()}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch history');
-      const data = await res.json();
-      setSessions(data);
-      if (data.length > 0 && view !== 'archives' && view !== 'thread-gallery') {
-        setCurrentSessionId(prev => (
-          prev && data.some((session: Session) => session.id === prev)
-            ? prev
-            : data[0].id
-        ));
+      const response = await res.json() as {
+        items?: Session[];
+        hasMore?: boolean;
+        nextCursor?: SessionCursor | null;
+      };
+      if (requestId !== sessionRequestRef.current) return;
+      const data = Array.isArray(response) ? response as Session[] : response.items || [];
+      sessionCursorRef.current = response.nextCursor || null;
+      setHasMoreSessions(Boolean(response.hasMore && sessionCursorRef.current));
+      if (append) {
+        setSessions(previous => {
+          const existingIds = new Set(previous.map(session => session.id));
+          return [...previous, ...data.filter(session => !existingIds.has(session.id))];
+        });
+      } else {
+        setSessions(data);
+      }
+      if (!append && data.length > 0 && view !== 'archives' && view !== 'thread-gallery') {
+        setCurrentSessionId(prev => prev || data[0].id);
       }
     } catch (err) {
       console.error('Error fetching sessions:', err);
+    } finally {
+      if (append) {
+        loadingMoreSessionsRef.current = false;
+        setIsLoadingMoreSessions(false);
+      }
     }
   }, [view, isAuthenticated]);
+
+  const loadMoreSessions = useCallback(async () => {
+    await fetchSessions({ append: true });
+  }, [fetchSessions]);
 
   const createNewSession = useCallback(async () => {
     const res = await fetch(`${API_BASE}/api/history`, { method: 'POST', credentials: 'include' });
@@ -404,6 +457,9 @@ export const useSessions = (view: AppView, isAuthenticated: boolean | null) => {
     deleteMessage,
     hasMoreMessages,
     isLoadingOlderMessages,
-    loadOlderMessages
+    loadOlderMessages,
+    hasMoreSessions,
+    isLoadingMoreSessions,
+    loadMoreSessions
   };
 };

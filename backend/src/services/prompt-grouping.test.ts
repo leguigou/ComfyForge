@@ -45,6 +45,25 @@ describe('prompt grouping', () => {
     ], { minWords: 6, similarity: 80 })).toHaveLength(2);
   });
 
+  it('groups a resolved random-list prompt with its dynamic template', () => {
+    const template = 'an amateur photo of a young brunette origin woman with long dark hair in a high ponytail and wispy bangs standing front';
+    const resolved = template.replace('origin', 'brazilian');
+    const groups = groupItemsByPrompt([
+      {
+        messageId: 'dynamic',
+        prompt: template,
+        generationPrompt: resolved,
+        randomSelections: JSON.stringify([{ slug: 'Origin', value: 'brazilian' }]),
+        timestamp: 1,
+      },
+      item('resolved', resolved, 2),
+    ], { minWords: 20, similarity: 80 });
+
+    expect(promptSimilarityPercent(template, resolved)).toBeGreaterThan(90);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items.map(entry => entry.messageId)).toEqual(['resolved', 'dynamic']);
+  });
+
   it('reports cooperative progress while preserving manual groups', async () => {
     const progress: Array<{ processed: number; total: number; groups: number }> = [];
     const items = Array.from({ length: 24 }, (_, index) => ({

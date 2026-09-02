@@ -2,12 +2,17 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../services/database';
 import { authenticate } from '../middleware/auth';
-import { rebuildPromptGroupCacheForUser } from '../services/prompt-group-cache';
+import {
+  rebuildPromptGroupCacheForUser,
+  rebuildPromptGroupSummariesForUser,
+  refreshPromptGroupSummariesForMessage,
+} from '../services/prompt-group-cache';
 import { deleteFiles } from '../services/image';
 import { withParsedRandomSelections } from '../services/message-metadata';
 import { attachPromptTags } from '../services/prompt-tags';
 
 const router = express.Router();
+const getRouteParam = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] || '' : value || '';
 const DEFAULT_MESSAGE_PAGE_SIZE = 60;
 const MAX_MESSAGE_PAGE_SIZE = 120;
 const MESSAGE_FIELDS = `id, role, text, prompt, generationPrompt, imageUrl, thumbnailUrl,
@@ -15,7 +20,7 @@ const MESSAGE_FIELDS = `id, role, text, prompt, generationPrompt, imageUrl, thum
   isPromptFavorite, duration, generationStartedAt, sampler, scheduler, randomSelections,
   photoFilterId, photoFilterLabel, photoFilterPrompt, comparisonMessageId`;
 
-const sessionListQuery = `
+const sessionListSelect = `
   SELECT
     s.id,
     s.title,
@@ -31,18 +36,57 @@ const sessionListQuery = `
     END AS generationStatus
   FROM sessions s
   WHERE s.isArchived = ? AND s.userId = ?
-  ORDER BY s.updatedAt DESC
 `;
 
-router.get('/', authenticate, (req, res) => {
+const listSessions = (req: express.Request, res: express.Response, isArchived: number) => {
   const user = (req as any).user;
-  res.json(db.prepare(sessionListQuery).all(0, user.id));
-});
+  const requestedLimit = Number(req.query.limit);
+  const paginated = Number.isFinite(requestedLimit) || req.query.includeCursor === 'true';
+  if (!paginated) {
+    return res.json(db.prepare(`${sessionListSelect} ORDER BY s.updatedAt DESC, s.id DESC`).all(isArchived, user.id));
+  }
 
-router.get('/archives', authenticate, (req, res) => {
-  const user = (req as any).user;
-  res.json(db.prepare(sessionListQuery).all(1, user.id));
-});
+  const limit = Math.min(100, Math.max(1, Math.round(requestedLimit || 50)));
+  const beforeUpdatedAt = Number(req.query.beforeUpdatedAt);
+  const beforeId = typeof req.query.beforeId === 'string' ? req.query.beforeId.trim() : '';
+  const hasCursor = Number.isFinite(beforeUpdatedAt) && beforeUpdatedAt > 0 && Boolean(beforeId);
+  const cursorSql = hasCursor
+    ? 'AND (s.updatedAt < ? OR (s.updatedAt = ? AND s.id < ?))'
+    : '';
+  const params = hasCursor
+    ? [isArchived, user.id, beforeUpdatedAt, beforeUpdatedAt, beforeId]
+    : [isArchived, user.id];
+  const rows = db.prepare(`
+    ${sessionListSelect}
+    ${cursorSql}
+    ORDER BY s.updatedAt DESC, s.id DESC
+    LIMIT ?
+  `).all(...params, limit + 1) as Array<Record<string, unknown>>;
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit);
+  const last = items[items.length - 1];
+  const pinnedId = typeof req.query.pinnedId === 'string' ? req.query.pinnedId.trim().slice(0, 200) : '';
+  if (pinnedId && !items.some(item => item.id === pinnedId)) {
+    const pinned = db.prepare(`${sessionListSelect} AND s.id = ?`).get(isArchived, user.id, pinnedId) as Record<string, unknown> | undefined;
+    if (pinned) items.push(pinned);
+  }
+  const total = req.query.includeTotal === 'true'
+    ? (db.prepare('SELECT COUNT(*) AS total FROM sessions WHERE isArchived = ? AND userId = ?')
+        .get(isArchived, user.id) as { total: number }).total
+    : undefined;
+  return res.json({
+    items,
+    hasMore,
+    nextCursor: hasMore && last
+      ? { updatedAt: Number(last.updatedAt), id: String(last.id) }
+      : null,
+    ...(total === undefined ? {} : { total }),
+  });
+};
+
+router.get('/', authenticate, (req, res) => listSessions(req, res, 0));
+
+router.get('/archives', authenticate, (req, res) => listSessions(req, res, 1));
 
 router.post('/', authenticate, (req, res) => {
   const user = (req as any).user;
@@ -133,18 +177,21 @@ router.delete('/:id', authenticate, (req, res) => {
   deleteFiles(messages);
   
   db.prepare('DELETE FROM sessions WHERE id = ?').run(req.params.id);
+  rebuildPromptGroupSummariesForUser(user.id);
   res.json({ success: true });
 });
 
 router.patch('/:id/archive', authenticate, (req, res) => {
   const user = (req as any).user;
   db.prepare('UPDATE sessions SET isArchived = ? WHERE id = ? AND userId = ?').run(req.body.isArchived ? 1 : 0, req.params.id, user.id);
+  rebuildPromptGroupSummariesForUser(user.id);
   res.json({ success: true, isArchived: req.body.isArchived });
 });
 
 router.post('/archive-all', authenticate, (req, res) => {
   const user = (req as any).user;
   db.prepare('UPDATE sessions SET isArchived = 1 WHERE isArchived = 0 AND userId = ?').run(user.id);
+  rebuildPromptGroupSummariesForUser(user.id);
   res.json({ success: true });
 });
 
@@ -172,24 +219,28 @@ router.delete('/all/:scope', authenticate, (req, res) => {
     WHERE userId = ?
       ${scope === 'active' ? 'AND isArchived = 0' : scope === 'archived' ? 'AND isArchived = 1' : ''}
   `).run(user.id);
+  rebuildPromptGroupSummariesForUser(user.id);
   res.json({ success: true, deleted: result.changes, scope });
 });
 
 router.patch('/:sessionId/message/:messageId/favorite', authenticate, (req, res) => {
   const user = (req as any).user;
-  const { sessionId, messageId } = req.params;
+  const sessionId = getRouteParam(req.params.sessionId);
+  const messageId = getRouteParam(req.params.messageId);
   const { isFavorite } = req.body;
 
   const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND userId = ?').get(sessionId, user.id);
   if (!session) return res.status(403).json({ error: 'Unauthorized' });
 
   db.prepare('UPDATE messages SET isFavorite = ? WHERE id = ? AND sessionId = ?').run(isFavorite ? 1 : 0, messageId, sessionId);
+  refreshPromptGroupSummariesForMessage(messageId);
   res.json({ success: true, isFavorite });
 });
 
 router.patch('/:sessionId/message/:messageId/prompt-favorite', authenticate, (req, res) => {
   const user = (req as any).user;
-  const { sessionId, messageId } = req.params;
+  const sessionId = getRouteParam(req.params.sessionId);
+  const messageId = getRouteParam(req.params.messageId);
   const isPromptFavorite = req.body.isPromptFavorite ? 1 : 0;
 
   const result = db.prepare(`
@@ -200,6 +251,7 @@ router.patch('/:sessionId/message/:messageId/prompt-favorite', authenticate, (re
   `).run(isPromptFavorite, messageId, sessionId, user.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Prompt introuvable' });
 
+  refreshPromptGroupSummariesForMessage(messageId);
   res.json({ success: true, isPromptFavorite });
 });
 
@@ -288,6 +340,7 @@ router.delete('/:sessionId/message/:messageId', authenticate, (req, res) => {
     }
   })();
   if (affectedManualGroupIds.size > 0) rebuildPromptGroupCacheForUser(user.id);
+  else rebuildPromptGroupSummariesForUser(user.id);
   res.json({ success: true, deletedMessageIds });
 });
 

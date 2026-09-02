@@ -3,9 +3,9 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
-import { syncPromptTags } from './prompt-tags';
+import { syncPromptTagDefinitions } from './prompt-tags';
 
-export const DATABASE_SCHEMA_VERSION = 9;
+export const DATABASE_SCHEMA_VERSION = 13;
 
 // Standardized path for Docker, local development, and isolated tests.
 let dbPath: string;
@@ -135,6 +135,19 @@ export const initDatabase = () => {
       FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS user_app_locks (
+      userId TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      method TEXT NOT NULL DEFAULT 'pin',
+      credentialHash TEXT NOT NULL,
+      pinHash TEXT,
+      pinLength INTEGER NOT NULL DEFAULT 4,
+      patternHash TEXT,
+      timeoutMinutes INTEGER NOT NULL DEFAULT 15,
+      updatedAt INTEGER NOT NULL,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS prompt_group_cache (
       messageId TEXT PRIMARY KEY,
       userId TEXT NOT NULL,
@@ -201,6 +214,35 @@ export const initDatabase = () => {
       FOREIGN KEY (tagId) REFERENCES tags(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS message_tag_index_state (
+      messageId TEXT PRIMARY KEY,
+      version INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_group_summary (
+      userId TEXT NOT NULL,
+      isArchived INTEGER NOT NULL,
+      groupId TEXT NOT NULL,
+      representativeMessageId TEXT NOT NULL,
+      groupCount INTEGER NOT NULL,
+      groupHasFavorite INTEGER NOT NULL DEFAULT 0,
+      groupHasPromptFavorite INTEGER NOT NULL DEFAULT 0,
+      groupTimestamp INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      PRIMARY KEY (userId, isArchived, groupId),
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (representativeMessageId) REFERENCES messages(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_group_summary_state (
+      userId TEXT PRIMARY KEY,
+      settingsHash TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp INTEGER NOT NULL,
@@ -219,9 +261,14 @@ export const initDatabase = () => {
 
     CREATE INDEX IF NOT EXISTS idx_sessions_userId ON sessions(userId);
     CREATE INDEX IF NOT EXISTS idx_sessions_library ON sessions(userId, isArchived, updatedAt DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_library_cursor ON sessions(userId, isArchived, updatedAt DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_sessionId ON messages(sessionId);
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
     CREATE INDEX IF NOT EXISTS idx_messages_session_timestamp ON messages(sessionId, timestamp DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_messages_active_generation
+      ON messages(sessionId) WHERE status IN ('pending', 'preparing', 'processing');
+    CREATE INDEX IF NOT EXISTS idx_messages_gallery_session_timestamp
+      ON messages(sessionId, timestamp DESC, id DESC) WHERE imageUrl IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_comparison_preferences_source ON comparison_preferences(userId, sourceMessageId);
     CREATE INDEX IF NOT EXISTS idx_queue_sessionId ON queue(sessionId);
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
@@ -235,6 +282,8 @@ export const initDatabase = () => {
     CREATE INDEX IF NOT EXISTS idx_vision_recoveries_user_updated
       ON vision_prompt_recoveries(userId, updatedAt DESC);
     CREATE INDEX IF NOT EXISTS idx_message_tags_tagId ON message_tags(tagId);
+    CREATE INDEX IF NOT EXISTS idx_prompt_group_summary_page
+      ON prompt_group_summary(userId, isArchived, groupTimestamp DESC, representativeMessageId DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_level ON audit_logs(level);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_source ON audit_logs(source);
@@ -516,6 +565,106 @@ export const initDatabase = () => {
     currentSchemaVersion = 9;
   }
 
+  if (currentSchemaVersion < 10) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS message_tag_index_state (
+          messageId TEXT PRIMARY KEY,
+          version INTEGER NOT NULL,
+          updatedAt INTEGER NOT NULL,
+          FOREIGN KEY (messageId) REFERENCES messages(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS prompt_group_summary (
+          userId TEXT NOT NULL,
+          isArchived INTEGER NOT NULL,
+          groupId TEXT NOT NULL,
+          representativeMessageId TEXT NOT NULL,
+          groupCount INTEGER NOT NULL,
+          groupHasFavorite INTEGER NOT NULL DEFAULT 0,
+          groupHasPromptFavorite INTEGER NOT NULL DEFAULT 0,
+          groupTimestamp INTEGER NOT NULL,
+          updatedAt INTEGER NOT NULL,
+          PRIMARY KEY (userId, isArchived, groupId),
+          FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (representativeMessageId) REFERENCES messages(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS prompt_group_summary_state (
+          userId TEXT PRIMARY KEY,
+          settingsHash TEXT NOT NULL,
+          updatedAt INTEGER NOT NULL,
+          FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_library_cursor
+          ON sessions(userId, isArchived, updatedAt DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_messages_active_generation
+          ON messages(sessionId) WHERE status IN ('pending', 'preparing', 'processing');
+        CREATE INDEX IF NOT EXISTS idx_messages_gallery_session_timestamp
+          ON messages(sessionId, timestamp DESC, id DESC) WHERE imageUrl IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_prompt_group_summary_page
+          ON prompt_group_summary(userId, isArchived, groupTimestamp DESC, representativeMessageId DESC);
+      `);
+      db.pragma('user_version = 10');
+    })();
+    currentSchemaVersion = 10;
+  }
+
+  if (currentSchemaVersion < 11) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS user_app_locks (
+          userId TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          method TEXT NOT NULL DEFAULT 'pin',
+          credentialHash TEXT NOT NULL,
+          timeoutMinutes INTEGER NOT NULL DEFAULT 15,
+          updatedAt INTEGER NOT NULL,
+          FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+        );
+      `);
+      db.pragma('user_version = 11');
+    })();
+    currentSchemaVersion = 11;
+  }
+
+  if (currentSchemaVersion < 12) {
+    db.transaction(() => {
+      for (const column of ['pinHash', 'patternHash']) {
+        try {
+          db.prepare(`SELECT ${column} FROM user_app_locks LIMIT 1`).get();
+        } catch {
+          db.exec(`ALTER TABLE user_app_locks ADD COLUMN ${column} TEXT`);
+        }
+      }
+      db.exec(`
+        UPDATE user_app_locks
+        SET pinHash = credentialHash
+        WHERE method = 'pin' AND credentialHash <> '' AND (pinHash IS NULL OR pinHash = '');
+        UPDATE user_app_locks
+        SET patternHash = credentialHash
+        WHERE method = 'pattern' AND credentialHash <> '' AND (patternHash IS NULL OR patternHash = '');
+      `);
+      db.pragma('user_version = 12');
+    })();
+    currentSchemaVersion = 12;
+  }
+
+  if (currentSchemaVersion < 13) {
+    db.transaction(() => {
+      try {
+        db.prepare('SELECT pinLength FROM user_app_locks LIMIT 1').get();
+      } catch {
+        db.exec('ALTER TABLE user_app_locks ADD COLUMN pinLength INTEGER NOT NULL DEFAULT 4');
+      }
+      db.exec(`
+        UPDATE user_app_locks
+        SET pinLength = 4
+        WHERE pinLength IS NULL OR pinLength < 3 OR pinLength > 6;
+      `);
+      db.pragma('user_version = 13');
+    })();
+    currentSchemaVersion = 13;
+  }
+
   // Default Admin
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as any;
 
@@ -538,7 +687,9 @@ export const initDatabase = () => {
     console.log('[Migration] Default admin user created and sessions migrated.');
   }
 
-  syncPromptTags(db);
+  // Definitions are tiny and safe to synchronize during startup. Per-image
+  // classification is incremental and scheduled only after the server listens.
+  syncPromptTagDefinitions(db);
 };
 
 export default db;

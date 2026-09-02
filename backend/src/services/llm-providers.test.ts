@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { configureProviderEncryption, decryptApiKey, detectLocalProviderEngine, encryptApiKey, PROVIDER_PRESETS } from './llm-providers';
+import {
+  configureProviderEncryption,
+  decryptApiKey,
+  detectLocalProviderEngine,
+  encryptApiKey,
+  PROVIDER_PRESETS,
+  shouldDisableDeepSeekVisionThinking,
+} from './llm-providers';
 
 describe('LLM provider configuration', () => {
   it('encrypts API keys with authenticated encryption', () => {
@@ -39,5 +46,20 @@ describe('LLM provider configuration', () => {
       type: 'openai',
       baseUrl: 'https://api.openai.com',
     })).toBeNull();
+  });
+
+  it('disables thinking only for the official DeepSeek vision endpoint', () => {
+    expect(shouldDisableDeepSeekVisionThinking({
+      type: 'openai',
+      baseUrl: 'https://api.deepseek.com',
+    }, 'deepseek-v4-flash-vision-exp')).toBe(true);
+    expect(shouldDisableDeepSeekVisionThinking({
+      type: 'openai',
+      baseUrl: 'http://127.0.0.1:1234',
+    }, 'deepseek-v4-flash-vision-exp')).toBe(false);
+    expect(shouldDisableDeepSeekVisionThinking({
+      type: 'openai',
+      baseUrl: 'https://api.deepseek.com',
+    }, 'deepseek-v4-flash')).toBe(false);
   });
 });

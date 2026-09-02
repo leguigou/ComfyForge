@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 
+export const PROMPT_TAG_INDEX_VERSION = 1;
+
 export type PromptTagDefinition = {
   slug: string;
   category: string;
@@ -236,12 +238,19 @@ export const replaceAutoPromptTags = (
   const transaction = database.transaction(() => {
     remove.run(messageId);
     tags.forEach(tag => insert.run(messageId, tag.slug));
+    database.prepare(`
+      INSERT INTO message_tag_index_state (messageId, version, updatedAt)
+      VALUES (?, ?, ?)
+      ON CONFLICT(messageId) DO UPDATE SET
+        version = excluded.version,
+        updatedAt = excluded.updatedAt
+    `).run(messageId, PROMPT_TAG_INDEX_VERSION, Date.now());
   });
   transaction();
   return tags;
 };
 
-export const syncPromptTags = (database: Database.Database) => {
+export const syncPromptTagDefinitions = (database: Database.Database) => {
   const upsertTag = database.prepare(`
     INSERT INTO tags (id, category, labelFr, labelEn)
     VALUES (?, ?, ?, ?)
@@ -250,18 +259,76 @@ export const syncPromptTags = (database: Database.Database) => {
       labelFr = excluded.labelFr,
       labelEn = excluded.labelEn
   `);
-  const messages = database.prepare(`
-    SELECT id, COALESCE(NULLIF(TRIM(generationPrompt), ''), prompt, '') AS prompt
-    FROM messages
-    WHERE role = 'bot' AND imageUrl IS NOT NULL
-  `).all() as Array<{ id: string; prompt: string }>;
-
   const transaction = database.transaction(() => {
     PROMPT_TAG_DEFINITIONS.forEach(tag => upsertTag.run(tag.slug, tag.category, tag.labelFr, tag.labelEn));
-    messages.forEach(message => replaceAutoPromptTags(database, message.id, message.prompt));
   });
   transaction();
-  console.log(`[Tags] Indexed ${messages.length} generated images`);
+};
+
+let repairRunning = false;
+
+const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
+
+export const repairMissingPromptTags = async (
+  database: Database.Database,
+  batchSize = 100,
+) => {
+  if (repairRunning) return { processed: 0, remaining: 0 };
+  repairRunning = true;
+  let processed = 0;
+
+  try {
+    // Existing installations already have a complete auto-tag index. Record
+    // that state once without rewriting tens of thousands of tag relations.
+    database.prepare(`
+      INSERT OR IGNORE INTO message_tag_index_state (messageId, version, updatedAt)
+      SELECT DISTINCT m.id, ?, ?
+      FROM messages m
+      JOIN message_tags mt ON mt.messageId = m.id AND mt.source = 'auto'
+      WHERE m.role = 'bot' AND m.imageUrl IS NOT NULL
+    `).run(PROMPT_TAG_INDEX_VERSION, Date.now());
+
+    while (true) {
+      const missing = database.prepare(`
+        SELECT m.id,
+          COALESCE(NULLIF(TRIM(m.generationPrompt), ''), NULLIF(TRIM(m.prompt), ''), m.text, '') AS prompt
+        FROM messages m
+        LEFT JOIN message_tag_index_state state ON state.messageId = m.id
+        WHERE m.role = 'bot' AND m.imageUrl IS NOT NULL
+          AND (state.messageId IS NULL OR state.version <> ?)
+        ORDER BY m.timestamp, m.id
+        LIMIT ?
+      `).all(PROMPT_TAG_INDEX_VERSION, batchSize) as Array<{ id: string; prompt: string }>;
+      if (missing.length === 0) break;
+
+      database.transaction(() => {
+        missing.forEach(message => replaceAutoPromptTags(database, message.id, message.prompt || ''));
+      })();
+      processed += missing.length;
+      await yieldToEventLoop();
+    }
+
+    if (processed > 0) console.log(`[Tags] Repaired ${processed} missing or stale image tag indexes`);
+    return { processed, remaining: 0 };
+  } finally {
+    repairRunning = false;
+  }
+};
+
+export const schedulePromptTagRepair = (database: Database.Database) => {
+  setImmediate(() => {
+    void repairMissingPromptTags(database).catch(error => {
+      console.error('[Tags] Background index repair failed:', error);
+    });
+  });
+};
+
+// Explicit maintenance helper. This is intentionally never called on the
+// critical startup path; bumping PROMPT_TAG_INDEX_VERSION schedules a gradual
+// background refresh instead.
+export const syncPromptTags = async (database: Database.Database) => {
+  database.prepare('DELETE FROM message_tag_index_state').run();
+  return repairMissingPromptTags(database);
 };
 
 export const attachPromptTags = <T extends Record<string, unknown>>(

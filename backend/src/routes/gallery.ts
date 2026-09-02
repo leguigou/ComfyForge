@@ -10,12 +10,15 @@ import { imagesDir } from '../services/image';
 import { buildCivitaiGenerationData, embedCivitaiMetadataInWebp } from '../services/civitai-metadata';
 import {
   getPromptGroupRebuildStatus,
-  rebuildPromptGroupCacheForUser,
+  isPromptGroupSummaryReady,
+  refreshPromptGroupCacheForMessage,
+  refreshPromptGroupSummariesForMessage,
   startPromptGroupCacheRebuild,
 } from '../services/prompt-group-cache';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = express.Router();
+const getRouteParam = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] || '' : value || '';
 
 const getRequestedSessionId = (req: express.Request) => (
   typeof req.query.sessionId === 'string' ? req.query.sessionId.trim().slice(0, 200) : ''
@@ -339,6 +342,7 @@ router.put('/group/:messageId/cover', authenticate, (req, res) => {
     db.prepare('UPDATE messages SET isGroupCover = 1 WHERE id = ?').run(req.params.messageId);
   });
   updateCover();
+  refreshPromptGroupSummariesForMessage(getRouteParam(req.params.messageId));
 
   res.json({ success: true, messageId: req.params.messageId });
 });
@@ -375,6 +379,17 @@ router.post('/manual-groups', authenticate, (req, res) => {
   const previousGroupIds = [...new Set(images
     .map(image => image.manualGroupId)
     .filter((id): id is string => Boolean(id)))];
+  const affectedMessageIds = new Set<string>(messageIds as string[]);
+  if (previousGroupIds.length) {
+    const previousGroupPlaceholders = previousGroupIds.map(() => '?').join(',');
+    const previousMembers = db.prepare(`
+      SELECT m.id
+      FROM messages m
+      JOIN sessions s ON s.id = m.sessionId
+      WHERE s.userId = ? AND m.manualGroupId IN (${previousGroupPlaceholders})
+    `).all(user.id, ...previousGroupIds) as Array<{ id: string }>;
+    previousMembers.forEach(member => affectedMessageIds.add(member.id));
+  }
 
   db.transaction(() => {
     db.prepare(`
@@ -401,7 +416,7 @@ router.post('/manual-groups', authenticate, (req, res) => {
       if (remaining.count < 2) dissolveGroup.run(previousGroupId, user.id);
     });
   })();
-  rebuildPromptGroupCacheForUser(user.id);
+  affectedMessageIds.forEach(messageId => refreshPromptGroupCacheForMessage(messageId));
 
   res.status(201).json({ success: true, manualGroupId, messageIds });
 });
@@ -420,13 +435,20 @@ router.delete('/group/:messageId/manual', authenticate, (req, res) => {
     return res.status(409).json({ error: 'This image is not in a manual group' });
   }
 
+  const groupMembers = db.prepare(`
+    SELECT m.id
+    FROM messages m
+    JOIN sessions s ON s.id = m.sessionId
+    WHERE s.userId = ? AND m.manualGroupId = ? AND m.imageUrl IS NOT NULL
+  `).all(user.id, representative.manualGroupId) as Array<{ id: string }>;
+
   const result = db.prepare(`
     UPDATE messages
     SET manualGroupId = NULL, isGroupCover = 0
     WHERE manualGroupId = ?
       AND sessionId IN (SELECT id FROM sessions WHERE userId = ?)
   `).run(representative.manualGroupId, user.id);
-  rebuildPromptGroupCacheForUser(user.id);
+  groupMembers.forEach(member => refreshPromptGroupCacheForMessage(member.id));
 
   res.json({ success: true, ungrouped: result.changes });
 });
@@ -518,6 +540,52 @@ router.get('/', authenticate, (req, res) => {
   const includeCursor = req.query.includeCursor === 'true';
 
   if (groupByPrompt) {
+    const canUseSummary = !requestedSessionId
+      && selectedModels.length === 0
+      && selectedWorkflows.length === 0
+      && selectedAspects.length === 0
+      && selectedTags.length === 0
+      && !search
+      && isPromptGroupSummaryReady(user.id);
+    if (canUseSummary) {
+      const summaryConditions = [
+        'summary.userId = ?',
+        'summary.isArchived = ?',
+        favoritesOnly ? 'summary.groupHasFavorite = 1' : '',
+        promptFavoritesOnly ? 'summary.groupHasPromptFavorite = 1' : '',
+      ].filter(Boolean).join(' AND ');
+      const summaryParams = [user.id, onlyArchived ? 1 : 0];
+      const totalRow = includeTotal
+        ? db.prepare(`
+            SELECT COUNT(*) AS total FROM prompt_group_summary summary
+            WHERE ${summaryConditions}
+          `).get(...summaryParams) as { total: number }
+        : undefined;
+      const cursorSql = hasCursor
+        ? 'AND (summary.groupTimestamp < ? OR (summary.groupTimestamp = ? AND summary.representativeMessageId < ?))'
+        : '';
+      const pageParams = hasCursor
+        ? [...summaryParams, cursorTimestamp, cursorTimestamp, cursorId]
+        : summaryParams;
+      const results = db.prepare(`
+        SELECT ${galleryColumnsSql('m')}, summary.groupCount,
+          summary.groupHasFavorite, summary.groupHasPromptFavorite, summary.groupTimestamp
+        FROM prompt_group_summary summary
+        JOIN messages m ON m.id = summary.representativeMessageId
+        WHERE ${summaryConditions} ${cursorSql}
+        ORDER BY summary.groupTimestamp DESC, summary.representativeMessageId DESC
+        LIMIT ? OFFSET ?
+      `).all(...pageParams, limit, hasCursor ? 0 : offset) as Record<string, unknown>[];
+      const enrichedResults = attachPromptTags(db, results.map(withParsedRandomSelections), 'messageId');
+      const lastResult = results[results.length - 1] as { groupTimestamp?: number; messageId?: string } | undefined;
+      const nextCursor = results.length === limit && lastResult?.groupTimestamp && lastResult?.messageId
+        ? { timestamp: lastResult.groupTimestamp, id: lastResult.messageId }
+        : null;
+      if (includeTotal) return res.json({ items: enrichedResults, total: totalRow!.total, nextCursor });
+      if (includeCursor) return res.json({ items: enrichedResults, nextCursor });
+      return res.json(enrichedResults);
+    }
+
     const groupEligibilitySql = [
       favoritesOnly ? 'groupHasFavorite = 1' : '',
       promptFavoritesOnly ? 'groupHasPromptFavorite = 1' : '',
@@ -537,14 +605,14 @@ router.get('/', authenticate, (req, res) => {
         `).get(...params) as { total: number }
       : undefined;
     const groupCursorSql = hasCursor
-      ? 'AND (groupTimestamp < ? OR (groupTimestamp = ? AND id < ?))'
+      ? 'AND (ranked.groupTimestamp < ? OR (ranked.groupTimestamp = ? AND ranked.id < ?))'
       : '';
     const groupParams = hasCursor
       ? [...params, cursorTimestamp, cursorTimestamp, cursorId]
       : params;
     const results = db.prepare(`
       WITH filtered AS (
-        SELECT m.*, pgc.groupId
+        SELECT m.id, m.timestamp, m.isFavorite, m.isPromptFavorite, m.isGroupCover, pgc.groupId
         ${filteredSource}
       ), ranked AS (
         SELECT filtered.*,
@@ -558,11 +626,13 @@ router.get('/', authenticate, (req, res) => {
           ) AS promptGroupRank
         FROM filtered
       )
-      SELECT ${galleryColumnsSql('ranked')}, groupCount, groupHasFavorite, groupHasPromptFavorite, groupTimestamp
+      SELECT ${galleryColumnsSql('m')}, ranked.groupCount, ranked.groupHasFavorite,
+        ranked.groupHasPromptFavorite, ranked.groupTimestamp
       FROM ranked
-      WHERE promptGroupRank = 1 AND ${groupEligibilitySql}
+      JOIN messages m ON m.id = ranked.id
+      WHERE ranked.promptGroupRank = 1 AND ${groupEligibilitySql}
       ${groupCursorSql}
-      ORDER BY groupTimestamp DESC, id DESC
+      ORDER BY ranked.groupTimestamp DESC, ranked.id DESC
       LIMIT ? OFFSET ?
     `).all(...groupParams, limit, hasCursor ? 0 : offset) as Record<string, unknown>[];
     const enrichedResults = attachPromptTags(db, results.map(withParsedRandomSelections), 'messageId');

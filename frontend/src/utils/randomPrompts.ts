@@ -83,6 +83,54 @@ export const hasResolvableRandomPrompt = (prompt: string, lists: RandomPromptLis
     .some(match => enabledSlugs.has(match[1].toLowerCase()));
 };
 
+type RandomPromptSource = {
+  prompt?: string | null;
+  text?: string | null;
+  generationPrompt?: string | null;
+  randomSelections?: RandomPromptSelection[];
+};
+
+export const getRandomPromptListsForSource = (
+  source: RandomPromptSource,
+  lists: RandomPromptList[] = []
+) => {
+  const knownSlugs = new Set(lists.map(list => list.slug.toLowerCase()));
+  const aliases = (source.randomSelections || []).flatMap(selection => {
+    if (knownSlugs.has(selection.slug.toLowerCase())) return [];
+    const matchingList = lists.find(list => list.id === selection.listId)
+      || lists.find(list => list.name.trim().toLowerCase() === selection.name.trim().toLowerCase());
+    return matchingList ? [{ ...matchingList, slug: selection.slug }] : [];
+  });
+
+  return [...lists, ...aliases];
+};
+
+export const getResolvableRandomPromptTemplate = (
+  source: RandomPromptSource,
+  lists: RandomPromptList[] = []
+) => {
+  const compatibleLists = getRandomPromptListsForSource(source, lists);
+  return [source.prompt, source.text, source.generationPrompt]
+    .find(candidate => typeof candidate === 'string' && hasResolvableRandomPrompt(candidate, compatibleLists))
+    ?.trim() || '';
+};
+
+export const withoutPreviousRandomSelections = (
+  lists: RandomPromptList[] = [],
+  selections: RandomPromptSelection[] = []
+) => {
+  const previousValues = new Map(
+    selections.map(selection => [selection.slug.toLowerCase(), selection.value.trim().toLowerCase()])
+  );
+
+  return lists.map(list => {
+    const previousValue = previousValues.get(list.slug.toLowerCase());
+    if (!previousValue) return list;
+    const remainingValues = list.values.filter(value => value.trim().toLowerCase() !== previousValue);
+    return remainingValues.length > 0 ? { ...list, values: remainingValues } : list;
+  });
+};
+
 export const resolveRandomPromptsWithSelections = (prompt: string, lists: RandomPromptList[] = []) => {
   const available = new Map(
     lists

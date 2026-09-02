@@ -113,6 +113,68 @@ afterAll(async () => {
 });
 
 describe('API security boundaries', () => {
+  it('stores and verifies PIN or pattern app locks without exposing the credential hash', async () => {
+    const initialResponse = await request('/api/auth/app-lock', { cookie: adminCookie });
+    expect(initialResponse.status).toBe(200);
+    expect(await json(initialResponse)).toMatchObject({ enabled: false, method: 'pin', hasCredential: false, hasPin: false, pinLength: 4, hasPattern: false });
+
+    const disabledWithoutCode = await request('/api/auth/app-lock', {
+      method: 'PUT', cookie: adminCookie,
+      body: JSON.stringify({ enabled: false, method: 'pin', timeoutMinutes: 15 }),
+    });
+    expect(disabledWithoutCode.status).toBe(200);
+    expect(await json(disabledWithoutCode)).toMatchObject({ enabled: false, hasCredential: false });
+
+    const pinResponse = await request('/api/auth/app-lock', {
+      method: 'PUT', cookie: adminCookie,
+      body: JSON.stringify({ enabled: true, method: 'pin', timeoutMinutes: 15, credential: '258025' }),
+    });
+    const pinConfig = await json(pinResponse);
+    expect(pinResponse.status).toBe(200);
+    expect(pinConfig).toMatchObject({ enabled: true, method: 'pin', timeoutMinutes: 15, hasCredential: true, hasPin: true, pinLength: 6, hasPattern: false });
+    expect(pinConfig.credentialHash).toBeUndefined();
+
+    expect((await request('/api/auth/app-lock/verify', {
+      method: 'POST', cookie: adminCookie, body: JSON.stringify({ credential: '2580' }),
+    })).status).toBe(401);
+    expect((await request('/api/auth/app-lock/verify', {
+      method: 'POST', cookie: adminCookie, body: JSON.stringify({ credential: '258025' }),
+    })).status).toBe(200);
+
+    expect((await request('/api/auth/app-lock', {
+      method: 'PUT', cookie: adminCookie,
+      body: JSON.stringify({ enabled: true, method: 'pin', timeoutMinutes: 15, credential: '12' }),
+    })).status).toBe(400);
+    expect((await request('/api/auth/app-lock', {
+      method: 'PUT', cookie: adminCookie,
+      body: JSON.stringify({ enabled: true, method: 'pin', timeoutMinutes: 15, credential: '1234567' }),
+    })).status).toBe(400);
+
+    expect((await request('/api/auth/app-lock', {
+      method: 'PUT', cookie: adminCookie,
+      body: JSON.stringify({ enabled: true, method: 'pattern', timeoutMinutes: 30 }),
+    })).status).toBe(400);
+    const patternResponse = await request('/api/auth/app-lock', {
+      method: 'PUT', cookie: adminCookie,
+      body: JSON.stringify({ enabled: true, method: 'pattern', timeoutMinutes: 30, credential: '0-1-4-7' }),
+    });
+    expect(patternResponse.status).toBe(200);
+    expect(await json(patternResponse)).toMatchObject({ method: 'pattern', hasCredential: true, hasPin: true, hasPattern: true });
+    expect((await request('/api/auth/app-lock/verify', {
+      method: 'POST', cookie: adminCookie, body: JSON.stringify({ method: 'pattern', credential: '0-1-4-7' }),
+    })).status).toBe(200);
+    expect((await request('/api/auth/app-lock/verify', {
+      method: 'POST', cookie: adminCookie, body: JSON.stringify({ method: 'pin', credential: '258025' }),
+    })).status).toBe(200);
+
+    const disabledResponse = await request('/api/auth/app-lock', {
+      method: 'PUT', cookie: adminCookie,
+      body: JSON.stringify({ enabled: false, method: 'pattern', timeoutMinutes: 30 }),
+    });
+    expect(disabledResponse.status).toBe(200);
+    expect(await json(disabledResponse)).toMatchObject({ enabled: false, method: 'pattern', hasCredential: true, hasPin: true, hasPattern: true });
+  });
+
   it('exposes a minimal public health contract without checking ComfyUI', async () => {
     const response = await request('/api/health?dependencies=0');
     const body = await json(response);
@@ -256,9 +318,10 @@ describe('API security boundaries', () => {
     }
   });
 
-  it('groups different random-list results by their original dynamic prompt', async () => {
+  it('groups dynamic prompts and their resolved ordinary variants together', async () => {
     const ids = ['dynamic-group-old', 'dynamic-group-new', 'dynamic-group-static'];
-    const template = 'Portrait with [R-Color] hair';
+    const template = 'An amateur photo of a young brunette [Origin] woman with long dark hair in a high ponytail and wispy bangs standing front';
+    const brazilianPrompt = template.replace('[Origin]', 'brazilian');
     try {
       const insert = db.prepare(`
         INSERT INTO messages (
@@ -267,34 +330,32 @@ describe('API security boundaries', () => {
         ) VALUES (?, ?, 'bot', '', ?, ?, ?, ?, ?, 'completed')
       `);
       insert.run(
-        ids[0], adminSessionId, template, 'Portrait with blonde hair',
-        JSON.stringify([{ slug: 'R-Color', value: 'blonde' }]),
+        ids[0], adminSessionId, template, template.replace('[Origin]', 'colombian'),
+        JSON.stringify([{ slug: 'Origin', value: 'colombian' }]),
         `/api/image-files/${ids[0]}.png`, 21_001
       );
       insert.run(
-        ids[1], adminSessionId, template, 'Portrait with auburn hair',
-        JSON.stringify([{ slug: 'R-Color', value: 'auburn' }]),
+        ids[1], adminSessionId, template, brazilianPrompt,
+        JSON.stringify([{ slug: 'Origin', value: 'brazilian' }]),
         `/api/image-files/${ids[1]}.png`, 21_002
       );
       insert.run(
-        ids[2], adminSessionId, template, template, '[]',
+        ids[2], adminSessionId, brazilianPrompt, brazilianPrompt, '[]',
         `/api/image-files/${ids[2]}.png`, 21_003
       );
       rebuildPromptGroupCacheForUser(adminId);
 
       const groupedResponse = await request('/api/gallery?groupByPrompt=true&limit=100', { cookie: adminCookie });
       const grouped = await json(groupedResponse);
-      const dynamicGroup = grouped.find((item: { messageId: string }) => item.messageId === ids[1]);
-      const staticGroup = grouped.find((item: { messageId: string }) => item.messageId === ids[2]);
+      const combinedGroup = grouped.find((item: { messageId: string }) => item.messageId === ids[2]);
 
       expect(groupedResponse.status).toBe(200);
-      expect(dynamicGroup).toMatchObject({ messageId: ids[1], groupCount: 2 });
-      expect(staticGroup).toMatchObject({ messageId: ids[2], groupCount: 1 });
+      expect(combinedGroup).toMatchObject({ messageId: ids[2], groupCount: 3 });
 
-      const groupResponse = await request(`/api/gallery/group/${ids[1]}`, { cookie: adminCookie });
+      const groupResponse = await request(`/api/gallery/group/${ids[2]}`, { cookie: adminCookie });
       const group = await json(groupResponse);
       expect(groupResponse.status).toBe(200);
-      expect(group.items.map((item: { messageId: string }) => item.messageId)).toEqual(ids.slice(0, 2).reverse());
+      expect(group.items.map((item: { messageId: string }) => item.messageId)).toEqual([...ids].reverse());
     } finally {
       db.prepare(`DELETE FROM messages WHERE id LIKE 'dynamic-group-%'`).run();
     }

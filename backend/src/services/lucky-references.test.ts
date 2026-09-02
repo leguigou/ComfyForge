@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  normalizeLuckyReferenceCount,
   promptSimilarity,
   referenceConnections,
   selectLuckyReferences,
@@ -20,6 +21,13 @@ const candidate = (
 });
 
 describe('lucky reference selection', () => {
+  it('requires two references for a new draw but allows one anchored replacement', () => {
+    expect(normalizeLuckyReferenceCount(1)).toBe(2);
+    expect(normalizeLuckyReferenceCount(1, true)).toBe(1);
+    expect(normalizeLuckyReferenceCount(20)).toBe(8);
+    expect(normalizeLuckyReferenceCount(undefined)).toBe(6);
+  });
+
   it('ignores generic subject tags when checking coherence', () => {
     const beach = candidate('beach', 'woman on a beach', [['women', 'subject'], ['beach', 'setting']]);
     const street = candidate('street', 'woman in a street', [['women', 'subject'], ['street', 'setting']]);

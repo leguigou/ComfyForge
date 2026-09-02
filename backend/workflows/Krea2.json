@@ -119,6 +119,19 @@
       "title": "Settings (smZ)"
     }
   },
+  "134": {
+    "inputs": {
+      "stop_at_clip_layer": -2,
+      "clip": [
+        "187",
+        0
+      ]
+    },
+    "class_type": "CLIPSetLastLayer",
+    "_meta": {
+      "title": "CLIP Définir Dernière Couche"
+    }
+  },
   "135": {
     "inputs": {
       "unet_name": "solordzZITZIBKrea2_v20Krea2W4a4.safetensors",
@@ -143,9 +156,9 @@
   },
   "149": {
     "inputs": {
-      "text": "An amateur photo of a young brunette woman with long, dark hair in a high ponytail and wispy bangs. She is standing front. She wears a sheer, lightweight summer top that blows in the breeze. She sits by an outdoor pool in warm sunlight",
+      "text": "Photographic indoor snapshot mode, a young woman standing in a bedroom wearing a zebra-pattern bra and light pink underwear with thin elastic edges and slight fabric stretch tension, blonde hair with cool undertones pulled into a side ponytail",
       "clip": [
-        "187",
+        "134",
         0
       ]
     },
@@ -156,7 +169,7 @@
   },
   "187": {
     "inputs": {
-      "clip_name": "qwen3vl_4b_int8_convrot.safetensors",
+      "clip_name": "qwen3vl_4b_uncensored_int8_convrot.safetensors",
       "type": "krea2",
       "device": "default"
     },
@@ -167,10 +180,10 @@
   },
   "190": {
     "inputs": {
-      "seed": 52992480762380,
+      "seed": 11191886560419,
       "steps": 8,
       "cfg": 1,
-      "sampler_name": "euler",
+      "sampler_name": "er_sde",
       "scheduler": "beta",
       "denoise": 1,
       "model": [

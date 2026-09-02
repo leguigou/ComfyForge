@@ -1,5 +1,9 @@
 import crypto from 'crypto';
 import axios from 'axios';
+import fs from 'fs';
+import https from 'https';
+import path from 'path';
+import tls from 'tls';
 import { validateServiceUrl } from '../security/service-url';
 import { writeAuditLog } from './audit-log';
 
@@ -42,6 +46,31 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 ];
 
 let encryptionKey: Buffer | null = null;
+let extraCaPath = '';
+let extraCaAgent: https.Agent | undefined;
+
+const getLlmHttpsAgent = () => {
+  const configuredPath = process.env.LLM_EXTRA_CA_CERTS?.trim();
+  if (!configuredPath) return undefined;
+
+  const resolvedPath = path.resolve(configuredPath);
+  if (extraCaAgent && extraCaPath === resolvedPath) return extraCaAgent;
+
+  const extraCa = fs.readFileSync(resolvedPath, 'utf8');
+  extraCaAgent = new https.Agent({
+    // Supplying `ca` replaces Node's bundled roots, so retain them and append
+    // only the explicitly configured local/company authority.
+    ca: [...tls.rootCertificates, extraCa],
+    rejectUnauthorized: true,
+  });
+  extraCaPath = resolvedPath;
+  return extraCaAgent;
+};
+
+const withLlmTls = <T extends Record<string, unknown>>(config: T): T & { httpsAgent?: https.Agent } => {
+  const httpsAgent = getLlmHttpsAgent();
+  return httpsAgent ? { ...config, httpsAgent } : config;
+};
 
 export const configureProviderEncryption = (secret: string) => {
   // Keep the historical namespace so upgrades can still decrypt existing API keys.
@@ -84,12 +113,12 @@ export const listProviderModels = async (provider: StoredProvider) => {
   const baseUrl = provider.baseUrl.replace(/\/$/, '');
   if (provider.type === 'google') {
     const key = decryptApiKey(provider.apiKey);
-    const response = await axios.get(`${baseUrl}/v1beta/models`, { params: { key }, timeout: 10000 });
+    const response = await axios.get(`${baseUrl}/v1beta/models`, withLlmTls({ params: { key }, timeout: 10000 }));
     return (response.data.models || [])
       .filter((model: any) => model.supportedGenerationMethods?.includes('generateContent'))
       .map((model: any) => String(model.name).replace(/^models\//, ''));
   }
-  const response = await axios.get(`${baseUrl}/v1/models`, { headers: authHeaders(provider), timeout: 10000 });
+  const response = await axios.get(`${baseUrl}/v1/models`, withLlmTls({ headers: authHeaders(provider), timeout: 10000 }));
   return (response.data.data || []).map((model: any) => model.id);
 };
 
@@ -113,7 +142,7 @@ export const completeWithProvider = async (provider: StoredProvider, prompt: str
       const response = await axios.post(`${baseUrl}/v1/messages`, {
         model: provider.model, max_tokens: 2048, temperature,
         system: systemMessage, messages: [{ role: 'user', content: prompt }]
-      }, { headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 30000 });
+      }, withLlmTls({ headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 30000 }));
       responseData = response.data;
       content = response.data.content?.map((part: any) => part.text || '').join('') || '';
     } else if (provider.type === 'google') {
@@ -122,7 +151,7 @@ export const completeWithProvider = async (provider: StoredProvider, prompt: str
         systemInstruction: { parts: [{ text: systemMessage }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: { temperature, responseMimeType: 'application/json' }
-      }, { params: { key }, timeout: 30000 });
+      }, withLlmTls({ params: { key }, timeout: 30000 }));
       responseData = response.data;
       content = response.data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('') || '';
     } else {
@@ -130,7 +159,7 @@ export const completeWithProvider = async (provider: StoredProvider, prompt: str
         model: provider.model,
         messages: [{ role: 'system', content: systemMessage }, { role: 'user', content: prompt }],
         temperature
-      }, { headers: authHeaders(provider), timeout: 30000 });
+      }, withLlmTls({ headers: authHeaders(provider), timeout: 30000 }));
       responseData = response.data;
       content = response.data.choices?.[0]?.message?.content || '';
     }
@@ -181,6 +210,18 @@ export const detectLocalProviderEngine = (provider: Pick<StoredProvider, 'name' 
   return null;
 };
 
+export const shouldDisableDeepSeekVisionThinking = (
+  provider: Pick<StoredProvider, 'baseUrl' | 'type'>,
+  model: string,
+) => {
+  if (provider.type !== 'openai' || model.trim().toLowerCase() !== 'deepseek-v4-flash-vision-exp') return false;
+  try {
+    return new URL(provider.baseUrl).hostname.toLowerCase() === 'api.deepseek.com';
+  } catch {
+    return false;
+  }
+};
+
 const nativeServiceOrigin = (provider: StoredProvider) => new URL(provider.baseUrl).origin;
 
 export interface UnloadModelResult {
@@ -201,14 +242,14 @@ export const unloadProviderModel = async (provider: StoredProvider, model: strin
     await axios.post(`${origin}/api/generate`, {
       model: selectedModel,
       keep_alive: 0,
-    }, { headers: authHeaders(provider), timeout: 30000 });
+    }, withLlmTls({ headers: authHeaders(provider), timeout: 30000 }));
     return { engine, model: selectedModel, status: 'unloaded', instances: 1 };
   }
 
-  const response = await axios.get(`${origin}/api/v1/models`, {
+  const response = await axios.get(`${origin}/api/v1/models`, withLlmTls({
     headers: authHeaders(provider),
     timeout: 10000,
-  });
+  }));
   const models = Array.isArray(response.data?.models) ? response.data.models : [];
   const matchingInstances = models.flatMap((candidate: any) => {
     const instances = Array.isArray(candidate?.loaded_instances) ? candidate.loaded_instances : [];
@@ -221,7 +262,7 @@ export const unloadProviderModel = async (provider: StoredProvider, model: strin
   for (const instanceId of instanceIds) {
     await axios.post(`${origin}/api/v1/models/unload`, {
       instance_id: instanceId,
-    }, { headers: authHeaders(provider), timeout: 30000 });
+    }, withLlmTls({ headers: authHeaders(provider), timeout: 30000 }));
   }
   return { engine, model: selectedModel, status: 'unloaded', instances: instanceIds.length };
 };
@@ -279,7 +320,7 @@ export const completeVisionWithProvider = async (
         stream: false,
         keep_alive: `${normalizedTtlSeconds}s`,
         options: { temperature: 0.2, num_predict: normalizedMaxOutputTokens },
-      }, { headers: authHeaders(provider), timeout: 120000, signal });
+      }, withLlmTls({ headers: authHeaders(provider), timeout: 120000, signal }));
       responseData = response.data;
       if (response.data?.error) {
         const providerError = typeof response.data.error === 'string'
@@ -301,7 +342,7 @@ export const completeVisionWithProvider = async (
             { type: 'text', text: prompt },
           ],
         }],
-      }, { headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 120000, signal });
+      }, withLlmTls({ headers: { ...authHeaders(provider), 'content-type': 'application/json' }, timeout: 120000, signal }));
       responseData = response.data;
       content = response.data.content?.map((part: any) => part.text || '').join('') || '';
     } else if (provider.type === 'google') {
@@ -316,7 +357,7 @@ export const completeVisionWithProvider = async (
           ],
         }],
         generationConfig: { temperature: 0.2, maxOutputTokens: normalizedMaxOutputTokens },
-      }, { params: { key }, timeout: 120000, signal });
+      }, withLlmTls({ params: { key }, timeout: 120000, signal }));
       responseData = response.data;
       content = response.data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('') || '';
     } else {
@@ -334,8 +375,11 @@ export const completeVisionWithProvider = async (
         ],
         temperature: 0.2,
         max_tokens: normalizedMaxOutputTokens,
+        ...(shouldDisableDeepSeekVisionThinking(provider, selectedModel)
+          ? { thinking: { type: 'disabled' } }
+          : {}),
         ...(localEngine === 'lmstudio' ? { ttl: normalizedTtlSeconds } : {}),
-      }, { headers: authHeaders(provider), timeout: 120000, signal });
+      }, withLlmTls({ headers: authHeaders(provider), timeout: 120000, signal }));
       responseData = response.data;
       content = response.data.choices?.[0]?.message?.content || '';
     }

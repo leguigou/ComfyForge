@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { classifyPrompt } from './prompt-tags';
+import Database from 'better-sqlite3';
+import {
+  classifyPrompt,
+  PROMPT_TAG_INDEX_VERSION,
+  repairMissingPromptTags,
+  syncPromptTagDefinitions,
+} from './prompt-tags';
 
 const slugsFor = (prompt: string) => classifyPrompt(prompt).map(tag => tag.slug);
 
@@ -68,5 +74,55 @@ describe('classifyPrompt', () => {
     expect(slugsFor('Superbe paysage à la montagne')).toEqual(
       expect.arrayContaining(['landscape', 'mountain'])
     );
+  });
+});
+
+describe('incremental prompt tag indexing', () => {
+  it('preserves existing tags and repairs each missing image only once', async () => {
+    const database = new Database(':memory:');
+    database.exec(`
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY, role TEXT NOT NULL, generationPrompt TEXT,
+        prompt TEXT, text TEXT, imageUrl TEXT, timestamp INTEGER NOT NULL
+      );
+      CREATE TABLE tags (
+        id TEXT PRIMARY KEY, category TEXT NOT NULL, labelFr TEXT NOT NULL, labelEn TEXT NOT NULL
+      );
+      CREATE TABLE message_tags (
+        messageId TEXT NOT NULL, tagId TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'auto',
+        confidence REAL NOT NULL DEFAULT 1, PRIMARY KEY (messageId, tagId)
+      );
+      CREATE TABLE message_tag_index_state (
+        messageId TEXT PRIMARY KEY, version INTEGER NOT NULL, updatedAt INTEGER NOT NULL
+      );
+    `);
+    syncPromptTagDefinitions(database);
+    const insert = database.prepare(`
+      INSERT INTO messages (id, role, prompt, imageUrl, timestamp)
+      VALUES (?, 'bot', ?, ?, ?)
+    `);
+    insert.run('already-tagged', 'woman portrait', '/tagged.webp', 1);
+    database.prepare(`
+      INSERT INTO message_tags (messageId, tagId, source) VALUES ('already-tagged', 'women', 'auto')
+    `).run();
+
+    const first = await repairMissingPromptTags(database, 10);
+    expect(first.processed).toBe(0);
+    expect(database.prepare(`SELECT tagId FROM message_tags WHERE messageId = 'already-tagged'`).all())
+      .toEqual([{ tagId: 'women' }]);
+
+    insert.run('missing-tags', 'woman standing on a beach', '/missing.webp', 2);
+    insert.run('no-match', 'xyzzq', '/no-match.webp', 3);
+    const repaired = await repairMissingPromptTags(database, 1);
+    expect(repaired.processed).toBe(2);
+    expect(database.prepare(`
+      SELECT version FROM message_tag_index_state WHERE messageId = 'no-match'
+    `).get()).toEqual({ version: PROMPT_TAG_INDEX_VERSION });
+    expect(database.prepare(`SELECT tagId FROM message_tags WHERE messageId = 'missing-tags'`).all())
+      .toEqual(expect.arrayContaining([{ tagId: 'women' }, { tagId: 'beach' }]));
+
+    const secondPass = await repairMissingPromptTags(database, 10);
+    expect(secondPass.processed).toBe(0);
+    database.close();
   });
 });

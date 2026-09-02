@@ -12,6 +12,7 @@ import { LLMProvidersPanel } from './LLMProvidersPanel';
 import { AdminLogsPanel } from './AdminLogsPanel';
 import { AdminQueuePanel } from './AdminQueuePanel';
 import { APP_CONFIG, DEFAULT_LLM_SYSTEM_MESSAGE } from '../../config';
+import { AppLockSettings, type AppLockConfig } from './AppLock';
 
 interface WorkflowMappingData {
   filename: string;
@@ -56,6 +57,7 @@ const SettingsTabIcon = ({ tab }: { tab: SettingsTab }) => {
     general: <><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /><circle cx="12" cy="12" r="4" /></>,
     companions: <><path d="M8 4h8l3 4v8l-3 4H8l-3-4V8z" /><path d="M9 11h.01M15 11h.01M9 15c1.8 1.3 4.2 1.3 6 0" /></>,
     profile: <><circle cx="12" cy="8" r="3" /><path d="M5.5 20a6.5 6.5 0 0 1 13 0" /></>,
+    lock: <><rect x="5" y="10" width="14" height="11" rx="3" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" /></>,
     images: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m4 17 5-5 4 4 2-2 5 4" /></>,
     random: <><path d="M4 7h3c4 0 4 10 8 10h5" /><path d="m17 14 3 3-3 3" /><path d="M4 17h3c1.5 0 2.5-1.5 3.5-3" /><path d="M14 7h6m-3-3 3 3-3 3" /></>,
     comfy: <><path d="M12 2v3m0 14v3M4.93 4.93l2.12 2.12m9.9 9.9 2.12 2.12M2 12h3m14 0h3M4.93 19.07l2.12-2.12m9.9-9.9 2.12-2.12" /><circle cx="12" cy="12" r="4" /></>,
@@ -444,8 +446,8 @@ const AdminUserEditor = ({
 interface SettingsModalProps {
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
-  activeTab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs';
-  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs') => void;
+  activeTab: 'general' | 'companions' | 'profile' | 'lock' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs';
+  setActiveTab: (tab: 'general' | 'companions' | 'profile' | 'lock' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs') => void;
   params: GenParameters;
   setParams: Dispatch<SetStateAction<GenParameters>>;
   settingsSaveState: 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -457,6 +459,9 @@ interface SettingsModalProps {
   lang: Language;
   t: Record<string, string>;
   currentUser: User | null;
+  appLockConfig: AppLockConfig;
+  onAppLockConfigChange: (config: AppLockConfig) => void;
+  onAppLockNow: () => void;
   comfyModels: string[];
   diffusionModels: string[];
   checkpointModelDetails: ComfyModelDetails[];
@@ -499,6 +504,9 @@ export const SettingsModal = ({
   lang,
   t,
   currentUser,
+  appLockConfig,
+  onAppLockConfigChange,
+  onAppLockNow,
   comfyModels,
   diffusionModels,
   checkpointModelDetails,
@@ -1318,6 +1326,7 @@ export const SettingsModal = ({
     { id: 'general', label: t.tabGeneral },
     { id: 'companions', label: t.tabCompanions },
     { id: 'profile', label: t.tabProfile },
+    { id: 'lock', label: lang === 'fr' ? 'Verrouillage' : 'App lock' },
     { id: 'images', label: t.tabImages },
     { id: 'random', label: t.tabRandom },
     { id: 'comfy', label: t.tabComfy },
@@ -1573,7 +1582,7 @@ export const SettingsModal = ({
                     </span>
                     <input
                       type="range"
-                      min="1"
+                      min="2"
                       max="8"
                       step="1"
                       value={params.luckyFavoriteCount}
@@ -1905,6 +1914,18 @@ export const SettingsModal = ({
             </div>
           )}
 
+          {activeTab === 'lock' && (
+            <AppLockSettings
+              config={appLockConfig}
+              lang={lang}
+              onConfigChange={onAppLockConfigChange}
+              onLockNow={() => {
+                setShowSettings(false);
+                onAppLockNow();
+              }}
+            />
+          )}
+
           {activeTab === 'images' && (
             <>
               <div className="settings-row-2">
@@ -2078,16 +2099,20 @@ export const SettingsModal = ({
                   </div>
                   {favoriteModels.length > 0 ? (
                     <div className="favorite-model-list">
-                      {favoriteModels.map((favorite) => (
+                      {favoriteModels.map((favorite) => {
+                        const isActive = params.comfyModel === favorite.model
+                          && params.comfyModelType === (favorite.modelType || 'checkpoint');
+                        return (
                         <div
                           key={`${favorite.modelType || 'checkpoint'}:${favorite.model}`}
-                          className={`favorite-model-card ${params.comfyModel === favorite.model && params.comfyModelType === (favorite.modelType || 'checkpoint') ? 'active' : ''}`}
+                          className={`favorite-model-card ${isActive ? 'active' : ''}`}
                         >
                           <button
                             type="button"
                             className="favorite-model-select"
                             onClick={() => selectFavoriteModel(favorite.model, favorite.workflowFile, favorite.modelType || 'checkpoint')}
                             title={favorite.model}
+                            aria-pressed={isActive}
                           >
                             <span className="favorite-model-name">{getModelDisplayName(favorite.model)}</span>
                             <span className="favorite-model-path">
@@ -2125,6 +2150,16 @@ export const SettingsModal = ({
                           )}
                           <button
                             type="button"
+                            className="favorite-model-activate"
+                            onClick={() => selectFavoriteModel(favorite.model, favorite.workflowFile, favorite.modelType || 'checkpoint')}
+                            disabled={isActive}
+                            aria-pressed={isActive}
+                          >
+                            {isActive && <CheckIcon size={16} />}
+                            {isActive ? t.modelActive : t.activateModel}
+                          </button>
+                          <button
+                            type="button"
                             className="favorite-model-remove"
                             onClick={() => toggleFavoriteModel(favorite.model, favorite.modelType || 'checkpoint')}
                             title={t.removeFromFavorites}
@@ -2133,7 +2168,8 @@ export const SettingsModal = ({
                             <StarIcon size={18} filled />
                           </button>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="favorite-model-empty">{t.noFavoriteModels}</p>

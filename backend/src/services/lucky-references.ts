@@ -16,6 +16,15 @@ export interface LuckyReferenceCandidate {
   tags: LuckyReferenceTag[];
 }
 
+export const normalizeLuckyReferenceCount = (
+  value: unknown,
+  hasAnchors = false
+) => {
+  const requested = Number(value);
+  if (!Number.isFinite(requested)) return 6;
+  return Math.min(8, Math.max(hasAnchors ? 1 : 2, Math.round(requested)));
+};
+
 const GENERIC_TAG_CATEGORIES = new Set(['subject', 'count']);
 const SUPPORTING_TAG_CATEGORIES = new Set(['lighting', 'pose', 'shot']);
 const GENERIC_TAG_SLUGS = new Set(['photorealistic', 'nature']);

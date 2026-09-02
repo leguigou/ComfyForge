@@ -29,6 +29,9 @@ interface SidebarProps {
   openComparisonHome: () => void;
   fetchGallery: (initial?: boolean) => void;
   sessions: Session[];
+  hasMoreSessions: boolean;
+  isLoadingMoreSessions: boolean;
+  loadMoreSessions: () => Promise<void>;
   onSessionViewed: (id: string) => void;
   currentSessionId: string | null;
   setCurrentSessionId: (id: string | null) => void;
@@ -61,6 +64,9 @@ export const Sidebar = ({
   openComparisonHome,
   fetchGallery,
   sessions,
+  hasMoreSessions,
+  isLoadingMoreSessions,
+  loadMoreSessions,
   onSessionViewed,
   currentSessionId,
   setCurrentSessionId,
@@ -186,6 +192,19 @@ export const Sidebar = ({
               )}
             </div>
           ))}
+          {hasMoreSessions && (
+            <button
+              type="button"
+              className="sessions-load-more"
+              onClick={() => void loadMoreSessions()}
+              disabled={isLoadingMoreSessions}
+              aria-busy={isLoadingMoreSessions}
+            >
+              {isLoadingMoreSessions
+                ? t.loading
+                : (lang === 'fr' ? 'Charger plus' : 'Load more')}
+            </button>
+          )}
           {view === 'archives' && sessions.length === 0 && <p className="empty-archives-msg">{t.noArchives}</p>}
         </div>
 

@@ -88,6 +88,10 @@ describe('manual gallery groups', () => {
     insert.run('manual-a', sessionId, 'portrait prompt', 'portrait prompt', '/a.webp', now + 3);
     insert.run('manual-b', sessionId, 'landscape prompt', 'landscape prompt', '/b.webp', now + 2);
     insert.run('manual-c', sessionId, 'portrait prompt', 'portrait prompt', '/c.webp', now + 1);
+    rebuildPromptGroupCacheForUser(user.id);
+    const untouchedCacheBefore = db.prepare(`
+      SELECT updatedAt FROM prompt_group_cache WHERE messageId = 'manual-c'
+    `).get() as { updatedAt: number };
 
     const create = await request('/api/gallery/manual-groups', {
       method: 'POST',
@@ -96,6 +100,9 @@ describe('manual gallery groups', () => {
     const created = await create.json() as { manualGroupId: string };
     expect(create.status, JSON.stringify(created)).toBe(201);
     expect(created.manualGroupId).toBeTruthy();
+    expect(db.prepare(`
+      SELECT updatedAt FROM prompt_group_cache WHERE messageId = 'manual-c'
+    `).get()).toEqual(untouchedCacheBefore);
 
     const normal = await request('/api/gallery?groupByPrompt=false&includeTotal=true');
     const normalBody = await normal.json() as { items: Array<{ messageId: string; groupCount?: number }> };
@@ -213,6 +220,46 @@ describe('session-scoped gallery', () => {
     expect(persistedBody.items[0].groupCount).toBe(4);
   });
 
+  it('incrementally joins a resolved random-list prompt to its dynamic group', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string };
+    const sessionId = 'dynamic-resolved-gallery';
+    const now = Date.now();
+    const template = 'An amateur photo of a young brunette [Origin] woman with long dark hair in a high ponytail and wispy bangs standing front';
+    const resolved = template.replace('[Origin]', 'brazilian');
+
+    try {
+      db.prepare(`INSERT INTO sessions (id, userId, title, updatedAt) VALUES (?, ?, 'Dynamic resolved prompts', ?)`)
+        .run(sessionId, user.id, now);
+      const insert = db.prepare(`
+        INSERT INTO messages (
+          id, sessionId, role, prompt, generationPrompt, randomSelections,
+          imageUrl, timestamp
+        ) VALUES (?, ?, 'bot', ?, ?, ?, ?, ?)
+      `);
+      insert.run(
+        'dynamic-resolved-source', sessionId, template, resolved,
+        JSON.stringify([{ slug: 'Origin', value: 'brazilian' }]),
+        '/dynamic-resolved-source.webp', now + 1,
+      );
+      refreshPromptGroupCacheForMessage('dynamic-resolved-source');
+      insert.run(
+        'dynamic-resolved-copy', sessionId, resolved, resolved, '[]',
+        '/dynamic-resolved-copy.webp', now + 2,
+      );
+      refreshPromptGroupCacheForMessage('dynamic-resolved-copy');
+
+      const response = await request(`/api/gallery?sessionId=${sessionId}&groupByPrompt=true&includeTotal=true`);
+      const body = await response.json() as { total: number; items: Array<{ messageId: string; groupCount: number }> };
+      expect(response.status).toBe(200);
+      expect(body.total).toBe(1);
+      expect(body.items[0]).toMatchObject({ messageId: 'dynamic-resolved-copy', groupCount: 2 });
+    } finally {
+      db.prepare('DELETE FROM messages WHERE sessionId = ?').run(sessionId);
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+      rebuildPromptGroupCacheForUser(user.id);
+    }
+  });
+
   it('returns only the requested conversation and keeps prompt groups inside it', async () => {
     const user = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string };
     const firstSessionId = 'thread-gallery-first';
@@ -297,5 +344,40 @@ describe('gallery metadata filters', () => {
     const multipleAspectsBody = await multipleAspects.json() as { total: number; items: Array<{ messageId: string }> };
     expect(multipleAspectsBody.total).toBe(2);
     expect(multipleAspectsBody.items.map(item => item.messageId)).toEqual(['filter-b', 'filter-c']);
+  });
+});
+
+describe('session list pagination', () => {
+  it('returns a stable cursor without loading the complete sidebar history', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string };
+    const baseTimestamp = Date.now() + 10_000_000;
+    const sessionIds = Array.from({ length: 4 }, (_, index) => `paged-session-${index}`);
+    const insert = db.prepare(`
+      INSERT INTO sessions (id, userId, title, updatedAt, isArchived)
+      VALUES (?, ?, ?, ?, 0)
+    `);
+    sessionIds.forEach((id, index) => insert.run(id, user.id, id, baseTimestamp - index));
+
+    try {
+      const first = await request('/api/history?limit=2&includeCursor=true&includeTotal=true');
+      const firstBody = await first.json() as {
+        items: Array<{ id: string }>;
+        hasMore: boolean;
+        nextCursor: { updatedAt: number; id: string };
+        total: number;
+      };
+      expect(first.status).toBe(200);
+      expect(firstBody.items.map(session => session.id)).toEqual(sessionIds.slice(0, 2));
+      expect(firstBody.hasMore).toBe(true);
+      expect(firstBody.total).toBeGreaterThanOrEqual(4);
+
+      const second = await request(
+        `/api/history?limit=2&includeCursor=true&beforeUpdatedAt=${firstBody.nextCursor.updatedAt}&beforeId=${firstBody.nextCursor.id}`
+      );
+      const secondBody = await second.json() as { items: Array<{ id: string }> };
+      expect(secondBody.items.map(session => session.id)).toEqual(sessionIds.slice(2, 4));
+    } finally {
+      db.prepare(`DELETE FROM sessions WHERE id IN (${sessionIds.map(() => '?').join(',')})`).run(...sessionIds);
+    }
   });
 });

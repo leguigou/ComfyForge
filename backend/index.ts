@@ -6,6 +6,9 @@ import path from 'path';
 import { createApp } from './src/app';
 import { initQueue } from './src/services/queue';
 import { attachAuthenticatedWebSocket } from './src/websocket';
+import db from './src/services/database';
+import { schedulePromptTagRepair } from './src/services/prompt-tags';
+import { initializePromptGroupCaches } from './src/services/prompt-group-cache';
 
 // Restore default workflows if obscured by empty volume mount
 const backendDir = process.cwd().endsWith('backend') ? process.cwd() : path.join(process.cwd(), 'backend');
@@ -51,4 +54,6 @@ process.on('unhandledRejection', (reason, promise) => {
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  schedulePromptTagRepair(db);
+  initializePromptGroupCaches();
 });

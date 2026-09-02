@@ -61,6 +61,10 @@ export interface PromptGroupingIdentity {
   wordCount: number;
 }
 
+const getPromptGroupingMatchKind = (kind: PromptGroupingIdentity['kind']) => (
+  kind === 'message' ? 'message' : 'prompt'
+);
+
 export const getPromptGroupingIdentity = (item: PromptGroupingItem): PromptGroupingIdentity => {
   const prompt = typeof item.prompt === 'string' ? item.prompt.trim() : '';
   if (prompt && parseRandomSelections(item.randomSelections).length > 0) {
@@ -125,8 +129,9 @@ const createPromptGroupingProcessor = <T extends PromptGroupingItem>(
     if (manualGroupId) continue;
     const prompt = getPromptGroupingIdentity(item);
     automaticPrompts.set(item, prompt);
+    const matchKind = getPromptGroupingMatchKind(prompt.kind);
     for (const word of new Set(prompt.normalized.split(' ').filter(Boolean))) {
-      const key = `${prompt.kind}:${word}`;
+      const key = `${matchKind}:${word}`;
       documentFrequency.set(key, (documentFrequency.get(key) || 0) + 1);
     }
   }
@@ -161,9 +166,10 @@ const createPromptGroupingProcessor = <T extends PromptGroupingItem>(
     }
 
     const prompt = automaticPrompts.get(item) || getPromptGroupingIdentity(item);
+    const matchKind = getPromptGroupingMatchKind(prompt.kind);
     const promptWords = prompt.normalized.split(' ').filter(Boolean);
     const words = promptWords.length;
-    const exactKey = `${prompt.kind}:${prompt.normalized}`;
+    const exactKey = `${matchKind}:${prompt.normalized}`;
     let matchingGroup = exactPromptGroups.get(exactKey);
 
     if (!matchingGroup && prompt.kind !== 'message' && words >= settings.minWords) {
@@ -172,13 +178,13 @@ const createPromptGroupingProcessor = <T extends PromptGroupingItem>(
       const longestPossibleMatch = Math.floor(words / threshold);
       const maximumAcceptedEdits = Math.floor((1 - threshold) * longestPossibleMatch + 1e-9);
       const distinctWords = [...new Set(promptWords)].sort((left, right) => (
-        (documentFrequency.get(`${prompt.kind}:${left}`) || 0)
-        - (documentFrequency.get(`${prompt.kind}:${right}`) || 0)
+        (documentFrequency.get(`${matchKind}:${left}`) || 0)
+        - (documentFrequency.get(`${matchKind}:${right}`) || 0)
       ));
       const anchors = distinctWords.slice(0, maximumAcceptedEdits + 1);
       const candidates = new Set<WorkingGroup<T>>();
       for (const word of anchors) {
-        tokenGroups.get(`${prompt.kind}:${word}`)?.forEach(group => candidates.add(group));
+        tokenGroups.get(`${matchKind}:${word}`)?.forEach(group => candidates.add(group));
       }
       for (const group of candidates) {
         const comparisons = group.prompts.map(existing => ({
@@ -204,7 +210,7 @@ const createPromptGroupingProcessor = <T extends PromptGroupingItem>(
       }
       exactPromptGroups.set(exactKey, matchingGroup);
     } else {
-      const group = { items: [item], kind: prompt.kind, prompts: [prompt.normalized] };
+      const group = { items: [item], kind: matchKind, prompts: [prompt.normalized] };
       groups.push(group);
       exactPromptGroups.set(exactKey, group);
       if (prompt.kind !== 'message') indexPrompt(group, prompt.normalized);

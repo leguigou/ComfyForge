@@ -11,7 +11,7 @@ import {
   getGenerationElapsedSeconds,
   getTrackedGenerationElapsedSeconds
 } from '../../utils/generationTimer';
-import { hasResolvableRandomPrompt } from '../../utils/randomPrompts';
+import { getResolvableRandomPromptTemplate } from '../../utils/randomPrompts';
 import { canTranslateText } from '../../utils/textLanguage';
 import { copyImageToClipboard, ImageClipboardError } from '../../utils/imageClipboard';
 import { copyTextToClipboard } from '../../utils/textClipboard';
@@ -37,7 +37,6 @@ const GALLERY_LONG_PRESS_MS = 1000;
 const GALLERY_LONG_PRESS_MOVE_TOLERANCE = 12;
 const TEXT_LONG_PRESS_MS = 550;
 const TEXT_LONG_PRESS_MOVE_TOLERANCE = 10;
-const THREAD_REGENERATION_SCROLL_DELAY_MS = 1000;
 const GALLERY_FAST_SCROLL_THUMB_SIZE = 58;
 const VISION_RECOVERY_STORAGE_KEY = 'comfyforge.pendingVisionRecovery';
 const GalleryFilterMenu = React.lazy(() => import('./GalleryFilterMenu'));
@@ -268,6 +267,8 @@ interface ChatInterfaceProps {
   isLoadingLuckyReferences: boolean;
   regenerationCounts: Record<string, number>;
   recordRegeneration: (messageId: string) => void;
+  dynamicRegenerationCounts: Record<string, number>;
+  recordDynamicRegeneration: (messageId: string) => void;
   retryMessage: (messageId: string) => Promise<unknown>;
   dismissFailedMessage: (messageId: string) => void;
   retryAllIncomplete: () => Promise<{ queued: number }>;
@@ -288,6 +289,8 @@ interface ChatInterfaceProps {
   galleryItems: GalleryItem[];
   batchDeleteGalleryItems: (items: GalleryItem[]) => Promise<void>;
   batchRegenerateGalleryItems: (items: GalleryItem[]) => Promise<void>;
+  regenerateDynamicMessage: (message: Message) => Promise<void>;
+  regenerateDynamicGalleryItem: (item: GalleryItem) => Promise<void>;
   batchLuckyGalleryItems: (items: GalleryItem[]) => Promise<void>;
   batchSetGalleryFavorites: (items: GalleryItem[], value: number) => Promise<void>;
   batchSetGalleryPromptFavorites: (items: GalleryItem[], value: number) => Promise<void>;
@@ -349,6 +352,8 @@ export const ChatInterface = ({
   isLoadingLuckyReferences,
   regenerationCounts,
   recordRegeneration,
+  dynamicRegenerationCounts,
+  recordDynamicRegeneration,
   retryMessage,
   dismissFailedMessage,
   retryAllIncomplete,
@@ -369,6 +374,8 @@ export const ChatInterface = ({
   galleryItems,
   batchDeleteGalleryItems,
   batchRegenerateGalleryItems,
+  regenerateDynamicMessage,
+  regenerateDynamicGalleryItem,
   batchLuckyGalleryItems,
   batchSetGalleryFavorites,
   batchSetGalleryPromptFavorites,
@@ -446,6 +453,7 @@ export const ChatInterface = ({
   const [isPinchingGallery, setIsPinchingGallery] = useState(false);
   const [selectedGalleryIds, setSelectedGalleryIds] = useState<Set<string>>(() => new Set());
   const [galleryBatchMenuOpen, setGalleryBatchMenuOpen] = useState(false);
+  const [galleryBatchRegenerationCount, setGalleryBatchRegenerationCount] = useState(0);
   const [showPromptComparison, setShowPromptComparison] = useState(false);
   const [galleryBatchBusy, setGalleryBatchBusy] = useState(false);
   const [isGalleryFastScrolling, setIsGalleryFastScrolling] = useState(false);
@@ -477,6 +485,7 @@ export const ChatInterface = ({
   const imageImportRef = useRef<HTMLInputElement>(null);
   const visionAnalysisAbortRef = useRef<AbortController | null>(null);
   const activeVisionRecoveryIdRef = useRef<string | null>(pendingVisionRecoveryId);
+  const aiRewrittenPromptRef = useRef<string | null>(null);
   const optionsDrawerRef = useRef<HTMLDivElement>(null);
   const optionsToggleRef = useRef<HTMLButtonElement>(null);
   const optionsDragRef = useRef<{
@@ -491,9 +500,9 @@ export const ChatInterface = ({
   const galleryPinchRef = useRef({ startDistance: 0, startColumns: galleryColumns, changed: false });
   const suppressGalleryClickRef = useRef(false);
   const suppressGalleryClickTimerRef = useRef<number | null>(null);
+  const galleryBatchRegenerationCloseTimeoutRef = useRef<number | null>(null);
   const gallerySelectionModeRef = useRef(false);
   const latestMessagesRef = useRef(messages);
-  const threadRegenerationScrollTimeoutRef = useRef<number | null>(null);
   const galleryPointerTypeRef = useRef<React.PointerEvent['pointerType']>('mouse');
   const galleryLongPressRef = useRef<{
     timer: number;
@@ -821,6 +830,9 @@ export const ChatInterface = ({
     if (chatImageLongPressRef.current) window.clearTimeout(chatImageLongPressRef.current.timer);
     if (suppressGalleryClickTimerRef.current !== null) {
       window.clearTimeout(suppressGalleryClickTimerRef.current);
+    }
+    if (galleryBatchRegenerationCloseTimeoutRef.current !== null) {
+      window.clearTimeout(galleryBatchRegenerationCloseTimeoutRef.current);
     }
     if (galleryFastScrollTimerRef.current !== null) {
       window.clearTimeout(galleryFastScrollTimerRef.current);
@@ -1206,6 +1218,10 @@ export const ChatInterface = ({
 
   const clearGallerySelection = () => {
     cancelGalleryLongPress();
+    if (galleryBatchRegenerationCloseTimeoutRef.current !== null) {
+      window.clearTimeout(galleryBatchRegenerationCloseTimeoutRef.current);
+      galleryBatchRegenerationCloseTimeoutRef.current = null;
+    }
     if (suppressGalleryClickTimerRef.current !== null) {
       window.clearTimeout(suppressGalleryClickTimerRef.current);
       suppressGalleryClickTimerRef.current = null;
@@ -1214,6 +1230,7 @@ export const ChatInterface = ({
     gallerySelectionModeRef.current = false;
     setSelectedGalleryIds(new Set());
     setGalleryBatchMenuOpen(false);
+    setGalleryBatchRegenerationCount(0);
   };
 
   const selectedGalleryItems = [...selectedGalleryIds]
@@ -1254,7 +1271,7 @@ export const ChatInterface = ({
     }
     cancelGalleryLongPress();
     const menuWidth = Math.min(332, window.innerWidth - 24);
-    const menuHeight = 220;
+    const menuHeight = getResolvableRandomPromptTemplate(item, params.randomPromptLists) ? 268 : 220;
     setGalleryImageContextMenu({
       target: item,
       x: Math.max(12, Math.min(event.clientX, window.innerWidth - menuWidth - 12)),
@@ -1276,6 +1293,41 @@ export const ChatInterface = ({
     setGalleryImageContextBusy(true);
     try {
       await batchRegenerateGalleryItems([target]);
+      toast.success(t.regenerationStarted);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGalleryImageContextBusy(false);
+    }
+  };
+
+  const regenerateSelectedGalleryItems = () => {
+    if (galleryBatchBusy || selectedGalleryItems.length === 0) return;
+    const items = [...selectedGalleryItems];
+
+    setGalleryBatchRegenerationCount(current => current + 1);
+    if (galleryBatchRegenerationCloseTimeoutRef.current !== null) {
+      window.clearTimeout(galleryBatchRegenerationCloseTimeoutRef.current);
+    }
+    galleryBatchRegenerationCloseTimeoutRef.current = window.setTimeout(() => {
+      galleryBatchRegenerationCloseTimeoutRef.current = null;
+      clearGallerySelection();
+    }, 1000);
+
+    void batchRegenerateGalleryItems(items).then(() => {
+      toast.success(`${items.length} ${t.batchQueued}`);
+    }).catch(error => {
+      toast.error(error instanceof Error ? error.message : String(error));
+    });
+  };
+
+  const regenerateDynamicGalleryContextImage = async () => {
+    if (!galleryImageContextMenu || galleryImageContextBusy) return;
+    const target = galleryImageContextMenu.target;
+    setGalleryImageContextMenu(null);
+    setGalleryImageContextBusy(true);
+    try {
+      await regenerateDynamicGalleryItem(target);
       toast.success(t.regenerationStarted);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -1546,7 +1598,9 @@ export const ChatInterface = ({
         toast.error(t.slashUnknownCommand);
         return;
       }
-      handleSend();
+      const wasRewrittenInComposer = aiRewrittenPromptRef.current === trimmedInput;
+      aiRewrittenPromptRef.current = null;
+      handleSend(undefined, false, wasRewrittenInComposer);
       return;
     }
 
@@ -1793,28 +1847,39 @@ export const ChatInterface = ({
 
   const enhancePromptOnce = async () => {
     if (!input.trim() || !params.llmProviderId || isOneShotAiSubmitting) return;
+    const sourcePrompt = input.trim();
     setIsOneShotAiSubmitting(true);
     try {
-      await handleSend(undefined, false, false, true);
+      const response = await fetch(`${API_BASE}/api/llm/enhance-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          prompt: sourcePrompt,
+          providerId: params.llmProviderId,
+          systemMessage: params.llmSystemMessage,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      const enhancedPrompt = typeof data.enhancedPrompt === 'string'
+        ? data.enhancedPrompt.trim()
+        : '';
+      if (!response.ok || !enhancedPrompt) {
+        throw new Error(data.error || t.oneShotAiFailed);
+      }
+
+      // Do not overwrite text the user edited while the LLM request was running.
+      if ((textareaRef.current?.value || '').trim() !== sourcePrompt) return;
+      aiRewrittenPromptRef.current = enhancedPrompt;
+      setInput(enhancedPrompt);
+      toast.success(t.oneShotAiReady);
+      window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.oneShotAiFailed);
     } finally {
       setIsOneShotAiSubmitting(false);
     }
   };
-
-  const scheduleThreadRegenerationScroll = useCallback(() => {
-    if (threadRegenerationScrollTimeoutRef.current !== null) {
-      window.clearTimeout(threadRegenerationScrollTimeoutRef.current);
-    }
-    threadRegenerationScrollTimeoutRef.current = window.setTimeout(() => {
-      threadRegenerationScrollTimeoutRef.current = null;
-      const target = latestMessagesRef.current.find(message => (
-        message.role === 'bot'
-        && !message.imageUrl
-        && (message.status === 'processing' || message.status === 'preparing' || message.status === 'pending')
-      ));
-      if (target) smoothScrollTo(`msg-${target.id}`);
-    }, THREAD_REGENERATION_SCROLL_DELAY_MS);
-  }, [smoothScrollTo]);
 
   useEffect(() => {
     latestMessagesRef.current = messages;
@@ -1823,18 +1888,6 @@ export const ChatInterface = ({
   useEffect(() => {
     setPendingPromptEditor(null);
   }, [currentSessionId]);
-
-  useEffect(() => {
-    if (view === 'chat' || threadRegenerationScrollTimeoutRef.current === null) return;
-    window.clearTimeout(threadRegenerationScrollTimeoutRef.current);
-    threadRegenerationScrollTimeoutRef.current = null;
-  }, [view]);
-
-  useEffect(() => () => {
-    if (threadRegenerationScrollTimeoutRef.current !== null) {
-      window.clearTimeout(threadRegenerationScrollTimeoutRef.current);
-    }
-  }, []);
 
   const handlePromptPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const pastedText = event.clipboardData.getData('text/plain');
@@ -2077,8 +2130,8 @@ export const ChatInterface = ({
                 ? msg
                 : null;
               const editablePendingMessage = linkedPendingMessage || directlyEditablePendingMessage;
-              const dynamicPrompt = msg.role === 'user' ? (msg.text || '') : '';
-              const canRegenerateDynamicPrompt = hasResolvableRandomPrompt(dynamicPrompt, params.randomPromptLists);
+              const dynamicPrompt = getResolvableRandomPromptTemplate(msg, params.randomPromptLists);
+              const canRegenerateDynamicPrompt = Boolean(dynamicPrompt);
               const regenerationPrompt = msg.generationPrompt || msg.prompt || msg.text || '';
               const canRegenerateActiveImage = msg.role === 'bot'
                 && !msg.imageUrl
@@ -2256,6 +2309,8 @@ export const ChatInterface = ({
                     >
                       <ReservedImage
                         src={getFullImageUrl(msg.thumbnailUrl || msg.imageUrl!)} 
+                        srcSet={getThumbnailSrcSet(msg.thumbnailUrl || msg.imageUrl!)}
+                        sizes="(max-width: 768px) calc(100vw - 2rem), 400px"
                         alt="Generated" 
                         className="clickable-image" 
                         loadingLabel={t.loading}
@@ -2280,7 +2335,7 @@ export const ChatInterface = ({
                       )}
                     </div>
                   )}
-                  <div className={`message-actions ${msg.imageUrl ? 'has-image' : ''} ${(regenerationCounts[msg.id] || 0) >= 2 ? 'has-regeneration-count' : ''}`}>
+                  <div className={`message-actions ${msg.imageUrl ? 'has-image' : ''} ${(regenerationCounts[msg.id] || 0) >= 2 || (dynamicRegenerationCounts[msg.id] || 0) >= 2 ? 'has-regeneration-count' : ''}`}>
                     <button className="action-btn-icon edit" onClick={() => {
                       const textToEdit = msg.role === 'user' ? (msg.text || '') : (msg.generationPrompt || msg.prompt || msg.text || '');
                       if (!editablePendingMessage || !beginPendingPromptEdit(msg.id, textToEdit)) {
@@ -2290,19 +2345,26 @@ export const ChatInterface = ({
                     }} title={editablePendingMessage ? t.editPendingPrompt : (msg.role === 'bot' ? t.reusePrompt : t.edit)}><ComposeIcon size={18} /></button>
                     {canRegenerateDynamicPrompt && (
                       <button
-                        className="action-btn-icon regenerate"
+                        className="action-btn-icon random-regenerate"
                         onClick={(e) => {
                           e.stopPropagation();
-                          recordRegeneration(msg.id);
-                          handleSend(dynamicPrompt, true);
+                          if (!msg.imageUrl) {
+                            recordDynamicRegeneration(msg.id);
+                          }
+                          const regeneration = msg.imageUrl
+                            ? regenerateDynamicMessage(msg)
+                            : handleSend(dynamicPrompt, true, false, false, true);
+                          void Promise.resolve(regeneration).catch(error => {
+                            toast.error(error instanceof Error ? error.message : t.retryFailed);
+                          });
                         }}
                         title={t.regenerateDynamicPrompt}
-                        aria-label={`${t.regenerateDynamicPrompt}${(regenerationCounts[msg.id] || 0) >= 2 ? ` ×${regenerationCounts[msg.id]}` : ''}`}
+                        aria-label={`${t.regenerateDynamicPrompt}${(dynamicRegenerationCounts[msg.id] || 0) >= 2 ? ` ×${dynamicRegenerationCounts[msg.id]}` : ''}`}
                       >
-                        <RefreshIcon />
-                        {(regenerationCounts[msg.id] || 0) >= 2 && (
+                        <DiceIcon size={19} />
+                        {(dynamicRegenerationCounts[msg.id] || 0) >= 2 && (
                           <span className="regeneration-count-badge" aria-hidden="true">
-                            ×{regenerationCounts[msg.id]}
+                            ×{dynamicRegenerationCounts[msg.id]}
                           </span>
                         )}
                       </button>
@@ -2331,7 +2393,6 @@ export const ChatInterface = ({
                             const prompt = msg.generationPrompt || msg.prompt || msg.text || '';
                             if (!prompt.trim()) return;
                             recordRegeneration(msg.id);
-                            scheduleThreadRegenerationScroll();
                             void Promise.resolve(handleSend(prompt, true, false, false, true)).catch(error => {
                               toast.error(error instanceof Error ? error.message : t.retryFailed);
                             });
@@ -2354,12 +2415,17 @@ export const ChatInterface = ({
                         onClick={(e) => {
                           e.stopPropagation();
                           recordRegeneration(msg.id);
-                          handleSend(regenerationPrompt, true);
+                          handleSend(regenerationPrompt, true, false, false, true);
                         }}
                         title={t.regenerate}
-                        aria-label={t.regenerate}
+                        aria-label={`${t.regenerate}${(regenerationCounts[msg.id] || 0) >= 2 ? ` ×${regenerationCounts[msg.id]}` : ''}`}
                       >
                         <RefreshIcon />
+                        {(regenerationCounts[msg.id] || 0) >= 2 && (
+                          <span className="regeneration-count-badge" aria-hidden="true">
+                            ×{regenerationCounts[msg.id]}
+                          </span>
+                        )}
                       </button>
                     )}
                     <button className="action-btn-icon delete" onClick={(e) => { e.stopPropagation(); setMessageToDelete(msg.id); }} title={t.delete}><TrashIcon size={19} /></button>
@@ -2727,7 +2793,7 @@ export const ChatInterface = ({
                     alt={item.prompt} 
                     loadingLabel={t.loading}
                     objectFit="cover"
-                    loading={index < galleryColumns * 3 ? 'eager' : 'lazy'}
+                    loading={index < galleryColumns * 2 ? 'eager' : 'lazy'}
                     fetchPriority={index < galleryColumns ? 'high' : 'auto'}
                   />
                   {galleryColumns < 3 && selectedGalleryIds.size === 0 && (
@@ -2805,12 +2871,27 @@ export const ChatInterface = ({
                       <span className="gallery-batch-menu-icon"><PromptGroupIcon size={20} /></span>
                       <span><strong>{t.groupSelectedImages}</strong><small>{selectedGalleryItems.length < 2 ? t.manualGroupNeedsTwo : t.groupSelectedImagesHelp}</small></span>
                     </button>
-                    <button type="button" role="menuitem" onClick={() => void runGalleryBatchAction(
-                      () => batchRegenerateGalleryItems(selectedGalleryItems),
-                      `${selectedGalleryItems.length} ${t.batchQueued}`
-                    )} disabled={galleryBatchBusy}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={regenerateSelectedGalleryItems}
+                      disabled={galleryBatchBusy}
+                      aria-label={`${t.batchRegenerate}${galleryBatchRegenerationCount >= 2 ? `, ${galleryBatchRegenerationCount} × ${selectedGalleryItems.length}` : ''}`}
+                    >
                       <span className="gallery-batch-menu-icon"><RefreshIcon size={20} /></span>
-                      <span><strong>{t.batchRegenerate}</strong><small>{t.batchRegenerateHelp}</small></span>
+                      <span>
+                        <strong className="gallery-batch-regeneration-label">
+                          {t.batchRegenerate}
+                          {galleryBatchRegenerationCount >= 2 && (
+                            <span className="gallery-batch-regeneration-count" aria-hidden="true">×{galleryBatchRegenerationCount}</span>
+                          )}
+                        </strong>
+                        <small>
+                          {galleryBatchRegenerationCount >= 2
+                            ? `${galleryBatchRegenerationCount} × ${selectedGalleryItems.length} = ${galleryBatchRegenerationCount * selectedGalleryItems.length} ${t.batchRegenerateTotal}`
+                            : t.batchRegenerateHelp}
+                        </small>
+                      </span>
                     </button>
                     <button
                       type="button"
@@ -3256,7 +3337,7 @@ export const ChatInterface = ({
                         || messages.find(message => message.role === 'bot' && message.status === 'pending');
                       if (target) interruptGeneration(target.id);
                     }}
-                    disabled={(!input.trim() && !isGenerating) || isResolvingSlashCommand || isSavingPendingPrompt}
+                    disabled={(!input.trim() && !isGenerating) || isResolvingSlashCommand || isSavingPendingPrompt || isOneShotAiSubmitting}
                   >
                     {isGenerating && !input.trim() ? (
                       <div className="stop-icon"></div>
@@ -3375,6 +3456,18 @@ export const ChatInterface = ({
               <RefreshIcon size={22} />
               <span>{t.regenerate}</span>
             </button>
+            {getResolvableRandomPromptTemplate(galleryImageContextMenu.target, params.randomPromptLists) && (
+              <button
+                type="button"
+                className="text-context-menu-item random-regenerate-menu-item"
+                role="menuitem"
+                disabled={galleryImageContextBusy}
+                onClick={() => void regenerateDynamicGalleryContextImage()}
+              >
+                <DiceIcon size={22} />
+                <span>{t.regenerateDynamicPrompt}</span>
+              </button>
+            )}
             <button type="button" className="text-context-menu-item" role="menuitem" onClick={() => openGalleryContextPanel('information')}>
               <InfoIcon size={22} />
               <span>{t.imageInformation}</span>

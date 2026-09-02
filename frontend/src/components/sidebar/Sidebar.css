@@ -170,6 +170,28 @@
   padding: 0.35rem 0;
 }
 
+.sessions-load-more {
+  width: calc(100% - 1rem);
+  margin: 0.35rem 0.5rem 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  font: inherit;
+}
+
+.sessions-load-more:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--sidebar-hover);
+}
+
+.sessions-load-more:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 /* Custom Scrollbar for Sidebar */
 .sessions-list::-webkit-scrollbar {
   width: 5px;

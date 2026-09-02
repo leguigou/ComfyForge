@@ -6,6 +6,7 @@ import './components/settings/SettingsModal.css';
 import { translations } from './i18n';
 import type { 
   GalleryItem, 
+  Message,
   GenParameters, 
   Theme, 
   Language,
@@ -17,7 +18,7 @@ import type {
 import type { AppView } from './types';
 import { API_BASE, formatDuration, getFullImageUrl } from './services/api';
 import { Sidebar } from './components/sidebar/Sidebar';
-import { DEFAULT_RANDOM_PROMPT_LISTS, migrateRandomPromptLists, RANDOM_PROMPT_LISTS_VERSION } from './utils/randomPrompts';
+import { DEFAULT_RANDOM_PROMPT_LISTS, getRandomPromptListsForSource, getResolvableRandomPromptTemplate, migrateRandomPromptLists, RANDOM_PROMPT_LISTS_VERSION, withoutPreviousRandomSelections } from './utils/randomPrompts';
 import { DEFAULT_COMPANION_SETTINGS, normalizeCompanionSettings } from './utils/companions';
 import { LuckyReferencesModal } from './components/chat/LuckyReferencesModal';
 import { APP_CONFIG, DEFAULT_LLM_SYSTEM_MESSAGE, DEFAULT_VISION_SYSTEM_MESSAGE, PREVIOUS_DEFAULT_VISION_SYSTEM_MESSAGE } from './config';
@@ -28,7 +29,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { ChatIcon, ClipboardIcon, ComposeIcon, DiceIcon, DownloadIcon, GridIcon, HashIcon, HeartIcon, InfoIcon, MoonIcon, MoreVerticalIcon, PromptGroupIcon, RefreshIcon, StarIcon, SunIcon, ThumbUpIcon, TrashIcon, XIcon } from './components/ui/Icons';
 import toast, { Toaster } from 'react-hot-toast';
-import NoSleep from 'nosleep.js';
+import type NoSleep from 'nosleep.js';
 import comfyForgeLogo from './assets/comfyforge-logo-v2.webp';
 import { importWithRecovery } from './utils/moduleRecovery';
 import {
@@ -41,6 +42,7 @@ import { toGenerationRequestParams } from './utils/generationParams';
 import { isRuntimeVersionReminderSnoozed, snoozeRuntimeVersionReminder } from './utils/runtimeVersionReminder';
 import { copyImageToClipboard, ImageClipboardError } from './utils/imageClipboard';
 import { findPhotoFilter, type PhotoFilterPreset } from './utils/photoFilters';
+import { AppLockScreen, useAppLock } from './components/settings/AppLock';
 
 const SettingsModal = lazy(() => importWithRecovery(() => import('./components/settings/SettingsModal')).then(module => ({
   default: module.SettingsModal
@@ -204,7 +206,7 @@ function App() {
   });
   const t = translations[lang];
   const [showSettings, setShowSettings] = useState(false);
-  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs'>('images');
+  const [activeTab, setActiveTab] = useState<'general' | 'companions' | 'profile' | 'lock' | 'images' | 'random' | 'comfy' | 'plugins' | 'llm' | 'update' | 'admin' | 'queue' | 'logs'>('images');
   const runtimeVersionReminderSnoozedUntilRef = useRef(0);
 
   useEffect(() => {
@@ -236,6 +238,7 @@ function App() {
     checkAuth,
     updateProfile
   } = useAuth();
+  const appLock = useAppLock(isAuthenticated === true, currentUser?.username);
 
   useEffect(() => {
     if (!isAuthenticated || !currentUser?.isAdmin) return;
@@ -323,7 +326,7 @@ function App() {
   const enableKeepAwake = useCallback(async () => {
     if (!keepAwakeRef.current || document.visibilityState !== 'visible') return;
 
-    const noSleep = noSleepRef.current ?? new NoSleep();
+    const noSleep = noSleepRef.current ?? new (await import('nosleep.js')).default();
     noSleepRef.current = noSleep;
     if (noSleep.isEnabled) return;
 
@@ -403,7 +406,10 @@ function App() {
     deletingSessionsScope,
     hasMoreMessages,
     isLoadingOlderMessages,
-    loadOlderMessages
+    loadOlderMessages,
+    hasMoreSessions,
+    isLoadingMoreSessions,
+    loadMoreSessions
   } = useSessions(view, isAuthenticated);
 
   useEffect(() => {
@@ -797,7 +803,9 @@ function App() {
   const [hdLoaded, setHdLoaded] = useState<string | null>(null);
   const [loadedHdImages, setLoadedHdImages] = useState<Set<string>>(new Set());
   const [regenerationCounts, setRegenerationCounts] = useState<Record<string, number>>({});
+  const [dynamicRegenerationCounts, setDynamicRegenerationCounts] = useState<Record<string, number>>({});
   const regenerationCountTimeoutsRef = useRef<Record<string, number>>({});
+  const dynamicRegenerationCountTimeoutsRef = useRef<Record<string, number>>({});
 
   const recordRegeneration = useCallback((messageId: string) => {
     setRegenerationCounts(previous => ({
@@ -818,8 +826,28 @@ function App() {
     }, 3000);
   }, []);
 
+  const recordDynamicRegeneration = useCallback((messageId: string) => {
+    setDynamicRegenerationCounts(previous => ({
+      ...previous,
+      [messageId]: (previous[messageId] || 0) + 1
+    }));
+
+    const existingTimeout = dynamicRegenerationCountTimeoutsRef.current[messageId];
+    if (existingTimeout) window.clearTimeout(existingTimeout);
+
+    dynamicRegenerationCountTimeoutsRef.current[messageId] = window.setTimeout(() => {
+      setDynamicRegenerationCounts(previous => {
+        const next = { ...previous };
+        delete next[messageId];
+        return next;
+      });
+      delete dynamicRegenerationCountTimeoutsRef.current[messageId];
+    }, 3000);
+  }, []);
+
   useEffect(() => () => {
     Object.values(regenerationCountTimeoutsRef.current).forEach(window.clearTimeout);
+    Object.values(dynamicRegenerationCountTimeoutsRef.current).forEach(window.clearTimeout);
     if (lightboxMenuCloseTimeoutRef.current !== null) {
       window.clearTimeout(lightboxMenuCloseTimeoutRef.current);
     }
@@ -1375,6 +1403,28 @@ function App() {
     if (failures.length > 0) throw new Error(`${items.length - failures.length}/${items.length} ${t.batchQueuedPartial}`);
   }, [handleSend, recordRegeneration, t.batchQueuedPartial]);
 
+  const regenerateDynamicSource = useCallback(async (
+    source: Message | GalleryItem,
+    sessionId: string,
+    messageId: string
+  ) => {
+    const templatePrompt = getResolvableRandomPromptTemplate(source, params.randomPromptLists);
+    if (!templatePrompt) throw new Error(t.randomPromptUnavailable);
+    const compatibleLists = getRandomPromptListsForSource(source, params.randomPromptLists);
+    const rerollLists = withoutPreviousRandomSelections(compatibleLists, source.randomSelections);
+    recordDynamicRegeneration(messageId);
+    await handleSend(templatePrompt, true, sessionId, false, true, false, { randomPromptLists: rerollLists });
+  }, [handleSend, params.randomPromptLists, recordDynamicRegeneration, t.randomPromptUnavailable]);
+
+  const regenerateDynamicMessage = useCallback(async (message: Message) => {
+    if (!currentSessionId) return;
+    await regenerateDynamicSource(message, currentSessionId, message.id);
+  }, [currentSessionId, regenerateDynamicSource]);
+
+  const regenerateDynamicGalleryItem = useCallback(async (item: GalleryItem) => {
+    await regenerateDynamicSource(item, item.sessionId, item.messageId);
+  }, [regenerateDynamicSource]);
+
   const batchLuckyGalleryItems = useCallback(async (items: GalleryItem[]) => {
     if (!params.llmProviderId) throw new Error(t.luckyNeedsProvider);
     if (items.length > 8) throw new Error(t.batchLuckyLimit);
@@ -1721,7 +1771,7 @@ function App() {
               ? Math.min(1, Math.max(0.1, data.luckyTemperature))
               : prev.luckyTemperature,
             luckyFavoriteCount: typeof data.luckyFavoriteCount === 'number'
-              ? Math.min(8, Math.max(1, Math.round(data.luckyFavoriteCount)))
+              ? Math.min(8, Math.max(2, Math.round(data.luckyFavoriteCount)))
               : prev.luckyFavoriteCount,
             galleryPromptSimilarityMinWords: typeof data.galleryPromptSimilarityMinWords === 'number'
               ? Math.min(200, Math.max(2, Math.round(data.galleryPromptSimilarityMinWords)))
@@ -3039,7 +3089,7 @@ function App() {
     const feedbackTimeouts = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
     let lastFeedbackTime = 0;
 
-    const handleVisualFeedback = (e: PointerEvent) => {
+    const handleVisualFeedback = (e: MouseEvent) => {
       // Very short throttle for true rapid fire
       const status = Date.now();
       if (status - lastFeedbackTime < 50) return;
@@ -3068,9 +3118,12 @@ function App() {
       }
     };
 
-    window.addEventListener('pointerdown', handleVisualFeedback, { capture: true, passive: true });
+    // Apply feedback only once the browser has validated a complete click.
+    // Mutating/animating the target during pointerdown can move a small button
+    // away from the pointer before pointerup and prevent the click altogether.
+    window.addEventListener('click', handleVisualFeedback, { capture: true, passive: true });
     return () => {
-      window.removeEventListener('pointerdown', handleVisualFeedback, { capture: true });
+      window.removeEventListener('click', handleVisualFeedback, { capture: true });
     };
   }, []);
 
@@ -3200,11 +3253,15 @@ function App() {
     </div>
   );
 
-  if (!isSettingsResolved) return (
+  if (appLock.loading || !appLock.config) return (
     <div className="app-loader">
       <div className="bounced-loader"><div className="bounce1"></div><div className="bounce2"></div><div className="bounce3"></div></div>
-      <div>Chargement...</div>
+      <div>{t.loading}</div>
     </div>
+  );
+
+  if (appLock.locked) return (
+    <AppLockScreen config={appLock.config} lang={lang} theme={theme} verify={appLock.verify} />
   );
 
   const currentLightboxItem = activeLightbox ? (
@@ -3222,6 +3279,9 @@ function App() {
   const isAlreadyLoaded = activeLightbox ? loadedHdImages.has(activeLightbox.messageId) : false;
   const currentLightboxPrompt = currentLightboxItem
     ? currentLightboxItem.generationPrompt || currentLightboxItem.prompt || currentLightboxItem.text || ''
+    : '';
+  const currentLightboxDynamicPrompt = currentLightboxItem
+    ? getResolvableRandomPromptTemplate(currentLightboxItem, params.randomPromptLists)
     : '';
   const currentLightboxTags = currentLightboxItem?.tags || [];
   const currentLightboxPhotoFilter = findPhotoFilter(currentLightboxItem?.photoFilterId);
@@ -3478,6 +3538,19 @@ function App() {
       await handleSend(prompt, true, sessionId, false, true);
     } catch (error) {
       console.error('Background regeneration failed:', error);
+      toast.error(error instanceof Error ? error.message : t.retryFailed);
+    }
+  };
+
+  const regenerateDynamicLightboxImage = async () => {
+    if (!activeLightbox || !currentLightboxItem || !currentLightboxDynamicPrompt) return;
+
+    scheduleLightboxMenuClose();
+    toast.success(t.regenerationStarted);
+    try {
+      await regenerateDynamicSource(currentLightboxItem, activeLightbox.sessionId, activeLightbox.messageId);
+    } catch (error) {
+      console.error('Background dynamic regeneration failed:', error);
       toast.error(error instanceof Error ? error.message : t.retryFailed);
     }
   };
@@ -3904,6 +3977,22 @@ function App() {
                         </span>
                       )}
                     </button>
+                    {currentLightboxDynamicPrompt && (
+                      <button
+                        type="button"
+                        className="lightbox-menu-item random-regenerate-menu-item"
+                        role="menuitem"
+                        onClick={() => void regenerateDynamicLightboxImage()}
+                      >
+                        <span className="lightbox-menu-icon" aria-hidden="true"><DiceIcon size={18} /></span>
+                        <span>{t.regenerateDynamicPrompt}</span>
+                        {(dynamicRegenerationCounts[activeLightbox.messageId] || 0) >= 2 && (
+                          <span className="lightbox-menu-count" aria-hidden="true">
+                            ×{dynamicRegenerationCounts[activeLightbox.messageId]}
+                          </span>
+                        )}
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="lightbox-menu-item"
@@ -4046,6 +4135,7 @@ function App() {
           <SettingsModal
             showSettings={showSettings} setShowSettings={setShowSettings} activeTab={activeTab} setActiveTab={setActiveTab}
             params={params} setParams={setParams} lang={lang} t={t} currentUser={currentUser}
+            appLockConfig={appLock.config} onAppLockConfigChange={appLock.applyConfig} onAppLockNow={appLock.lockNow}
             settingsSaveState={settingsSaveState} onSaveSettings={saveSettings}
             onPromptGroupsRebuilt={handlePromptGroupsRebuilt}
             clipboardAutoGenerateSupported={clipboardAutoGenerateSupported}
@@ -4124,6 +4214,7 @@ function App() {
         sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} backendError={backendError} t={t}
         createNewSession={startNewChat} view={view} setView={setView} openComparisonHome={openComparisonHome} fetchGallery={fetchGallery}
         sessions={sessions} onSessionViewed={(id) => { void markSessionAsViewed(id); }}
+        hasMoreSessions={hasMoreSessions} isLoadingMoreSessions={isLoadingMoreSessions} loadMoreSessions={loadMoreSessions}
         currentSessionId={currentSessionId} setCurrentSessionId={setCurrentSessionId}
         setMessages={setMessages}
         renamingId={renamingId} setRenamingId={setRenamingId} renameValue={renameValue} setRenameValue={setRenameValue}
@@ -4206,7 +4297,9 @@ function App() {
           </div>}
         </header>
 
-        {view === 'statistics' ? (
+        {!isSettingsResolved ? (
+          <WorkspaceLoading />
+        ) : view === 'statistics' ? (
           <Suspense fallback={<WorkspaceLoading />}>
             <StatisticsDashboard lang={lang} />
           </Suspense>
@@ -4229,6 +4322,7 @@ function App() {
           selectedPhotoFilter={selectedPhotoFilter} setSelectedPhotoFilter={setSelectedPhotoFilter}
           createLuckyGeneration={createLuckyGeneration} isCreatingLuckyPrompt={isCreatingLuckyPrompt} isLoadingLuckyReferences={isLoadingLuckyReferences}
           regenerationCounts={regenerationCounts} recordRegeneration={recordRegeneration}
+          dynamicRegenerationCounts={dynamicRegenerationCounts} recordDynamicRegeneration={recordDynamicRegeneration}
           retryMessage={retryMessage} dismissFailedMessage={dismissFailedMessage}
           retryAllIncomplete={retryAllIncomplete} updatePendingPrompt={updatePendingPrompt}
           interruptGeneration={interruptGeneration} handleEdit={handleEdit} goToImage={goToImage} openComparison={openComparison} setActiveInfoId={setActiveInfoId} activeInfoId={activeInfoId}
@@ -4238,6 +4332,8 @@ function App() {
           promptFavoritesOnly={promptFavoritesOnly} setPromptFavoritesOnly={setPromptFavoritesOnly}
           groupByPrompt={groupByPrompt} setGroupByPrompt={setGroupByPrompt}
           batchDeleteGalleryItems={batchDeleteGalleryItems} batchRegenerateGalleryItems={batchRegenerateGalleryItems}
+          regenerateDynamicMessage={regenerateDynamicMessage}
+          regenerateDynamicGalleryItem={regenerateDynamicGalleryItem}
           batchLuckyGalleryItems={batchLuckyGalleryItems} batchSetGalleryFavorites={batchSetGalleryFavorites}
           batchSetGalleryPromptFavorites={batchSetGalleryPromptFavorites} batchCreateManualGroup={batchCreateManualGroup}
           availablePromptTags={availablePromptTags} selectedPromptTags={selectedPromptTags} setSelectedPromptTags={setSelectedPromptTags}

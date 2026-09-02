@@ -28,6 +28,7 @@ import {
 import {
   coherenceTagSlugs,
   matchingReferenceTags,
+  normalizeLuckyReferenceCount,
   referenceConnections,
   selectLuckyReferences,
   type LuckyReferenceCandidate
@@ -945,16 +946,13 @@ Return JSON only with "positive" containing the complete translation and "negati
 router.post('/lucky-references', authenticate, (req, res) => {
   const userId = (req as any).user.id;
   const keywords = parseLuckyKeywords(req.body.keywords);
-  const requestedCount = Number(req.body.count);
-  const count = Number.isFinite(requestedCount)
-    ? Math.min(8, Math.max(1, Math.round(requestedCount)))
-    : 6;
   const excludeIds = Array.isArray(req.body.excludeIds)
     ? req.body.excludeIds.filter((id: unknown): id is string => typeof id === 'string').slice(0, 20)
     : [];
   const anchorIds = Array.isArray(req.body.anchorIds)
     ? req.body.anchorIds.filter((id: unknown): id is string => typeof id === 'string').slice(0, 8)
     : [];
+  const count = normalizeLuckyReferenceCount(req.body.count, anchorIds.length > 0);
   const requiredTag = typeof req.body.requiredTag === 'string' && /^[a-z0-9-]{1,80}$/.test(req.body.requiredTag)
     ? req.body.requiredTag
     : '';

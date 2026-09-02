@@ -1791,16 +1791,54 @@
 }
 
 .favorite-model-card:last-child { border-bottom: 0; }
-.favorite-model-card.active { background: var(--accent-bg); }
+.favorite-model-card.active {
+  background: var(--accent-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.favorite-model-card.active .favorite-model-name { color: var(--accent); }
 .favorite-model-remove { grid-column: 3; grid-row: 1; }
 
 .favorite-model-defaults {
-  grid-column: 1 / -1;
+  grid-column: 1 / 2;
   grid-row: 2;
   display: flex;
   align-items: center;
   gap: 0.4rem;
   flex-wrap: wrap;
+}
+
+.favorite-model-activate {
+  grid-column: 2 / 4;
+  grid-row: 2;
+  align-self: center;
+  justify-self: end;
+  min-height: 36px;
+  padding: 0.5rem 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-width: 145px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: filter 0.2s, transform 0.2s;
+}
+
+.favorite-model-activate:hover:not(:disabled) {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.favorite-model-activate:disabled {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: default;
 }
 
 .favorite-model-defaults span {
@@ -2501,6 +2539,7 @@
   .favorite-workflow-editor { grid-column: 1 / -1; grid-row: 2; }
   .favorite-model-remove { grid-column: 2; grid-row: 1; width: 36px !important; min-height: 36px; }
   .favorite-model-defaults { grid-column: 1 / -1; grid-row: 3; }
+  .favorite-model-activate { grid-column: 1 / -1; grid-row: auto; width: 100%; justify-self: stretch; }
   .model-browser-toolbar .refresh-models-btn { width: 38px !important; min-height: 36px; padding: 0.5rem; }
 
   .avatar-preview-wrapper {

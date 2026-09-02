@@ -282,8 +282,9 @@ test('loads gallery thumbnails responsively without unnecessary pagination work'
   assert.match(appSource, /container\.scrollTop = previousTop \+ container\.scrollHeight - previousHeight/);
   assert.match(chatSource, /ref=\{firstImageElementRef\} className="gallery-page-sentinel"/);
   assert.match(appSource, /rootMargin: '250px 0px'/);
-  assert.match(chatSource, /loading=\{index < galleryColumns \* 3 \? 'eager' : 'lazy'\}/);
+  assert.match(chatSource, /loading=\{index < galleryColumns \* 2 \? 'eager' : 'lazy'\}/);
   assert.match(chatSource, /fetchPriority=\{index < galleryColumns \? 'high' : 'auto'\}/);
+  assert.match(chatSource, /srcSet=\{getThumbnailSrcSet\(msg\.thumbnailUrl \|\| msg\.imageUrl!\)\}/);
   assert.match(nginx, /location \^~ \/_protected-images\/\s*\{[\s\S]*?internal;/);
 });
 
@@ -446,10 +447,58 @@ test('keeps regenerate available while an image is pending, preparing, or proces
   const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
 
   assert.match(chatSource, /const canRegenerateActiveImage = msg\.role === 'bot'[\s\S]*?msg\.status === 'pending'[\s\S]*?msg\.status === 'preparing'[\s\S]*?msg\.status === 'processing'/);
-  assert.match(chatSource, /\{canRegenerateActiveImage && regenerationPrompt\.trim\(\) && \([\s\S]*?handleSend\(regenerationPrompt, true\)/);
+  assert.match(chatSource, /\{canRegenerateActiveImage && regenerationPrompt\.trim\(\) && \([\s\S]*?handleSend\(regenerationPrompt, true, false, false, true\)/);
+  const activeImageActions = chatSource.slice(
+    chatSource.indexOf('{canRegenerateActiveImage && regenerationPrompt.trim() && ('),
+    chatSource.indexOf('<button className="action-btn-icon delete"', chatSource.indexOf('{canRegenerateActiveImage && regenerationPrompt.trim() && ('))
+  );
+  assert.match(activeImageActions, /recordRegeneration\(msg\.id\)/);
+  assert.match(activeImageActions, /regenerationCounts\[msg\.id\][\s\S]*?regeneration-count-badge[\s\S]*?×\{regenerationCounts\[msg\.id\]\}/);
 });
 
-test('keeps a completed thread image in place during rapid regeneration clicks', () => {
+test('wires the app lock with flexible automatic PIN verification and a pattern grid', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const lockSource = readFileSync('src/components/settings/AppLock.tsx', 'utf8');
+  const lockCss = readFileSync('src/components/settings/AppLock.css', 'utf8');
+  const settingsSource = readFileSync('src/components/settings/SettingsModal.tsx', 'utf8');
+
+  assert.match(appSource, /if \(appLock\.locked\)/);
+  assert.match(lockSource, /pin\.length === config\.pinLength/);
+  assert.match(lockSource, /Array\.from\(\{ length: config\.pinLength \}/);
+  assert.match(lockSource, /\^\\d\{3,6\}\$/);
+  assert.match(lockSource, /className=\{`app-lock-pin-wrap \$\{pinInvalid \? 'invalid' : ''\}`\}/);
+  assert.match(lockCss, /\.app-lock-pin-wrap\.invalid\{[^}]*animation:app-lock-pattern-wizz \.52s/);
+  assert.match(lockCss, /\.app-lock-pin-dots span\.filled\{border-color:#63a6ff;background:#63a6ff/);
+  assert.match(lockSource, /Array\.from\(\{ length: 9 \}/);
+  assert.match(lockSource, /onPointerDown=\{handlePointerDown\}/);
+  assert.match(lockSource, /errorKey=\{patternErrorKey\}/);
+  assert.match(lockSource, /const previousErrorKeyRef = useRef\(errorKey\)/);
+  assert.match(lockSource, /errorKey === previousErrorKeyRef\.current/);
+  assert.match(lockSource, /setTimeout\(\(\) => \{[\s\S]*setResetKey[\s\S]*\}, 500\)/);
+  assert.match(lockSource, /matchMedia\('\(min-width: 769px\)'\)/);
+  assert.match(lockSource, /className=\{`app-lock-method-switch \$\{canSwitchMethod \? '' : 'unavailable'\}`\}/);
+  assert.match(lockSource, /disabled=\{!canSwitchMethod \|\| busy \|\| patternInvalid\}/);
+  assert.match(lockSource, /body: JSON\.stringify\(\{ credential, \.\.\.\(method \? \{ method \} : \{\}\) \}\)/);
+  assert.match(lockSource, /const persist = useCallback\(async/);
+  assert.match(lockSource, /if \(!pinReady \|\| method !== 'pin' \|\| !needsCredential \|\| saving\) return;/);
+  assert.match(lockSource, /void persist\(\{ enabled, method, timeoutMinutes, credential: pin \}, true\)/);
+  assert.match(lockSource, /changeEnabled\(event\.target\.checked\)/);
+  assert.match(lockSource, /changeTimeout\(Number\(event\.target\.value\)\)/);
+  assert.doesNotMatch(lockSource, /app-lock-save-btn/);
+  assert.match(settingsSource, /id: 'lock'/);
+});
+
+test('global click feedback cannot move a control before its click is dispatched', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const appCss = readFileSync('src/App.css', 'utf8');
+  const feedbackCss = appCss.slice(appCss.indexOf('/* Global Click Feedback'));
+
+  assert.match(appSource, /window\.addEventListener\('click', handleVisualFeedback/);
+  assert.doesNotMatch(appSource, /window\.addEventListener\('pointerdown', handleVisualFeedback/);
+  assert.doesNotMatch(feedbackCss, /transform\s*:/);
+});
+
+test('keeps the thread scroll position during regeneration clicks', () => {
   const appSource = readFileSync('src/App.tsx', 'utf8');
   const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
   const completedImageActions = chatSource.slice(
@@ -459,9 +508,9 @@ test('keeps a completed thread image in place during rapid regeneration clicks',
 
   assert.match(completedImageActions, /Promise\.resolve\(handleSend\(prompt, true, false, false, true\)\)\.catch/);
   assert.match(appSource, /runInBackground\?: boolean[\s\S]*?handleSend\(text, regen, targetSessionId, skipEnhancement, runInBackground, forceEnhancement\)/);
-  assert.match(chatSource, /THREAD_REGENERATION_SCROLL_DELAY_MS = 1000/);
-  assert.match(chatSource, /scheduleThreadRegenerationScroll[\s\S]*?clearTimeout\(threadRegenerationScrollTimeoutRef\.current\)[\s\S]*?latestMessagesRef\.current\.find\(message =>[\s\S]*?status === 'processing'[\s\S]*?status === 'preparing'[\s\S]*?status === 'pending'[\s\S]*?smoothScrollTo\(`msg-\$\{target\.id\}`\)/);
-  assert.match(completedImageActions, /recordRegeneration\(msg\.id\);\s*scheduleThreadRegenerationScroll\(\)/);
+  assert.doesNotMatch(chatSource, /scheduleThreadRegenerationScroll|THREAD_REGENERATION_SCROLL_DELAY_MS/);
+  assert.match(chatSource, /canRegenerateActiveImage[\s\S]*?handleSend\(regenerationPrompt, true, false, false, true\)/);
+  assert.match(chatSource, /msg\.imageUrl\s*\? regenerateDynamicMessage\(msg\)\s*:\s*handleSend\(dynamicPrompt, true, false, false, true\)/);
 });
 
 test('shows random lists from an empty prompt and closes them when existing text is cleared', () => {
@@ -642,7 +691,9 @@ test('offers batch generation and deletion alongside single-image information ac
   );
 
   assert.match(chatSource, /const openSelectedGalleryPanel = \(panel: 'information' \| 'prompt'\) => \{[\s\S]*?selectedGalleryItems\.length !== 1[\s\S]*?openGalleryImagePanel\(target, panel\)/);
-  assert.match(batchMenuSource, /batchRegenerateGalleryItems\(selectedGalleryItems\)[\s\S]*?disabled=\{galleryBatchBusy\}/);
+  assert.match(chatSource, /const regenerateSelectedGalleryItems = \(\) => \{[\s\S]*?setGalleryBatchRegenerationCount\(current => current \+ 1\)[\s\S]*?batchRegenerateGalleryItems\(items\)/);
+  assert.match(batchMenuSource, /onClick=\{regenerateSelectedGalleryItems\}[\s\S]*?disabled=\{galleryBatchBusy\}/);
+  assert.match(batchMenuSource, /galleryBatchRegenerationCount >= 2[\s\S]*?×\{galleryBatchRegenerationCount\}[\s\S]*?galleryBatchRegenerationCount \* selectedGalleryItems\.length/);
   assert.match(batchMenuSource, /openSelectedGalleryPanel\('information'\)[\s\S]*?disabled=\{galleryBatchBusy \|\| selectedGalleryItems\.length !== 1\}[\s\S]*?t\.imageInformation/);
   assert.match(batchMenuSource, /openSelectedGalleryPanel\('prompt'\)[\s\S]*?selectedGalleryItems\.length !== 1[\s\S]*?t\.viewPrompt/);
   assert.match(batchMenuSource, /className="danger"[\s\S]*?containsGroups = selectedGalleryItems\.some[\s\S]*?t\.batchDeleteGlobalConfirm[\s\S]*?disabled=\{galleryBatchBusy\}/);
@@ -905,6 +956,14 @@ test('keeps large settings data out of generation requests', () => {
   assert.ok(JSON.stringify(requestParams).length < 2_000);
 });
 
+test('keeps Chance reference settings compatible with coherent selection', () => {
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const settingsSource = readFileSync('src/components/settings/SettingsModal.tsx', 'utf8');
+
+  assert.match(appSource, /luckyFavoriteCount:[\s\S]*?Math\.max\(2, Math\.round\(data\.luckyFavoriteCount\)\)/);
+  assert.match(settingsSource, /t\.luckyFavoriteCount[\s\S]*?type="range"[\s\S]*?min="2"[\s\S]*?max="8"/);
+});
+
 test('adds new default random lists once when migrating existing settings', () => {
   const existing = randomPrompts.DEFAULT_RANDOM_PROMPT_LISTS.filter(list =>
     list.id !== 'hairstyle' && list.id !== 'country-origin'
@@ -935,6 +994,53 @@ test('returns the random values selected while resolving a prompt template', () 
 
   assert.equal(result.prompt, 'long hair, portrait with long hair');
   assert.deepEqual(result.selections, [{ listId: 'hair', name: 'Coiffures', slug: 'R-Hair', value: 'long hair' }]);
+});
+
+test('recovers an image random template and avoids its previous draw when rerolling', () => {
+  const lists = [{ id: 'hair', name: 'Coiffures', slug: 'R-Hair', values: ['long hair', 'short hair'], enabled: true }];
+  const image = {
+    prompt: '[R-Hair], studio portrait',
+    generationPrompt: 'long hair, studio portrait',
+    randomSelections: [{ listId: 'hair', name: 'Coiffures', slug: 'R-Hair', value: 'long hair' }],
+  };
+
+  assert.equal(randomPrompts.getResolvableRandomPromptTemplate(image, lists), '[R-Hair], studio portrait');
+  assert.deepEqual(randomPrompts.withoutPreviousRandomSelections(lists, image.randomSelections)[0].values, ['short hair']);
+});
+
+test('recovers an existing random image after its list slug was renamed', () => {
+  const renamedLists = [{ id: 'origin', name: 'Origine', slug: 'Origin', values: ['french', 'swedish'], enabled: true }];
+  const image = {
+    prompt: '[R-Origin] portrait',
+    generationPrompt: 'french portrait',
+    randomSelections: [{ listId: 'origin', name: 'Origine', slug: 'R-Origin', value: 'french' }],
+  };
+
+  assert.equal(randomPrompts.getResolvableRandomPromptTemplate(image, renamedLists), '[R-Origin] portrait');
+  const compatibleLists = randomPrompts.getRandomPromptListsForSource(image, renamedLists);
+  assert.equal(compatibleLists.some(list => list.slug === 'R-Origin'), true);
+  assert.deepEqual(randomPrompts.withoutPreviousRandomSelections(compatibleLists, image.randomSelections).at(-1).values, ['swedish']);
+});
+
+test('shows a distinct random-list regeneration action on generated images', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(chatSource, /const dynamicPrompt = getResolvableRandomPromptTemplate\(msg, params\.randomPromptLists\)/);
+  assert.match(chatSource, /msg\.imageUrl\s*\? regenerateDynamicMessage\(msg\)/);
+  assert.match(chatSource, /className="action-btn-icon random-regenerate"[\s\S]*?<DiceIcon size=\{19\}/);
+  assert.match(appSource, /currentLightboxDynamicPrompt[\s\S]*?regenerateDynamicLightboxImage[\s\S]*?t\.regenerateDynamicPrompt/);
+});
+
+test('keeps regular and random-list regeneration counters on their own buttons', () => {
+  const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+
+  assert.match(appSource, /const \[regenerationCounts, setRegenerationCounts\]/);
+  assert.match(appSource, /const \[dynamicRegenerationCounts, setDynamicRegenerationCounts\]/);
+  assert.match(appSource, /const regenerateDynamicSource[\s\S]*?recordDynamicRegeneration\(messageId\)/);
+  assert.match(chatSource, /t\.regenerateDynamicPrompt[\s\S]*?dynamicRegenerationCounts\[msg\.id\][\s\S]*?×\{dynamicRegenerationCounts\[msg\.id\]\}/);
+  assert.match(chatSource, /title=\{t\.regenerate\}[\s\S]*?regenerationCounts\[msg\.id\][\s\S]*?×\{regenerationCounts\[msg\.id\]\}/);
 });
 
 test('migrates and preserves companion settings', () => {
@@ -1138,18 +1244,24 @@ test('allows one-shot AI enhancement without enabling the global toggle', () => 
   assert.equal(promptEnhancement.shouldEnhancePrompt({ ...base, skipEnhancement: true, forceEnhancement: true }), false);
 });
 
-test('moves one-shot AI prompts into the thread and reflects while enhancement is pending', () => {
-  const appSource = readFileSync('src/App.tsx', 'utf8');
+test('rewrites one-shot AI prompts in the composer without starting or waiting for a generation', () => {
   const chatSource = readFileSync('src/components/chat/ChatInterface.tsx', 'utf8');
   const chatCss = readFileSync('src/components/chat/ChatInterface.css', 'utf8');
 
-  const sendStart = appSource.indexOf('const onHandleSend = useCallback');
-  const sendEnd = appSource.indexOf('const onHandleSendRef', sendStart);
-  const sendSource = appSource.slice(sendStart, sendEnd);
-  assert.ok(sendSource.indexOf("if (override === undefined) setInput('');") < sendSource.indexOf('await handleSend('));
-  assert.match(chatSource, /const enhancePromptOnce = async[\s\S]*?setIsOneShotAiSubmitting\(true\)[\s\S]*?await handleSend\(undefined, false, false, true\)/);
+  const enhancementStart = chatSource.indexOf('const enhancePromptOnce = async');
+  const enhancementEnd = chatSource.indexOf('const handlePromptPaste', enhancementStart);
+  const enhancementSource = chatSource.slice(enhancementStart, enhancementEnd);
+  assert.match(enhancementSource, /fetch\(`\$\{API_BASE\}\/api\/llm\/enhance-prompt`/);
+  assert.match(enhancementSource, /setInput\(enhancedPrompt\)/);
+  assert.doesNotMatch(enhancementSource, /handleSend|api\/generate/);
+  assert.match(chatSource, /wasRewrittenInComposer[\s\S]*?handleSend\(undefined, false, wasRewrittenInComposer\)/);
+  const aiButtonStart = chatSource.indexOf('className="one-shot-ai-btn"');
+  const aiButtonEnd = chatSource.indexOf('</button>', aiButtonStart);
+  const aiButtonSource = chatSource.slice(aiButtonStart, aiButtonEnd);
+  assert.match(aiButtonSource, /disabled=\{!input\.trim\(\) \|\| !params\.llmProviderId \|\| isOneShotAiSubmitting\}/);
+  assert.doesNotMatch(aiButtonSource, /isGenerating|isEnhancing/);
   assert.match(chatSource, /isEnhancing \|\| isOneShotAiSubmitting \? 'ai-processing'/);
-  assert.match(chatSource, /aria-busy=\{isEnhancing \|\| isOneShotAiSubmitting\}/);
+  assert.match(chatSource, /aria-busy=\{isOneShotAiSubmitting\}/);
   assert.match(chatCss, /\.input-box\.ai-processing\s*\{[\s\S]*?animation: ai-border-reflection/);
 });
 
